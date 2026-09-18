@@ -1,5 +1,6 @@
 //! `/v1/fetch` — fetches a page and returns its metadata, body, headers, and metrics.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -29,10 +30,10 @@ pub struct FetchResponse {
     pub truncated: bool,
     /// The request headers, when requested through `include=headers`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub request_headers: Option<std::collections::BTreeMap<String, String>>,
+    pub request_headers: Option<BTreeMap<String, String>>,
     /// The response headers, when requested through `include=headers`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub response_headers: Option<std::collections::BTreeMap<String, String>>,
+    pub response_headers: Option<BTreeMap<String, String>>,
     /// The request metrics and stats.
     pub metrics: Metrics,
 }

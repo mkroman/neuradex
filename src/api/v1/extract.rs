@@ -1,6 +1,7 @@
 //! Query parameter extractors shared by the API handlers.
 
 use axum::extract::FromRequestParts;
+use axum::http::request::Parts;
 use axum_extra::extract::Query;
 use serde::Deserialize;
 use url::Url;
@@ -156,10 +157,7 @@ impl FetchQuery {
 impl<S: Send + Sync> FromRequestParts<S> for FetchParams {
     type Rejection = ApiError;
 
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        state: &S,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let Query(query) = Query::<FetchQuery>::from_request_parts(parts, state)
             .await
             .map_err(|error| {
@@ -173,10 +171,7 @@ impl<S: Send + Sync> FromRequestParts<S> for FetchParams {
 impl<S: Send + Sync> FromRequestParts<S> for PeekParams {
     type Rejection = ApiError;
 
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        state: &S,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let Query(query) = Query::<FetchQuery>::from_request_parts(parts, state)
             .await
             .map_err(|error| {
@@ -196,10 +191,7 @@ impl<S: Send + Sync> FromRequestParts<S> for PeekParams {
 impl<S: Send + Sync> FromRequestParts<S> for SearchParams {
     type Rejection = ApiError;
 
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        state: &S,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let Query(query) = Query::<SearchQuery>::from_request_parts(parts, state)
             .await
             .map_err(|error| {
@@ -212,6 +204,8 @@ impl<S: Send + Sync> FromRequestParts<S> for SearchParams {
 
 #[cfg(test)]
 mod tests {
+    use axum::http::Uri;
+
     use super::*;
 
     /// Parses `pairs` and validates them, mirroring the `Query` extraction path.
@@ -225,7 +219,7 @@ mod tests {
 
     #[test]
     fn extracts_repeated_includes_through_the_real_extractor() {
-        let uri: axum::http::Uri =
+        let uri: Uri =
             "https://maero.dk/v1/fetch?url=https://maero.dk&include=redirects&include=headers"
                 .parse()
                 .expect("valid uri");
@@ -239,7 +233,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_parameters_through_the_real_extractor() {
-        let uri: axum::http::Uri = "https://maero.dk/v1/fetch?url=https://maero.dk&nope=1"
+        let uri: Uri = "https://maero.dk/v1/fetch?url=https://maero.dk&nope=1"
             .parse()
             .expect("valid uri");
 
@@ -326,7 +320,7 @@ mod tests {
 
     #[test]
     fn extracts_search_params_through_the_real_extractor() {
-        let uri: axum::http::Uri = "https://maero.dk/v1/search?q=rust+programming&limit=10"
+        let uri: Uri = "https://maero.dk/v1/search?q=rust+programming&limit=10"
             .parse()
             .expect("valid uri");
 
@@ -339,7 +333,7 @@ mod tests {
 
     #[test]
     fn rejects_an_empty_search_query() {
-        let uri: axum::http::Uri = "https://maero.dk/v1/search?q=".parse().expect("valid uri");
+        let uri: Uri = "https://maero.dk/v1/search?q=".parse().expect("valid uri");
 
         let Query(query) = Query::<SearchQuery>::try_from_uri(&uri).expect("valid query");
 
@@ -351,7 +345,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_search_parameters() {
-        let uri: axum::http::Uri = "https://maero.dk/v1/search?q=rust&nope=1"
+        let uri: Uri = "https://maero.dk/v1/search?q=rust&nope=1"
             .parse()
             .expect("valid uri");
 

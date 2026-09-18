@@ -2,6 +2,7 @@
 
 use std::env;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use secrecy::SecretString;
 use tracing_subscriber::EnvFilter;
@@ -26,7 +27,7 @@ const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (X11; Linux x86_64; rv:155.0) Gecko/20100101 Firefox/155.0";
 
 /// The duration before an HTTP request times out.
-const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()

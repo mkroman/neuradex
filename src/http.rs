@@ -5,7 +5,10 @@
 
 use std::net::SocketAddr;
 
-use crate::api::v1::AppState;
+#[cfg(unix)]
+use tokio::signal::unix::{SignalKind, signal};
+
+use crate::api::v1::{AppState, router};
 
 /// Starts the axum server on `addr` and drives it until a shutdown signal is received.
 ///
@@ -13,7 +16,7 @@ use crate::api::v1::AppState;
 ///
 /// Returns an error if the server fails to bind or serve.
 pub async fn serve(state: AppState, addr: SocketAddr) -> std::io::Result<()> {
-    let router = crate::api::v1::router(state);
+    let router = router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     tracing::info!(%addr, "listening");
@@ -33,7 +36,7 @@ async fn shutdown_signal() {
 
     #[cfg(unix)]
     let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        signal(SignalKind::terminate())
             .expect("could not install SIGTERM handler")
             .recv()
             .await;

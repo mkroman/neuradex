@@ -5,14 +5,15 @@
 //! download is throttled — once the parser falls behind. Parsing stops as soon as the document
 //! head has been received, aborting the rest of the download.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, btree_map::Entry};
 
 use futures::StreamExt;
+use tokio::sync::mpsc;
 use wreq::header::{CONTENT_TYPE, HeaderMap};
 
 use crate::api::v1::error::ApiError;
 use crate::api::v1::redirect::media_type;
-use crate::metadata::HeadParser;
+use crate::metadata::{HeadParser, PageMetadata};
 
 /// The maximum size of a response consumed while extracting document head metadata.
 pub(crate) const HEAD_MAX_BYTES: u64 = 2 * 1024 * 1024;
@@ -46,7 +47,7 @@ pub(crate) enum Mode {
 /// The outcome of streaming a response through the head parser.
 pub(crate) struct Streamed {
     /// The metadata captured from the document head.
-    pub metadata: crate::metadata::PageMetadata,
+    pub metadata: PageMetadata,
     /// The body bytes read, when collecting the full body.
     pub body: Option<Vec<u8>>,
     /// The number of body bytes read (decompressed).
@@ -66,7 +67,7 @@ pub(crate) async fn read(response: wreq::Response, mode: Mode) -> Result<Streame
         Mode::Full(max_bytes) => (true, max_bytes),
     };
 
-    let (sender, mut receiver) = tokio::sync::mpsc::channel::<Result<Vec<u8>, wreq::Error>>(4);
+    let (sender, mut receiver) = mpsc::channel::<Result<Vec<u8>, wreq::Error>>(4);
 
     let reader = tokio::spawn(async move {
         let mut stream = response.bytes_stream();
@@ -213,12 +214,12 @@ pub(crate) fn headers_to_json(headers: &HeaderMap) -> BTreeMap<String, String> {
         let value = String::from_utf8_lossy(value.as_bytes()).into_owned();
 
         match map.entry(name) {
-            std::collections::btree_map::Entry::Occupied(mut entry) => {
+            Entry::Occupied(mut entry) => {
                 let existing = entry.get_mut();
                 existing.push_str(", ");
                 existing.push_str(&value);
             }
-            std::collections::btree_map::Entry::Vacant(entry) => {
+            Entry::Vacant(entry) => {
                 entry.insert(value);
             }
         }
