@@ -1,0 +1,58 @@
+[package]
+name = "neuradex"
+version = "0.1.0"
+edition = "2024"
+description = "A small API service implementing tools for LLM agents."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+axum = { version = "0.8.9", features = ["json"] }
+axum-extra = { version = "0.12.6", default-features = false, features = ["query"] }
+futures = { version = "0.3.31", default-features = false, features = ["std"] }
+html5ever = "0.39.0"
+kagi = { path = "../zeta/kagi", default-features = false, features = ["rustls"] }
+secrecy = "0.10.3"
+serde = { version = "1.0.215", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2.0"
+tokio = { version = "1.52.3", features = [
+    "rt-multi-thread",
+    "macros",
+    "signal",
+    "net",
+    "sync",
+] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+url = "2.5.8"
+wreq = { version = "0.16.1", default-features = false, features = [
+    "tokio-rt",
+    "webpki-roots",
+    "prefix-symbols",
+    "stream",
+    "gzip",
+    "brotli",
+    "deflate",
+    "zstd",
+] }
+wreq-util = "0.2.0"
+
+[dev-dependencies]
+serde_html_form = "0.2.7"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+cargo = { level = "allow", priority = 1 }
+doc_markdown = { level = "allow", priority = 1 }
+cognitive_complexity = { level = "allow", priority = 1 }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+rust_2018_idioms = { level = "warn", priority = 1 }
+trivial_casts = { level = "warn", priority = 1 }
+trivial_numeric_casts = { level = "warn", priority = 1 }
+unused_import_braces = { level = "warn", priority = 1 }
+unused_qualifications = { level = "warn", priority = 1 }
