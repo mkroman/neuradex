@@ -24,6 +24,12 @@ pub use error::ApiError;
 /// The maximum number of redirects the fetch endpoints will follow.
 pub const MAX_REDIRECTS: u32 = 5;
 
+/// The maximum number of searches that may be in flight at once; additional requests queue.
+pub const MAX_CONCURRENT_SEARCHES: usize = 2;
+
+/// The maximum value accepted by the search endpoint's `timeout` parameter, in seconds.
+pub const MAX_SEARCH_TIMEOUT_SECS: u64 = 30;
+
 /// Errors that can occur while constructing the application state.
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
@@ -47,6 +53,9 @@ pub struct AppState {
     pub client: wreq::Client,
     /// The client used for searching with Kagi.
     pub kagi_client: kagi::Client,
+    /// Gates the number of searches in flight; each search acquires a permit, extra requests
+    /// wait here until a slot frees up.
+    pub search_gate: Arc<tokio::sync::Semaphore>,
     /// The default request headers sent with every fetch, kept for reporting.
     pub default_headers: HeaderMap,
 }
@@ -79,6 +88,7 @@ impl AppState {
         Ok(Self {
             client,
             kagi_client,
+            search_gate: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SEARCHES)),
             default_headers,
         })
     }

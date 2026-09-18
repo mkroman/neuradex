@@ -42,6 +42,8 @@ pub struct Metrics {
 /// Request metrics and stats for a search.
 #[derive(Debug, Serialize)]
 pub struct SearchMetrics {
+    /// The time spent waiting for a search slot before the search started, in milliseconds.
+    pub queue_ms: u64,
     /// The total processing time, in milliseconds.
     pub total_ms: u64,
     /// The number of results returned.

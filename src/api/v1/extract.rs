@@ -4,10 +4,11 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum_extra::extract::Query;
 use serde::Deserialize;
+use std::time::Duration;
 use url::Url;
 
-use crate::api::v1::MAX_REDIRECTS;
 use crate::api::v1::error::ApiError;
+use crate::api::v1::{MAX_REDIRECTS, MAX_SEARCH_TIMEOUT_SECS};
 
 /// The default number of redirects to follow when none is requested.
 pub const DEFAULT_REDIRECTS: u32 = 5;
@@ -42,6 +43,8 @@ struct SearchQuery {
     q: String,
     /// The maximum number of results to return.
     limit: Option<usize>,
+    /// The maximum time to wait for the search, in whole seconds.
+    timeout: Option<u64>,
 }
 
 /// The parameters accepted by the fetch endpoint (`/v1/fetch`).
@@ -73,6 +76,8 @@ pub struct SearchParams {
     pub query: String,
     /// The maximum number of results to return, if limited.
     pub limit: Option<usize>,
+    /// The maximum time to wait for the search, including queueing, if limited.
+    pub timeout: Option<Duration>,
 }
 
 impl SearchParams {
@@ -82,9 +87,25 @@ impl SearchParams {
             return Err(ApiError::invalid_param("the q parameter is empty"));
         }
 
+        if query.timeout == Some(0) {
+            return Err(ApiError::invalid_param(
+                "the timeout parameter must be at least 1 second",
+            ));
+        }
+
+        if query
+            .timeout
+            .is_some_and(|timeout| timeout > MAX_SEARCH_TIMEOUT_SECS)
+        {
+            return Err(ApiError::invalid_param(format!(
+                "the timeout parameter must be between 1 and {MAX_SEARCH_TIMEOUT_SECS} seconds"
+            )));
+        }
+
         Ok(Self {
             query: query.q,
             limit: query.limit,
+            timeout: query.timeout.map(Duration::from_secs),
         })
     }
 }
@@ -329,6 +350,47 @@ mod tests {
 
         assert_eq!(params.query, "rust programming");
         assert_eq!(params.limit, Some(10));
+        assert_eq!(params.timeout, None);
+    }
+
+    #[test]
+    fn extracts_the_search_timeout_through_the_real_extractor() {
+        let uri: Uri = "https://maero.dk/v1/search?q=rust&timeout=10"
+            .parse()
+            .expect("valid uri");
+
+        let Query(query) = Query::<SearchQuery>::try_from_uri(&uri).expect("valid query");
+        let params = SearchParams::from_query(query).expect("valid params");
+
+        assert_eq!(params.timeout, Some(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn rejects_out_of_range_search_timeouts() {
+        for (raw, expected) in [
+            ("q=rust&timeout=0", "the timeout parameter must be at least"),
+            ("q=rust&timeout=31", "the timeout parameter must be between"),
+        ] {
+            let uri: Uri = format!("https://maero.dk/v1/search?{raw}")
+                .parse()
+                .expect("valid uri");
+
+            let Query(query) = Query::<SearchQuery>::try_from_uri(&uri).expect("valid query");
+
+            assert!(
+                matches!(SearchParams::from_query(query), Err(ApiError::InvalidParam(message)) if message.contains(expected)),
+                "expected {raw} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_non_integer_search_timeouts() {
+        let uri: Uri = "https://maero.dk/v1/search?q=rust&timeout=1.5"
+            .parse()
+            .expect("valid uri");
+
+        assert!(Query::<SearchQuery>::try_from_uri(&uri).is_err());
     }
 
     #[test]
