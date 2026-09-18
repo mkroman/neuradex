@@ -1,0 +1,20 @@
+{{- $fullname := include "neuradex.fullname" . -}}
+
+The neuradex service has been deployed{{ if .Values.ingress.enabled }} and an Ingress has been configured{{ end }}.
+
+1. Get the application URL:
+
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}{{ range .paths }}{{ .path }}{{ end }}
+{{- end }}
+{{- else }}
+  In-cluster: http://{{ $fullname }}:{{ .Values.service.port }}/
+  Locally:    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ $fullname }} 8080:{{ .Values.service.port }}
+
+             curl http://127.0.0.1:8080/v1/search?q=test
+{{- end }}
+
+2. Health probe: GET /healthz returns 204.
+
+3. Kagi token supply: {{ if .Values.existingSecret }}referencing the existing secret "{{ .Values.existingSecret }}"{{ else }}chart-managed secret "{{ $fullname }}" (the token is stored in release state; prefer existingSecret in production){{ end }}.

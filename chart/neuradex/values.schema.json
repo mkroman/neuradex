@@ -1,0 +1,315 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "neuradex chart values",
+  "description": "Values for the neuradex Helm chart. Mirrors the inline documentation in values.yaml.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "nameOverride": {
+      "type": "string",
+      "default": "",
+      "description": "Partially override generated resource names (replaces the chart-name part only)."
+    },
+    "fullnameOverride": {
+      "type": "string",
+      "default": "",
+      "description": "Fully override all generated resource names."
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "default": [],
+      "description": "Secrets for pulling the image from a private registry.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string", "description": "Name of the image pull secret."}
+        },
+        "required": ["name"]
+      }
+    },
+    "replicaCount": {
+      "type": "integer",
+      "default": 1,
+      "minimum": 0,
+      "description": "Desired number of replicas. The service is stateless and safe to scale."
+    },
+    "containerPort": {
+      "type": "integer",
+      "default": 8080,
+      "minimum": 1,
+      "maximum": 65535,
+      "description": "Port the service binds to inside the container (LISTEN_ADDR=0.0.0.0:<containerPort>); the Service and probes target this port via the `http` named port."
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "default": "ghcr.io/mkroman/neuradex",
+          "description": "Container image repository."
+        },
+        "tag": {
+          "type": "string",
+          "default": "",
+          "description": "Image tag; falls back to the chart's appVersion when empty."
+        },
+        "digest": {
+          "type": "string",
+          "default": "",
+          "description": "Optional immutable digest pin (\"sha256:...\"); takes precedence over image.tag."
+        },
+        "pullPolicy": {
+          "type": "string",
+          "default": "IfNotPresent",
+          "enum": ["Always", "IfNotPresent", "Never"],
+          "description": "Pull policy. Never is useful with kind clusters fed via kind load docker-image."
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "default": true,
+          "description": "Create a dedicated ServiceAccount; no API token is ever mounted."
+        },
+        "annotations": {
+          "type": "object",
+          "default": {},
+          "description": "Annotations for the created ServiceAccount."
+        },
+        "name": {
+          "type": "string",
+          "default": "",
+          "description": "ServiceAccount name; defaults to the release fullname when created, `default` otherwise."
+        }
+      }
+    },
+    "existingSecret": {
+      "type": "string",
+      "default": "",
+      "description": "Name of an existing secret holding KAGI_SESSION_TOKEN. When set, kagiSessionToken is ignored and no Secret is created."
+    },
+    "kagiSessionTokenKey": {
+      "type": "string",
+      "default": "kagi-session-token",
+      "minLength": 1,
+      "description": "Key within the secret holding the token."
+    },
+    "kagiSessionToken": {
+      "type": "string",
+      "default": "",
+      "description": "Token value; only used when existingSecret is empty (the chart then creates the Secret). Prefer existingSecret in production."
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "default": "ClusterIP",
+          "enum": ["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"],
+          "description": "Service type."
+        },
+        "port": {
+          "type": "integer",
+          "default": 80,
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Port exposed by the Service (targetPort is the http named port)."
+        }
+      }
+    },
+    "userAgent": {
+      "type": "string",
+      "default": "",
+      "description": "Optional USER_AGENT override for the browser-impersonating HTTP client; empty uses the application default."
+    },
+    "rustLog": {
+      "type": "string",
+      "default": "info",
+      "description": "RUST_LOG value consumed by the tracing EnvFilter (e.g. `info`, `neuradex=debug,hyper=warn`)."
+    },
+    "podAnnotations": {
+      "type": "object",
+      "default": {},
+      "description": "Extra annotations on the Deployment's pod template."
+    },
+    "podLabels": {
+      "type": "object",
+      "default": {},
+      "description": "Extra labels on the Deployment's pod template."
+    },
+    "podSecurityContext": {
+      "type": "object",
+      "description": "Pod-level securityContext. Secure defaults match the distroless nonroot image (uid/gid 65532, RuntimeDefault seccomp)."
+    },
+    "containerSecurityContext": {
+      "type": "object",
+      "description": "Container-level securityContext (no privilege escalation, capabilities dropped, read-only root filesystem)."
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Resource requests/limits. The CPU limit is intentionally unset to avoid throttling.",
+      "properties": {
+        "requests": {"$ref": "#/$defs/resourceList"},
+        "limits": {"$ref": "#/$defs/resourceList"}
+      }
+    },
+    "livenessProbe": {
+      "type": "object",
+      "description": "Liveness probe (full Kubernetes probe spec); defaults to GET /healthz on the http named port."
+    },
+    "readinessProbe": {
+      "type": "object",
+      "description": "Readiness probe (full Kubernetes probe spec); defaults to GET /healthz on the http named port."
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the default-deny style NetworkPolicy (ingress to containerPort; egress to DNS plus 80/443)."
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable an Ingress fronting the Service."
+        },
+        "className": {
+          "type": "string",
+          "default": "",
+          "description": "IngressClass name (`nginx`, `traefik`, ...)."
+        },
+        "annotations": {
+          "type": "object",
+          "default": {},
+          "description": "Extra annotations for the Ingress resource."
+        },
+        "hosts": {
+          "type": "array",
+          "description": "Host/path routing rules.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["host", "paths"],
+            "properties": {
+              "host": {"type": "string", "description": "Ingress hostname."},
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["path", "pathType"],
+                  "properties": {
+                    "path": {"type": "string", "description": "URL path."},
+                    "pathType": {
+                      "type": "string",
+                      "enum": ["Prefix", "Exact", "ImplementationSpecific"],
+                      "description": "Path matching mode."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tls": {
+          "type": "array",
+          "default": [],
+          "description": "TLS termination configuration (secretName + hosts entries).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "secretName": {"type": "string", "description": "Name of the TLS secret."},
+              "hosts": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "hpa": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "HorizontalPodAutoscaler (autoscaling/v2); when enabled, minReplicas overrides replicaCount.",
+      "properties": {
+        "enabled": {"type": "boolean", "default": false},
+        "minReplicas": {"type": "integer", "default": 2, "minimum": 1},
+        "maxReplicas": {"type": "integer", "default": 5, "minimum": 1},
+        "metrics": {
+          "type": "array",
+          "default": [],
+          "description": "autoscaling/v2 metrics list."
+        }
+      }
+    },
+    "pdb": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "PodDisruptionBudget; with a single replica, enabling this blocks all voluntary evictions.",
+      "properties": {
+        "enabled": {"type": "boolean", "default": false}
+      }
+    },
+    "nodeSelector": {
+      "type": "object",
+      "default": {},
+      "description": "Node labels constraining pod placement."
+    },
+    "tolerations": {
+      "type": "array",
+      "default": [],
+      "description": "Taint tolerations."
+    },
+    "affinity": {
+      "type": "object",
+      "default": {},
+      "description": "Pod affinity/anti-affinity rules."
+    },
+    "topologySpreadConstraints": {
+      "type": "array",
+      "default": [],
+      "description": "Topology spread constraints; a soft spread over kubernetes.io/hostname is recommended with replicaCount >= 2."
+    },
+    "extraEnv": {
+      "type": "array",
+      "default": [],
+      "description": "Additional env entries merged into the container environment (name/value or valueFrom)."
+    },
+    "extraEnvFrom": {
+      "type": "array",
+      "default": [],
+      "description": "Additional envFrom sources (ConfigMap/Secret refs)."
+    },
+    "extraVolumes": {
+      "type": "array",
+      "default": [],
+      "description": "Additional pod volumes."
+    },
+    "extraVolumeMounts": {
+      "type": "array",
+      "default": [],
+      "description": "Additional container volume mounts."
+    }
+  },
+  "$defs": {
+    "resourceList": {
+      "type": "object",
+      "description": "Kubernetes resource quantity map (e.g. cpu: 50m, memory: 64Mi).",
+      "additionalProperties": {"type": ["string", "number"]}
+    }
+  }
+}

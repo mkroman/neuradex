@@ -1,0 +1,23 @@
+apiVersion: v2
+name: neuradex
+description: A small API service implementing tools for LLM agents.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/mkroman/neuradex
+sources:
+  - https://github.com/mkroman/neuradex
+keywords:
+  - llm
+  - tools
+  - fetch
+  - search
+  - kagi
+annotations:
+  artifacthub.io/license: "MIT OR Apache-2.0"
+  artifacthub.io/images: |
+    - name: neuradex
+      image: ghcr.io/mkroman/neuradex:0.1.0
+maintainers:
+  - name: Mikkel Kroman
+    email: mk@maero.dk

@@ -10,7 +10,7 @@ axum = { version = "0.8.9", features = ["json"] }
 axum-extra = { version = "0.12.6", default-features = false, features = ["query"] }
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 html5ever = "0.39.0"
-kagi = { path = "../zeta/kagi", default-features = false, features = ["rustls"] }
+kagi = { git = "https://github.com/mkroman/zeta", default-features = false, features = ["rustls"] }
 secrecy = "0.10.3"
 serde = { version = "1.0.215", features = ["derive"] }
 serde_json = "1.0.149"

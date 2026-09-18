@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use axum::http::StatusCode;
 use axum::routing::get;
 use secrecy::SecretString;
 use wreq::header::{ACCEPT_ENCODING, HeaderMap, HeaderValue, USER_AGENT};
@@ -105,8 +106,13 @@ fn default_headers(user_agent: &str) -> Result<HeaderMap, BuildError> {
 /// Builds the v1 API router.
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/healthz", get(healthz))
         .route("/v1/peek", get(peek::peek))
         .route("/v1/fetch", get(fetch::fetch))
         .route("/v1/search", get(search::search))
         .with_state(Arc::new(state))
+}
+
+async fn healthz() -> StatusCode {
+    StatusCode::NO_CONTENT
 }

@@ -225,9 +225,10 @@ mod tests {
 
     #[test]
     fn extracts_repeated_includes_through_the_real_extractor() {
-        let uri: axum::http::Uri = "https://maero.dk/v1/fetch?url=https://maero.dk&include=redirects&include=headers"
-            .parse()
-            .expect("valid uri");
+        let uri: axum::http::Uri =
+            "https://maero.dk/v1/fetch?url=https://maero.dk&include=redirects&include=headers"
+                .parse()
+                .expect("valid uri");
 
         let Query(query) = Query::<FetchQuery>::try_from_uri(&uri).expect("valid query");
         let params = query.into_params(FETCH_INCLUDES).expect("valid params");
@@ -338,9 +339,7 @@ mod tests {
 
     #[test]
     fn rejects_an_empty_search_query() {
-        let uri: axum::http::Uri = "https://maero.dk/v1/search?q="
-            .parse()
-            .expect("valid uri");
+        let uri: axum::http::Uri = "https://maero.dk/v1/search?q=".parse().expect("valid uri");
 
         let Query(query) = Query::<SearchQuery>::try_from_uri(&uri).expect("valid query");
 

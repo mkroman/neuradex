@@ -1135,6 +1135,7 @@ dependencies = [
 [[package]]
 name = "kagi"
 version = "0.1.0"
+source = "git+https://github.com/mkroman/zeta#bac3a70558f6a6cba3dca5d3c98835fb7526f7ab"
 dependencies = [
  "htmlize",
  "regex",

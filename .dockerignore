@@ -1,0 +1,8 @@
+target
+chart
+support
+.git
+.github
+AGENTS.md
+Dockerfile
+.dockerignore

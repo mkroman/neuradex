@@ -105,11 +105,7 @@ impl Fetched {
             ttfb_ms: duration_ms(self.headers_elapsed),
             total_ms: duration_ms(started.elapsed()),
             redirects_followed: self.followed,
-            redirects: if include_hops {
-                self.hops
-            } else {
-                Vec::new()
-            },
+            redirects: if include_hops { self.hops } else { Vec::new() },
             truncated,
         }
     }

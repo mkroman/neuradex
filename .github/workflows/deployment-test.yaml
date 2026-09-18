@@ -1,0 +1,113 @@
+name: Deployment Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+
+# Cancel superseded runs on the same ref to free runners and cache writers.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  chart:
+    name: Chart Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+      - name: Lint chart
+        run: helm lint chart/neuradex --set kagiSessionToken=ci-dummy
+      - name: Render chart variants
+        run: |
+          helm template defaults chart/neuradex \
+            --set kagiSessionToken=ci-dummy > /dev/null
+          helm template existing-secret chart/neuradex \
+            --set existingSecret=kagi \
+            --set kagiSessionTokenKey=token > /dev/null
+          helm template all-features chart/neuradex \
+            --set kagiSessionToken=ci-dummy \
+            --set podAnnotations.custom=enabled \
+            --set podLabels.tier=api \
+            --set ingress.enabled=true \
+            --set hpa.enabled=true \
+            --set pdb.enabled=true > /dev/null
+          helm template digest-pinned chart/neuradex \
+            --set kagiSessionToken=ci-dummy \
+            --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 > /dev/null
+
+  kind:
+    name: Kind Deployment
+    needs:
+      - chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      IMAGE: ghcr.io/mkroman/neuradex:ci
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build image from local source
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Create kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          cluster_name: neuradex
+          version: v0.33.0
+      - name: Load image into the cluster
+        run: kind load docker-image "$IMAGE" --name neuradex
+      - name: Install chart
+        run: |
+          helm install neuradex chart/neuradex \
+            --set image.repository=ghcr.io/mkroman/neuradex \
+            --set image.tag=ci \
+            --set image.pullPolicy=Never \
+            --set kagiSessionToken=ci-dummy \
+            --wait --timeout 5m
+      - name: Wait for deployment availability
+        run: kubectl wait --for=condition=available deployment/neuradex --timeout=120s
+      - name: Assert /healthz and /v1/fetch from inside the cluster
+        run: |
+          kubectl run curl --quiet --restart=Never --image=curlimages/curl:8.18.0 --command -- sleep 300
+          kubectl wait --for=condition=Ready pod/curl --timeout=60s
+          code=$(kubectl exec curl -- curl -sS -o /dev/null --write-out '%{http_code}' http://neuradex/healthz)
+          echo "healthz: $code"
+          [ "$code" = "204" ] || exit 1
+          code=$(kubectl exec curl -- curl -sS -o /dev/null --write-out '%{http_code}' "http://neuradex/v1/fetch?url=https://example.com")
+          echo "fetch: $code"
+          [ "$code" = "200" ] || exit 1
+      - name: Clean up the curl pod
+        if: always()
+        run: kubectl delete pod curl --ignore-not-found
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          kubectl get pods -o wide || true
+          kubectl describe deployment/neuradex || true
+          kubectl get events --sort-by=.lastTimestamp | tail -30 || true
+          kubectl logs deployment/neuradex || true
+      - name: Delete cluster
+        if: always()
+        run: kind delete cluster --name neuradex

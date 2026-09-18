@@ -1,0 +1,245 @@
+# Default values for the neuradex chart.
+#
+# neuradex is a small stateless HTTP service exposing LLM-agent tools (`fetch`,
+# `peek`, `search`) as JSON under `/v1`. Any value below can be overridden with
+# `--set`, `--set-file`, or a `--values` file; overrides are validated against
+# values.schema.json.
+
+## @section Global parameters
+
+## @param nameOverride Partially override generated resource names (replaces the chart-name part only).
+nameOverride: ""
+
+## @param fullnameOverride Fully override all generated resource names.
+fullnameOverride: ""
+
+## @param imagePullSecrets Secrets for pulling the image from a private registry.
+## Example:
+##   imagePullSecrets:
+##     - name: ghcr-pull-secret
+imagePullSecrets: []
+
+## @section Workload parameters
+
+## @param replicaCount Desired number of replicas. The service is stateless and safe to scale;
+## pair with `hpa` (autoscaling) or `pdb` (disruption budget) as needed.
+replicaCount: 1
+
+## @param containerPort Port the service binds to inside the container (the chart sets
+## LISTEN_ADDR=0.0.0.0:<containerPort>). The Service and both probes target this port
+## via the `http` named port.
+containerPort: 8080
+
+## @param image.repository Container image repository.
+## @param image.tag Image tag; falls back to the chart's appVersion when empty.
+## @param image.digest Optional immutable digest pin ("sha256:..."); takes precedence over `image.tag`.
+## @param image.pullPolicy Pull policy. `Never` is useful with kind clusters fed via `kind load docker-image`.
+image:
+  repository: ghcr.io/mkroman/neuradex
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+## @section Service account parameters
+serviceAccount:
+  ## @param serviceAccount.create Create a dedicated ServiceAccount. The pod never talks to the
+  ## Kubernetes API, so no token is mounted regardless of this setting
+  ## (automountServiceAccountToken: false is always enforced).
+  create: true
+
+  ## @param serviceAccount.annotations Annotations for the created ServiceAccount.
+  annotations: {}
+
+  ## @param serviceAccount.name ServiceAccount name to use. When `create` is true this defaults to
+  ## the release fullname; when `create` is false it defaults to `default`.
+  name: ""
+
+## @section Credentials (KAGI_SESSION_TOKEN)
+##
+## The service refuses to start without a non-empty KAGI_SESSION_TOKEN. Two
+## supply modes:
+##
+##   1. Recommended: reference a pre-existing secret via `existingSecret`
+##      (e.g. `kubectl -n <ns> create secret generic neuradex-kagi --from-literal=kagi-session-token=...`).
+##   2. Chart-managed: set `kagiSessionToken` and the chart creates the secret.
+##      Avoid this in production — the token then lives in plain values and
+##      release state. When chart-managed, a checksum annotation rolls the
+##      pods whenever the token changes.
+
+## @param existingSecret Name of an existing secret holding KAGI_SESSION_TOKEN.
+## When set, `kagiSessionToken` is ignored and no Secret is created.
+existingSecret: ""
+
+## @param kagiSessionTokenKey Key within the secret holding the token.
+kagiSessionTokenKey: kagi-session-token
+
+## @param kagiSessionToken Token value; only used when `existingSecret` is empty.
+kagiSessionToken: ""
+
+## @section Service parameters
+service:
+  ## @param service.type Service type.
+  type: ClusterIP
+
+  ## @param service.port Port exposed by the Service (targetPort is the `http` named port).
+  port: 80
+
+## @section Application parameters
+
+## @param userAgent Optional USER_AGENT override for the browser-impersonating HTTP client;
+## empty uses the application default.
+userAgent: ""
+
+## @param rustLog RUST_LOG consumed by the tracing EnvFilter. Examples: `info`,
+## `neuradex=debug,hyper=warn`.
+rustLog: "info"
+
+## @param podAnnotations Extra annotations on the Deployment's pod template.
+## Example:
+##   podAnnotations:
+##     prometheus.io/scrape: "true"
+podAnnotations: {}
+
+## @param podLabels Extra labels on the Deployment's pod template.
+podLabels: {}
+
+## @section Security context parameters
+##
+## Secure defaults matching the distroless `nonroot` image: uid/gid 65532, no
+## privilege escalation, all capabilities dropped, read-only root filesystem,
+## RuntimeDefault seccomp. If you swap the image, keep runAsUser/runAsGroup
+## compatible with the image's user.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+## @section Resources
+##
+## The CPU limit is intentionally unset: requests still guarantee scheduling,
+## while omitting the limit avoids throttling latency-sensitive requests.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+## @section Probes
+##
+## Both probes default to GET /healthz (HTTP 204) on the `http` named port.
+## Whole blocks are overridable (thresholds, timeouts, ...), but keep an
+## httpGet against `http` unless containerPort is changed.
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 10
+
+## @section Network policy
+##
+## Enabled by default: default-deny style policy permitting ingress to
+## containerPort, and egress to DNS (53) plus HTTP(S) 80/443 — the service
+## fetches arbitrary URLs and talks to Kagi over TLS.
+networkPolicy:
+  enabled: true
+
+## @section Ingress parameters
+ingress:
+  ## @param ingress.enabled Enable an Ingress fronting the Service.
+  enabled: false
+
+  ## @param ingress.className IngressClass name (`nginx`, `traefik`, ...).
+  className: ""
+
+  ## @param ingress.annotations Extra annotations for the Ingress resource.
+  annotations: {}
+
+  ## @param ingress.hosts Host/path routing rules.
+  hosts:
+    - host: neuradex.local
+      paths:
+        - path: /
+          pathType: Prefix
+
+  ## @param ingress.tls TLS termination configuration.
+  ## Example:
+  ##   tls:
+  ##     - secretName: neuradex-tls
+  ##       hosts:
+  ##         - neuradex.local
+  tls: []
+
+## @section Autoscaling and disruption
+##
+## HorizontalPodAutoscaler (autoscaling/v2). When enabled, minReplicas
+## overrides replicaCount.
+hpa:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+## PodDisruptionBudget. With a single replica, enabling this blocks all
+## voluntary evictions; enable with replicaCount >= 2 or an active HPA.
+pdb:
+  enabled: false
+
+## @section Scheduling parameters
+
+## @param nodeSelector Node labels constraining pod placement.
+nodeSelector: {}
+
+## @param tolerations Taint tolerations.
+tolerations: []
+
+## @param affinity Pod affinity/anti-affinity rules.
+affinity: {}
+
+## @param topologySpreadConstraints Topology spread constraints; with
+## replicaCount >= 2, a soft spread over `kubernetes.io/hostname` is recommended.
+topologySpreadConstraints: []
+
+## @section Extra passthroughs
+
+## @param extraEnv Additional entries merged into the container environment
+## (plain env objects, e.g. name/value or valueFrom).
+## Example:
+##   extraEnv:
+##     - name: FOO
+##       value: bar
+extraEnv: []
+
+## @param extraEnvFrom Additional envFrom sources (ConfigMap/Secret refs).
+extraEnvFrom: []
+
+## @param extraVolumes Additional pod volumes.
+extraVolumes: []
+
+## @param extraVolumeMounts Additional container volume mounts.
+extraVolumeMounts: []

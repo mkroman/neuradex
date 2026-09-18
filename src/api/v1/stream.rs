@@ -271,12 +271,8 @@ mod tests {
         assert!(!read.truncated);
 
         // Data after the cap proves the body was cut short; the overflowing chunk is discarded.
-        let read = consume(
-            [Ok(vec![b'x'; 8]), Ok(vec![b'y'; 4])].into_iter(),
-            true,
-            8,
-        )
-        .expect("reads");
+        let read =
+            consume([Ok(vec![b'x'; 8]), Ok(vec![b'y'; 4])].into_iter(), true, 8).expect("reads");
 
         assert_eq!(read.bytes_read, 8);
         assert_eq!(read.body.as_deref().map(<[u8]>::len), Some(8));

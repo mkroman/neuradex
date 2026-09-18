@@ -1,0 +1,14 @@
+{{- if .Values.pdb.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "neuradex.fullname" . }}
+  labels:
+    {{- include "neuradex.labels" . | nindent 4 }}
+spec:
+  # Keep at least one replica serving during voluntary disruptions.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "neuradex.selectorLabels" . | nindent 6 }}
+{{- end }}
