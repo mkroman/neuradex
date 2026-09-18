@@ -1,6 +1,6 @@
 import { tool } from "@opencode-ai/plugin"
 
-const DEFAULT_LIMIT = 3
+const DEFAULT_LIMIT = 10
 const DEFAULT_BASE_URL = "http://127.0.0.1:8080"
 
 type SearchResponse = {
@@ -15,7 +15,7 @@ export default tool({
     "Search the web for live, up-to-date information. Returns a ranked list of results with title, URL, and description. Use this proactively whenever you need recent or real-time details (news, releases, prices, docs, current events), whenever you don't know something or are unsure, or whenever your training data may be out of date — searching beats guessing.",
   args: {
     query: tool.schema.string().min(1).describe("The web search query"),
-    limit: tool.schema.number().int().min(1).optional().describe("Maximum number of results to return. Defaults to 3"),
+    limit: tool.schema.number().int().min(1).optional().describe(`Maximum number of results to return. Defaults to ${DEFAULT_LIMIT}`),
   },
   async execute(args, context) {
     const base = (process.env.NEURADEX_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/+$/, "")
