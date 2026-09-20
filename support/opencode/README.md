@@ -1,41 +1,69 @@
 # neuradex opencode tools
 
-A `websearch` tool for [opencode](https://opencode.ai) that queries this service's
-`/v1/search` endpoint. The tool id is `websearch`, so it overrides opencode's
-built-in `websearch` tool everywhere.
+An [opencode](https://opencode.ai) v2 plugin that registers this service's
+`/v1/search` endpoint as a web search provider named `neuradex` and selects it
+as the default provider, so opencode's built-in `websearch` tool searches
+through Neuradex.
 
 ## Setup
 
-Symlink the tool into a directory opencode scans for custom tools (`tools/*.ts`):
+Symlink the plugin into the global plugins directory opencode scans:
 
-    mkdir -p ~/.config/opencode/tools
-    ln -s "$PWD/support/opencode/tools/websearch.ts" ~/.config/opencode/tools/websearch.ts
+    mkdir -p ~/.config/opencode/plugins
+    ln -s "$PWD/support/opencode/plugins/websearch.ts" ~/.config/opencode/plugins/websearch.ts
+
+The plugin imports `@opencode/plugin`, which is released in lockstep with
+opencode — pin both to the same release and bump them together. Module
+imports resolve from the plugin file's real path, so the dependency must be
+installed here in the repository (one-time per clone; `node_modules` is
+gitignored):
+
+    npm install
 
 Alternatively, point opencode at this directory directly:
 
     OPENCODE_CONFIG_DIR="$PWD/support/opencode" opencode
 
-## Enabling the override
+Resolution is identical either way — in both modes the import resolves from
+this directory. Copying the file into the global plugins directory instead of
+symlinking also works (that is the fully documented variant), but then updates
+to the plugin no longer follow the repository.
 
-The built-in `websearch` tool is only shown for certain providers, and opencode
-applies that same filter to any tool with the `websearch` id — including this
-override. Export one of the following so the tool is visible:
+## Reloading
 
-    export OPENCODE_ENABLE_EXA=1
-    # or
-    export OPENCODE_ENABLE_PARALLEL=1
+Opencode reloads plugins when files under the watched config directory change.
+A fresh `npm install` here counts as an unwatched dependency change — run
+`opencode service restart` after installing or bumping `@opencode/plugin`.
 
-Using the `opencode` or `opencode-go` provider also enables it.
+## Behavior
+
+- The built-in `websearch` tool is always visible unless websearch is disabled
+  (the `"websearch": false` config key or the "Disable" choice in the provider
+  prompt). The v1-era `OPENCODE_ENABLE_EXA`/`OPENCODE_ENABLE_PARALLEL` gates
+  no longer exist.
+- Searches use the `websearch` permission action; unless it is allowed in
+  `opencode.json(c)`, the first search asks, and the answer is remembered.
+- Because the plugin sets the default provider, no provider-selection prompt
+  appears. A `"websearch": {"provider": ...}` setting in `opencode.json(c)`
+  takes precedence over the plugin's default.
+- The query is the only model-facing argument; the provider caps results at
+  10. Results render through the built-in tool as `## [title](url)` markdown
+  with the snippet as content, and "No search results found." when empty.
+- Provider errors surface as the built-in tool's generic failure message
+  ("Unable to search the web for …"); the underlying error is visible in
+  diagnostics and server logs.
 
 ## Configuration
 
 - `NEURADEX_BASE_URL` — service base URL; defaults to `http://127.0.0.1:8080`
   (matches the service's `LISTEN_ADDR` default).
 
-## Behavior
+## API failures
 
-- Arguments: `query` (required), `limit` (optional, defaults to 3).
-- Output: brief plain-text numbered list; `metadata` carries `result_count`
-  and `total_ms`.
-- API failures are surfaced as tool errors using the service's
-  `{"error": {type, message}}` body.
+- Errors thrown by the provider carry the service's
+  `{"error": {type, message}}` body text in the message
+  (`websearch: search failed (N): …`); connection failures read
+  `websearch: request failed: …`. The built-in tool wraps both in its generic
+  message, so watch the logs when debugging.
+- The service must be running for searches to work (see the repository's
+  `AGENTS.md` for running it locally).

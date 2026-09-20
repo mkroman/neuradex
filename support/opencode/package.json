@@ -1,0 +1,9 @@
+{
+  "name": "neuradex-opencode-tools",
+  "private": true,
+  "description": "Local opencode plugins for the neuradex service (see README.md).",
+  "type": "module",
+  "dependencies": {
+    "@opencode/plugin": "2.0.11"
+  }
+}
