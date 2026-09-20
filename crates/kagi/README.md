@@ -67,3 +67,8 @@ place with a new nonce on their next use. A failed fetch (session or nonce
 request) backs off exponentially for that session — 500 ms doubling up to
 30 s — before it is retried, and the error is returned to the request that
 triggered it.
+
+A stream response that rejects the session's credentials (`401` or `403`)
+invalidates it: the session is dropped and re-established on the next use,
+after the same backoff. Any other stream status (rate limits, server errors)
+keeps the session — it says nothing about the session itself.

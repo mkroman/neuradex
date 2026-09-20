@@ -7,6 +7,7 @@ use std::{
 
 use htmlize::unescape;
 use regex::Regex;
+use reqwest::StatusCode;
 use reqwest::header::{
     ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, HeaderValue, PRAGMA, REFERER, SET_COOKIE,
     UPGRADE_INSECURE_REQUESTS,
@@ -171,6 +172,13 @@ impl SessionLease {
     fn take_nonce(&mut self) -> Option<String> {
         self.session.as_mut().and_then(Session::take_nonce)
     }
+
+    /// Drops the checked-out session and records a failed fetch on the slot: the
+    /// next request re-establishes the session after the slot's backoff.
+    fn invalidate(&mut self) {
+        self.session = None;
+        Client::record_failure(&self.slot);
+    }
 }
 
 impl Drop for SessionLease {
@@ -199,7 +207,8 @@ type SessionFetcher = dyn for<'a> Fn(&'a reqwest::Client) -> SessionFetchFuture<
 /// in-flight search uses its own session; an inrush of requests grows the pool by establishing
 /// sessions one at a time, and requests beyond the pool capacity wait for a session to free
 /// up. Sessions expire independently and are refreshed with a new nonce after their own
-/// duration.
+/// duration; a stream response rejecting the session's credentials (401/403) drops the session
+/// so the next request re-establishes it.
 pub struct Client {
     /// Kagi login token.
     token: Arc<SecretString>,
@@ -535,7 +544,19 @@ impl Client {
 
         debug!(%endpoint, "connecting to stream");
         let res = req.send().await.map_err(Error::StreamRequest)?;
-        let res = res.error_for_status().map_err(Error::StreamStatus)?;
+        let res = match res.error_for_status() {
+            Ok(res) => res,
+            Err(error) => {
+                // A rejected session is dropped: the next request re-establishes
+                // it, after the slot's backoff. Other statuses keep the session —
+                // they say nothing about the session itself.
+                if error.status().is_some_and(invalidates_session) {
+                    lease.invalidate();
+                }
+
+                return Err(Error::StreamStatus(error));
+            }
+        };
         let body = res.text().await.map_err(Error::StreamRequestBody)?;
 
         Ok(parse_stream(&body))
@@ -646,6 +667,14 @@ fn backoff_after_failures(failures: u32) -> Duration {
     BACKOFF_BASE
         .checked_mul(1 << exponent)
         .map_or(BACKOFF_MAX, |backoff| backoff.min(BACKOFF_MAX))
+}
+
+/// Returns whether the stream response status invalidates the session: the
+/// session's credentials were rejected, so it must be re-established with fresh
+/// cookies and a new nonce. Any other status says nothing about the session
+/// itself — rate limits and server errors keep it.
+fn invalidates_session(status: StatusCode) -> bool {
+    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
 }
 
 /// Builds a Kagi URL with the given query parameters, percent-encoding as needed.
@@ -1197,6 +1226,63 @@ mod tests {
             .await
             .expect("second search succeeds");
         assert_eq!(mock.calls(), 1, "the released session is reused");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rejected_stream_status_invalidates_the_session() {
+        let mock = MockFetch::new(0, Some(Duration::from_millis(1)));
+        let client = client_with("token", 1, Duration::from_secs(60), Arc::clone(&mock));
+
+        let mut lease = client.acquire().await.expect("session is established");
+        assert_eq!(mock.calls(), 1);
+
+        // Kagi rejects the session's credentials (401/403): the lease is
+        // invalidated the way `stream` does — the session is dropped and the
+        // slot backs off like a failed fetch.
+        lease.invalidate();
+        drop(lease);
+
+        // The rejection backed the slot off.
+        let backed_off = {
+            let inner = client.slots.lock().unwrap();
+
+            inner
+                .first()
+                .unwrap()
+                .inner
+                .lock()
+                .unwrap()
+                .next_retry
+                .is_some()
+        };
+        assert!(backed_off, "the rejection backs the slot off");
+
+        // The next request cannot reuse the dead session: it re-establishes it
+        // after the backoff.
+        client.acquire().await.expect("second search succeeds");
+        assert_eq!(mock.calls(), 2);
+
+        // The success resets the backoff.
+        let inner = client.slots.lock().unwrap();
+        assert_eq!(inner.first().unwrap().inner.lock().unwrap().failures, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn other_stream_statuses_keep_the_session() {
+        let mock = MockFetch::new(0, Some(Duration::from_millis(1)));
+        let client = client_with("token", 1, Duration::from_secs(60), Arc::clone(&mock));
+
+        let lease = client.acquire().await.expect("session is established");
+        assert_eq!(mock.calls(), 1);
+
+        // A rate limit or server error says nothing about the session: it is
+        // parked back and reused.
+        assert!(!invalidates_session(StatusCode::TOO_MANY_REQUESTS));
+        assert!(!invalidates_session(StatusCode::INTERNAL_SERVER_ERROR));
+        drop(lease);
+
+        client.acquire().await.expect("second search succeeds");
+        assert_eq!(mock.calls(), 1, "the parked session is reused");
     }
 
     #[test]

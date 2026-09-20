@@ -43,9 +43,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     let user_agent = env::var(USER_AGENT_ENV).unwrap_or_else(|_| DEFAULT_USER_AGENT.to_string());
     let max_sessions = match env::var(KAGI_MAX_SESSIONS_ENV) {
-        Ok(value) => value.trim().parse().map_err(|_| {
-            format!("invalid {KAGI_MAX_SESSIONS_ENV}: expected a positive integer, got {value:?}")
-        })?,
+        Ok(value) => value
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|count| *count > 0)
+            .ok_or_else(|| {
+                format!(
+                    "invalid {KAGI_MAX_SESSIONS_ENV}: expected a positive integer, got {value:?}"
+                )
+            })?,
         Err(_) => kagi::DEFAULT_MAX_SESSIONS,
     };
     let kagi_token = env::var(KAGI_TOKEN_ENV)
