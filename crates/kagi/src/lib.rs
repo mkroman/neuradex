@@ -60,12 +60,15 @@ pub const USER_AGENT: &str =
     "Mozilla/5.0 (X11; Linux x86_64; rv:155.0) Gecko/20100101 Firefox/155.0";
 /// The duration before a HTTP request times out.
 pub const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
-/// The duration of a single session. Once this duration has passed, a new session will be created.
+/// The duration of a single session. Once this duration has passed, the session is refreshed
+/// with a new nonce.
 pub const SESSION_DURATION: Duration = Duration::from_mins(15);
 /// The default `Accept-Language` header sent with requests.
 pub const LANGUAGE: &str = "en-US,en;q=0.9";
+/// The default maximum number of simultaneous sessions.
+pub const DEFAULT_MAX_SESSIONS: usize = 2;
 
-/// Options for configuring a Kagi [`Client`].
+/// Options for configuring a Kagi [`Client`][client::Client].
 #[derive(Clone, Debug)]
 pub struct ClientOptions {
     /// The duration before an HTTP request times out.
@@ -76,6 +79,13 @@ pub struct ClientOptions {
     pub session_duration: Duration,
     /// The `Accept-Language` header sent with requests.
     pub language: String,
+    /// The maximum number of simultaneous sessions.
+    ///
+    /// The client keeps a pool of persistent sessions, each with its own nonce and refresh
+    /// cycle. Every in-flight search uses its own session; an inrush of requests grows the
+    /// pool by establishing sessions one at a time, and requests beyond the pool capacity
+    /// wait for a session to free up. Values below 1 are treated as 1.
+    pub max_sessions: usize,
 }
 
 impl Default for ClientOptions {
@@ -85,6 +95,7 @@ impl Default for ClientOptions {
             user_agent: USER_AGENT.to_string(),
             session_duration: SESSION_DURATION,
             language: LANGUAGE.to_string(),
+            max_sessions: DEFAULT_MAX_SESSIONS,
         }
     }
 }

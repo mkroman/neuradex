@@ -19,6 +19,9 @@ const LISTEN_ADDR_ENV: &str = "LISTEN_ADDR";
 /// The environment variable holding the `User-Agent` header sent with requests.
 const USER_AGENT_ENV: &str = "USER_AGENT";
 
+/// The environment variable holding the maximum number of simultaneous Kagi sessions.
+const KAGI_MAX_SESSIONS_ENV: &str = "KAGI_MAX_SESSIONS";
+
 /// The default listen address.
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:8080";
 
@@ -39,6 +42,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         format!("invalid {LISTEN_ADDR_ENV}: expected a socket address, got {listen_addr:?}")
     })?;
     let user_agent = env::var(USER_AGENT_ENV).unwrap_or_else(|_| DEFAULT_USER_AGENT.to_string());
+    let max_sessions = match env::var(KAGI_MAX_SESSIONS_ENV) {
+        Ok(value) => value.trim().parse().map_err(|_| {
+            format!("invalid {KAGI_MAX_SESSIONS_ENV}: expected a positive integer, got {value:?}")
+        })?,
+        Err(_) => kagi::DEFAULT_MAX_SESSIONS,
+    };
     let kagi_token = env::var(KAGI_TOKEN_ENV)
         .ok()
         .filter(|token| !token.is_empty())
@@ -48,7 +57,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
 
-    let state = AppState::new(&user_agent, SecretString::from(kagi_token), REQUEST_TIMEOUT)?;
+    let state = AppState::new(
+        &user_agent,
+        SecretString::from(kagi_token),
+        REQUEST_TIMEOUT,
+        max_sessions,
+    )?;
 
     Ok(runtime.block_on(http::serve(state, addr))?)
 }

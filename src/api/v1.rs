@@ -70,6 +70,7 @@ impl AppState {
         user_agent: &str,
         kagi_token: SecretString,
         timeout: Duration,
+        max_sessions: usize,
     ) -> Result<Self, BuildError> {
         let default_headers = default_headers(user_agent)?;
 
@@ -82,8 +83,13 @@ impl AppState {
             .timeout(timeout)
             .build()?;
 
-        let kagi_client =
-            kagi::Client::with_token_and_options(kagi_token, kagi::ClientOptions::default())?;
+        let kagi_client = kagi::Client::with_token_and_options(
+            kagi_token,
+            &kagi::ClientOptions {
+                max_sessions,
+                ..kagi::ClientOptions::default()
+            },
+        )?;
 
         Ok(Self {
             client,

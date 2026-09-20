@@ -43,6 +43,9 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
 [lints.clippy]
 # Enable all basic clippy lints
 all = "warn"

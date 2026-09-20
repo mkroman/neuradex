@@ -1,6 +1,8 @@
 use std::{
-    sync::OnceLock,
-    time::{Duration, Instant},
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
 };
 
 use htmlize::unescape;
@@ -14,10 +16,16 @@ use scraper::{ElementRef, Html, Node, Selector};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as AsyncMutex, Notify};
+use tokio::time::Instant;
 use tracing::{debug, error};
 
 use super::{BASE_URL, ClientOptions, Error, ImageResult, SearchResult};
+
+/// The base duration of the exponential backoff between session fetch retries.
+const BACKOFF_BASE: Duration = Duration::from_millis(500);
+/// The upper bound of the exponential backoff between session fetch retries.
+const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 /// The `Accept` header sent for document (navigation) requests.
 const ACCEPT_DOCUMENT: HeaderValue =
@@ -63,20 +71,6 @@ struct Session {
     created_at: Instant,
 }
 
-/// Client for searching with Kagi.
-pub struct Client {
-    /// HTTP client with a cookie jar.
-    http: reqwest::Client,
-    /// Kagi login token.
-    token: SecretString,
-    /// Session details.
-    session: RwLock<Option<Session>>,
-    /// The duration of a single session.
-    session_duration: Duration,
-    /// The `Accept-Language` header sent with requests.
-    language: HeaderValue,
-}
-
 impl Session {
     fn is_valid(&self, session_duration: Duration) -> bool {
         self.created_at.elapsed() < session_duration
@@ -89,6 +83,146 @@ impl Session {
     }
 }
 
+/// A single persistent session slot.
+///
+/// A slot is either checked out — used by exactly one request, which may be fetching a fresh
+/// session for it — or parked with an idle session. Each slot carries its own HTTP client with
+/// a private cookie jar, so concurrent sessions do not overwrite each other's cookies, and its
+/// own retry bookkeeping: after a failed fetch the slot backs off exponentially before the
+/// next fetch attempt.
+struct Slot {
+    /// The mutable state of the slot. Guarded by a synchronous lock that is never held across
+    /// an await point.
+    inner: Mutex<SlotInner>,
+    /// The HTTP client used for this session's requests, with a private cookie jar.
+    http: reqwest::Client,
+}
+
+/// The guarded state of a [`Slot`].
+struct SlotInner {
+    /// The parked session, or `None` while the slot is checked out or has not been
+    /// established yet.
+    session: Option<Session>,
+    /// Whether the slot is currently checked out by a request.
+    busy: bool,
+    /// The number of consecutive failed session fetches since the last success.
+    failures: u32,
+    /// The earliest instant at which the next session fetch may be attempted.
+    next_retry: Option<Instant>,
+}
+
+impl SlotInner {
+    /// Marks the slot checked out and returns the parked session.
+    fn check_out(&mut self) -> Option<Session> {
+        debug_assert!(!self.busy, "checked out an already busy slot");
+        self.busy = true;
+        self.session.take()
+    }
+}
+
+/// What kind of slot a check-out is looking for, in preference order: a parked session that is
+/// still valid, one that has expired, or an empty slot to establish a session on.
+#[derive(Clone, Copy)]
+enum SlotKind {
+    /// A parked session that is still valid.
+    Valid,
+    /// A parked session that has expired and needs a refresh.
+    Expired,
+    /// A slot without a session, waiting to be established.
+    Empty,
+}
+
+impl SlotKind {
+    fn matches(self, inner: &SlotInner, session_duration: Duration) -> bool {
+        match self {
+            SlotKind::Valid => inner
+                .session
+                .as_ref()
+                .is_some_and(|session| session.is_valid(session_duration)),
+            SlotKind::Expired => inner
+                .session
+                .as_ref()
+                .is_some_and(|session| !session.is_valid(session_duration)),
+            SlotKind::Empty => inner.session.is_none(),
+        }
+    }
+}
+
+/// A checked-out session slot, restored to the pool on drop.
+///
+/// Dropping the lease — including when the caller's future is cancelled at an await point —
+/// parks the session back in its slot and wakes a request waiting for a session to free up.
+struct SessionLease {
+    /// The slot the session was checked out from.
+    slot: Arc<Slot>,
+    /// The checked-out session, parked again on drop.
+    session: Option<Session>,
+    /// Wakes requests waiting for a session to be checked back in.
+    check_in: Arc<Notify>,
+}
+
+impl SessionLease {
+    /// Returns the session's HTTP client, which carries this session's cookie jar.
+    fn http(&self) -> &reqwest::Client {
+        &self.slot.http
+    }
+
+    /// Returns the session's nonce, if it had one.
+    fn take_nonce(&mut self) -> Option<String> {
+        self.session.as_mut().and_then(Session::take_nonce)
+    }
+}
+
+impl Drop for SessionLease {
+    fn drop(&mut self) {
+        {
+            let mut inner = self.slot.inner.lock().unwrap();
+            inner.busy = false;
+            inner.session = self.session.take();
+        }
+
+        self.check_in.notify_one();
+    }
+}
+
+/// Produces the nonce for a fresh session with the given HTTP client.
+///
+/// The production implementation performs the session-cookie and nonce requests; tests supply
+/// a mock. The future borrows the session's HTTP client so that its requests land in the
+/// session's cookie jar.
+type SessionFetchFuture<'a> = Pin<Box<dyn Future<Output = Result<String, Error>> + Send + 'a>>;
+type SessionFetcher = dyn for<'a> Fn(&'a reqwest::Client) -> SessionFetchFuture<'a> + Send + Sync;
+
+/// Client for searching with Kagi.
+///
+/// The client keeps a pool of up to [`ClientOptions::max_sessions`] persistent sessions. Each
+/// in-flight search uses its own session; an inrush of requests grows the pool by establishing
+/// sessions one at a time, and requests beyond the pool capacity wait for a session to free
+/// up. Sessions expire independently and are refreshed with a new nonce after their own
+/// duration.
+pub struct Client {
+    /// Kagi login token.
+    token: Arc<SecretString>,
+    /// The `Accept-Language` header sent with requests.
+    language: HeaderValue,
+    /// The maximum number of simultaneous sessions.
+    max_sessions: usize,
+    /// The duration of a single session.
+    session_duration: Duration,
+    /// The duration before an HTTP request times out; used to build per-session clients.
+    timeout: Duration,
+    /// The `User-Agent` used to build per-session clients.
+    user_agent: HeaderValue,
+    /// The session slots, bounded by [`Client::max_sessions`].
+    slots: Mutex<Vec<Arc<Slot>>>,
+    /// Serializes session-creation fetches so that sessions are established one at a time.
+    creation: AsyncMutex<()>,
+    /// Wakes requests waiting for a session to be checked back in.
+    check_in: Arc<Notify>,
+    /// Produces the nonce for a fresh session.
+    fetch: Box<SessionFetcher>,
+}
+
 impl Client {
     /// Constructs a new [`Client`] for searching with Kagi using the given session token and
     /// default options.
@@ -99,7 +233,7 @@ impl Client {
     ///
     /// Panics if the HTTP client fails to build.
     pub fn with_token(token: impl Into<SecretString>) -> Client {
-        Self::with_token_and_options(token, ClientOptions::default())
+        Self::with_token_and_options(token, &ClientOptions::default())
             .expect("could not build http client")
     }
 
@@ -117,138 +251,282 @@ impl Client {
     /// Returns [`Error::InvalidHeader`] if a configured header value is invalid.
     pub fn with_token_and_options(
         token: impl Into<SecretString>,
-        options: ClientOptions,
+        options: &ClientOptions,
     ) -> Result<Client, Error> {
-        let client = reqwest::ClientBuilder::new()
-            .cookie_store(true)
-            .redirect(Policy::none())
-            .timeout(options.timeout)
-            .user_agent(options.user_agent)
-            .build()
-            .map_err(Error::BuildClient)?;
+        let token = Arc::new(token.into());
+        let language = HeaderValue::from_str(&options.language)?;
 
+        let fetch: Box<SessionFetcher> = {
+            let token = Arc::clone(&token);
+
+            Box::new(move |http: &reqwest::Client| -> SessionFetchFuture<'_> {
+                let token = Arc::clone(&token);
+                let language = language.clone();
+
+                Box::pin(async move { http_fetch_session(http, &token, &language).await })
+            })
+        };
+
+        Self::assemble(token, options, fetch)
+    }
+
+    /// Assembles a client from its parts. Split out so tests can supply their own fetcher.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidHeader`] if a configured header value is invalid.
+    fn assemble(
+        token: Arc<SecretString>,
+        options: &ClientOptions,
+        fetch: Box<SessionFetcher>,
+    ) -> Result<Client, Error> {
         Ok(Client {
-            http: client,
-            token: token.into(),
-            session: RwLock::new(None),
-            session_duration: options.session_duration,
+            token,
             language: HeaderValue::from_str(&options.language)?,
+            max_sessions: options.max_sessions.max(1),
+            session_duration: options.session_duration,
+            timeout: options.timeout,
+            user_agent: HeaderValue::from_str(&options.user_agent)?,
+            slots: Mutex::new(Vec::new()),
+            creation: AsyncMutex::new(()),
+            check_in: Arc::new(Notify::new()),
+            fetch,
         })
     }
 
-    /// Attaches the session authorization header to the request, mirroring the browser which
-    /// sends it with every request.
-    fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        request.header("X-Kagi-Authorization", self.token.expose_secret())
-    }
-
-    /// Builds a request shaped like a browser document navigation.
-    fn document_request(&self, url: &str) -> reqwest::RequestBuilder {
-        self.authorize(self.http.get(url))
-            .header(ACCEPT, ACCEPT_DOCUMENT)
-            .header(ACCEPT_LANGUAGE, self.language.clone())
-            .header("Sec-Fetch-Dest", HeaderValue::from_static("document"))
-            .header("Sec-Fetch-Mode", HeaderValue::from_static("navigate"))
-            .header("Sec-Fetch-Site", HeaderValue::from_static("none"))
-            .header("Sec-Fetch-User", HeaderValue::from_static("?1"))
-            .header(UPGRADE_INSECURE_REQUESTS, HeaderValue::from_static("1"))
-    }
-
-    /// Builds a request shaped like a browser `EventSource` connection.
-    fn stream_request(&self, url: reqwest::Url) -> reqwest::RequestBuilder {
-        self.authorize(self.http.get(url))
-            .header(ACCEPT, ACCEPT_EVENT_STREAM)
-            .header(ACCEPT_LANGUAGE, self.language.clone())
-            .header("Sec-Fetch-Dest", HeaderValue::from_static("empty"))
-            .header("Sec-Fetch-Mode", HeaderValue::from_static("cors"))
-            .header("Sec-Fetch-Site", HeaderValue::from_static("same-origin"))
-            .header(PRAGMA, HeaderValue::from_static("no-cache"))
-            .header(CACHE_CONTROL, HeaderValue::from_static("no-cache"))
-            .header("Priority", HeaderValue::from_static("u=4"))
-    }
-
-    async fn fetch_new_session_data(&self) -> Result<String, Error> {
-        // Issue a request with the login token to receive session cookies. The token is part of
-        // the query string, so the request is intentionally not logged here.
-        let token_url = url_with_query("/search", &[("token", self.token.expose_secret())]);
-        let req = self.document_request(token_url.as_str());
-        debug!("requesting session cookies");
-
-        let res = req.send().await.map_err(Error::RequestSession)?;
-        if !res.headers().contains_key(SET_COOKIE) {
-            error!("the response does not include set-cookie headers!");
-            return Err(Error::SessionCookies);
-        }
-
-        // Request the main page to receive a nonce for the first stream request.
-        debug!("requesting nonce");
-        let req = self.document_request(BASE_URL);
-        let res = req.send().await.map_err(Error::RequestNonce)?;
-        let body = res.text().await.map_err(Error::ReadNonce)?;
-
-        extract_nonce(&body).ok_or(Error::Nonce)
-    }
-
-    /// Returns the nonce to include with the next stream request, refreshing the session if
-    /// necessary.
+    /// Produces a fresh session: checks a slot out of the pool and returns a lease holding the
+    /// session with its nonce, establishing or refreshing the session if necessary.
     ///
-    /// The nonce is only returned once per session, mirroring a browser which sends the page's
-    /// `sse_nonce` on its initial connection only.
-    // `Option::map_or_else` is not viable here: the `None` arm has to store the refreshed
-    // session back into the guard.
-    #[allow(clippy::option_if_let_else)]
-    async fn take_nonce(&self) -> Result<Option<String>, Error> {
-        {
-            let mut guard = self.session.write().await;
-
-            if let Some(session) = guard
-                .as_mut()
-                .filter(|session| session.is_valid(self.session_duration))
-            {
-                return Ok(session.take_nonce());
+    /// A checked-out session is used by exactly one request at a time, so there is never more
+    /// than one request fetching for a session. Idle sessions are preferred over new ones: a
+    /// valid session is used as-is, an expired session is refreshed in place, and only when no
+    /// session is parked does the pool grow — one session at a time, bounded by
+    /// [`Client::max_sessions`] — after which further requests wait for a session to be
+    /// checked back in.
+    ///
+    /// A failed fetch backs off exponentially for the slot before the next attempt; the
+    /// waiting request holds the slot checked out while backing off. None of the waiting has
+    /// a deadline: a request stays pending for as long as its caller does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the session could not be established or refreshed.
+    async fn acquire(&self) -> Result<SessionLease, Error> {
+        loop {
+            // An idle, valid session is used without any fetch.
+            if let Some((slot, Some(session))) = self.try_check_out(SlotKind::Valid) {
+                return Ok(self.lease(slot, Some(session)));
             }
+
+            // An idle, expired session is refreshed in place. Refreshes of distinct sessions
+            // are independent and are not serialized by the creation gate.
+            if let Some((slot, expired)) = self.try_check_out(SlotKind::Expired) {
+                let mut lease = self.lease(slot, expired);
+                let session = self.refresh(&lease.slot).await?;
+                lease.session = Some(session);
+
+                return Ok(lease);
+            }
+
+            // No parked session: establish one, either on an idle empty slot or, if the pool
+            // has room, on a new slot. Both hold the creation gate across the fetch, so that
+            // sessions are created one at a time. While queued on the gate, a session may
+            // have been checked back in — re-scan before growing the pool.
+            let slot = match self.try_check_out(SlotKind::Empty) {
+                Some((slot, _ /* none parked */)) => Some(slot),
+                None if self.slot_count() < self.max_sessions => {
+                    // Growing the pool needs the gate; while queued, a session may have
+                    // been checked back in — re-scan before adding a slot.
+                    let gate = self.creation.lock().await;
+
+                    if self.has_idle() || self.slot_count() >= self.max_sessions {
+                        drop(gate);
+                        continue;
+                    }
+
+                    let slot = self.add_slot()?;
+                    drop(gate);
+
+                    Some(slot)
+                }
+                None => None,
+            };
+
+            let Some(slot) = slot else {
+                // The pool is at capacity with every slot checked out: wait for a check-in.
+                self.check_in.notified().await;
+                continue;
+            };
+
+            let mut lease = self.lease(slot, None);
+            let session = self.establish(&lease.slot).await?;
+            lease.session = Some(session);
+
+            return Ok(lease);
         }
+    }
 
-        debug!("session expired or missing, refreshing...");
-        let nonce = self.fetch_new_session_data().await?;
+    /// Wraps a checked-out slot and session into a lease.
+    fn lease(&self, slot: Arc<Slot>, session: Option<Session>) -> SessionLease {
+        SessionLease {
+            slot,
+            session,
+            check_in: Arc::clone(&self.check_in),
+        }
+    }
 
-        // Double check and use the current session if it was refreshed while we were fetching
-        // the new one.
-        let taken = {
-            let mut guard = self.session.write().await;
+    /// Checks out the first parked slot matching `kind`, returning it with its session.
+    fn try_check_out(&self, kind: SlotKind) -> Option<(Arc<Slot>, Option<Session>)> {
+        let slots = self.slots.lock().unwrap();
 
-            if let Some(session) = guard
-                .as_mut()
-                .filter(|session| session.is_valid(self.session_duration))
-            {
-                session.take_nonce()
-            } else {
-                let mut session = Session {
+        slots.iter().find_map(|slot| {
+            let mut inner = slot.inner.lock().unwrap();
+
+            if inner.busy || !kind.matches(&inner, self.session_duration) {
+                return None;
+            }
+
+            let session = inner.check_out();
+            drop(inner);
+
+            Some((Arc::clone(slot), session))
+        })
+    }
+
+    /// Returns whether any slot is parked, of any kind.
+    fn has_idle(&self) -> bool {
+        let slots = self.slots.lock().unwrap();
+
+        slots.iter().any(|slot| {
+            let inner = slot.inner.lock().unwrap();
+            !inner.busy
+        })
+    }
+
+    /// Returns the number of slots in the pool.
+    fn slot_count(&self) -> usize {
+        self.slots.lock().unwrap().len()
+    }
+
+    /// Adds a new, empty slot to the pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the session's HTTP client fails to build.
+    fn add_slot(&self) -> Result<Arc<Slot>, Error> {
+        let http = reqwest::ClientBuilder::new()
+            .cookie_store(true)
+            .redirect(Policy::none())
+            .timeout(self.timeout)
+            .user_agent(self.user_agent.clone())
+            .build()
+            .map_err(Error::BuildClient)?;
+
+        let slot = Arc::new(Slot {
+            inner: Mutex::new(SlotInner {
+                session: None,
+                // The slot is born checked out: the caller establishes its session.
+                busy: true,
+                failures: 0,
+                next_retry: None,
+            }),
+            http,
+        });
+
+        self.slots.lock().unwrap().push(Arc::clone(&slot));
+
+        Ok(slot)
+    }
+
+    /// Waits out the slot's remaining backoff, if one is scheduled.
+    async fn wait_backoff(&self, slot: &Slot) {
+        let next_retry = slot.inner.lock().unwrap().next_retry;
+
+        if let Some(next_retry) = next_retry
+            && next_retry > Instant::now()
+        {
+            tokio::time::sleep_until(next_retry).await;
+        }
+    }
+
+    /// Records a failed fetch on the slot: its backoff doubles, bounded.
+    fn record_failure(slot: &Slot) {
+        let mut inner = slot.inner.lock().unwrap();
+        inner.failures = inner.failures.saturating_add(1);
+
+        let backoff = backoff_after_failures(inner.failures);
+        debug!(
+            failures = inner.failures,
+            ?backoff,
+            "backing off session fetch"
+        );
+        inner.next_retry = Some(Instant::now() + backoff);
+    }
+
+    /// Fetches a fresh session for the given checked-out slot.
+    async fn fetch_session(&self, slot: &Slot) -> Result<Session, Error> {
+        match (self.fetch)(&slot.http).await {
+            Ok(nonce) => {
+                {
+                    let mut inner = slot.inner.lock().unwrap();
+                    inner.failures = 0;
+                    inner.next_retry = None;
+                }
+
+                Ok(Session {
                     nonce: Some(nonce),
                     created_at: Instant::now(),
-                };
-                let taken = session.take_nonce();
-                *guard = Some(session);
-
-                taken
+                })
             }
-        };
+            Err(error) => {
+                Self::record_failure(slot);
+                Err(error)
+            }
+        }
+    }
 
-        Ok(taken)
+    /// Refreshes the given expired, checked-out slot in place.
+    ///
+    /// Refreshes of distinct sessions are independent: this does not hold the creation gate.
+    /// The slot's backoff is waited out first.
+    async fn refresh(&self, slot: &Slot) -> Result<Session, Error> {
+        self.wait_backoff(slot).await;
+        self.fetch_session(slot).await
+    }
+
+    /// Establishes a session for the given empty, checked-out slot.
+    ///
+    /// The creation gate is held across the fetch, so at most one creation fetch runs at any
+    /// moment. The slot's backoff is waited out before the gate is taken, so retry waits
+    /// never block other creations.
+    async fn establish(&self, slot: &Slot) -> Result<Session, Error> {
+        self.wait_backoff(slot).await;
+
+        let gate = self.creation.lock().await;
+        let session = self.fetch_session(slot).await;
+        drop(gate);
+
+        session
     }
 
     /// Connects to one of the socket stream endpoints (`search` or `images`) and returns the
     /// messages parsed from the response.
+    ///
+    /// The session is checked out for the duration of the stream request and returned
+    /// afterwards — or immediately, if the caller's future is dropped mid-request.
     ///
     /// # Errors
     ///
     /// Returns an [`Error`] if a session could not be established, the stream request could not
     /// be sent, or the response could not be read.
     async fn stream(&self, endpoint: &str, query: &str) -> Result<Vec<KagiMessage>, Error> {
-        let nonce = self.take_nonce().await?;
+        let mut lease = self.acquire().await?;
+        let nonce = lease.take_nonce();
+
         let url = url_with_query(&format!("/socket/{endpoint}"), &[("q", query)]);
         let referer = url_with_query(&format!("/{endpoint}"), &[("q", query)]);
-        let req = self.stream_request(url).header(REFERER, referer.as_str());
+        let req = stream_request(lease.http(), &self.token, &self.language, url)
+            .header(REFERER, referer.as_str());
         let req = if let Some(nonce) = nonce {
             req.query(&[("nonce", nonce)])
         } else {
@@ -286,6 +564,88 @@ impl Client {
 
         Ok(parse_image_result_messages(&messages))
     }
+}
+
+/// Fetches a fresh session with the given session HTTP client: issues a request with the login
+/// token to receive the session cookies — the token is part of the query string, so the
+/// request is intentionally not logged — and then requests the main page to extract the nonce
+/// for the session's first stream request.
+async fn http_fetch_session(
+    http: &reqwest::Client,
+    token: &SecretString,
+    language: &HeaderValue,
+) -> Result<String, Error> {
+    let token_url = url_with_query("/search", &[("token", token.expose_secret())]);
+    debug!("requesting session cookies");
+
+    let res = document_request(http, token, language, token_url.as_str())
+        .send()
+        .await
+        .map_err(Error::RequestSession)?;
+    if !res.headers().contains_key(SET_COOKIE) {
+        error!("the response does not include set-cookie headers!");
+        return Err(Error::SessionCookies);
+    }
+
+    debug!("requesting nonce");
+    let res = document_request(http, token, language, BASE_URL)
+        .send()
+        .await
+        .map_err(Error::RequestNonce)?;
+    let body = res.text().await.map_err(Error::ReadNonce)?;
+
+    extract_nonce(&body).ok_or(Error::Nonce)
+}
+
+/// Attaches the session authorization header to the request, mirroring the browser which
+/// sends it with every request.
+fn authorize(request: reqwest::RequestBuilder, token: &SecretString) -> reqwest::RequestBuilder {
+    request.header("X-Kagi-Authorization", token.expose_secret())
+}
+
+/// Builds a request shaped like a browser document navigation.
+fn document_request(
+    http: &reqwest::Client,
+    token: &SecretString,
+    language: &HeaderValue,
+    url: &str,
+) -> reqwest::RequestBuilder {
+    authorize(http.get(url), token)
+        .header(ACCEPT, ACCEPT_DOCUMENT)
+        .header(ACCEPT_LANGUAGE, language.clone())
+        .header("Sec-Fetch-Dest", HeaderValue::from_static("document"))
+        .header("Sec-Fetch-Mode", HeaderValue::from_static("navigate"))
+        .header("Sec-Fetch-Site", HeaderValue::from_static("none"))
+        .header("Sec-Fetch-User", HeaderValue::from_static("?1"))
+        .header(UPGRADE_INSECURE_REQUESTS, HeaderValue::from_static("1"))
+}
+
+/// Builds a request shaped like a browser `EventSource` connection.
+fn stream_request(
+    http: &reqwest::Client,
+    token: &SecretString,
+    language: &HeaderValue,
+    url: reqwest::Url,
+) -> reqwest::RequestBuilder {
+    authorize(http.get(url), token)
+        .header(ACCEPT, ACCEPT_EVENT_STREAM)
+        .header(ACCEPT_LANGUAGE, language.clone())
+        .header("Sec-Fetch-Dest", HeaderValue::from_static("empty"))
+        .header("Sec-Fetch-Mode", HeaderValue::from_static("cors"))
+        .header("Sec-Fetch-Site", HeaderValue::from_static("same-origin"))
+        .header(PRAGMA, HeaderValue::from_static("no-cache"))
+        .header(CACHE_CONTROL, HeaderValue::from_static("no-cache"))
+        .header("Priority", HeaderValue::from_static("u=4"))
+}
+
+/// Returns the backoff duration after the given number of consecutive failed fetches:
+/// exponential from [`BACKOFF_BASE`], doubling per failure and bounded by [`BACKOFF_MAX`].
+fn backoff_after_failures(failures: u32) -> Duration {
+    let exponent = failures.saturating_sub(1).min(16);
+
+    BACKOFF_BASE
+        .checked_mul(1 << exponent)
+        .map_or(BACKOFF_MAX, |backoff| backoff.min(BACKOFF_MAX))
 }
 
 /// Builds a Kagi URL with the given query parameters, percent-encoding as needed.
@@ -558,9 +918,98 @@ fn extract_topmost_text(elem: &'_ ElementRef<'_>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{
+        path::PathBuf,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use super::*;
+
+    /// A session fetcher that fails its first `failures` calls, optionally sleeps, and tracks
+    /// the number of concurrent in-flight fetches.
+    struct MockFetch {
+        calls: AtomicUsize,
+        in_flight: AtomicUsize,
+        max_in_flight: AtomicUsize,
+        failures: AtomicUsize,
+        delay: Option<Duration>,
+    }
+
+    impl MockFetch {
+        fn new(failures: u32, delay: Option<Duration>) -> Arc<Self> {
+            Arc::new(Self {
+                calls: AtomicUsize::new(0),
+                in_flight: AtomicUsize::new(0),
+                max_in_flight: AtomicUsize::new(0),
+                failures: AtomicUsize::new(failures as usize),
+                delay,
+            })
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::Relaxed)
+        }
+
+        fn max_in_flight(&self) -> usize {
+            self.max_in_flight.load(Ordering::Relaxed)
+        }
+
+        async fn hit(&self) -> Result<String, Error> {
+            let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
+
+            if call <= self.failures.load(Ordering::Relaxed) {
+                return Err(Error::Nonce);
+            }
+
+            let in_flight = self.in_flight.fetch_add(1, Ordering::AcqRel) + 1;
+            self.max_in_flight.fetch_max(in_flight, Ordering::AcqRel);
+
+            if let Some(delay) = self.delay {
+                tokio::time::sleep(delay).await;
+            }
+
+            self.in_flight.fetch_sub(1, Ordering::AcqRel);
+
+            Ok(format!("nonce-{call}"))
+        }
+    }
+
+    /// Builds a client whose session fetch is the given mock.
+    fn client_with(
+        token: &str,
+        max_sessions: usize,
+        session_duration: Duration,
+        fetch: Arc<MockFetch>,
+    ) -> Client {
+        let fetcher: Box<SessionFetcher> = Box::new(move |_http: &reqwest::Client| {
+            let mock = Arc::clone(&fetch);
+
+            Box::pin(async move { mock.hit().await })
+        });
+
+        let options = ClientOptions {
+            session_duration,
+            max_sessions,
+            ..ClientOptions::default()
+        };
+
+        Client::assemble(
+            Arc::new(SecretString::from(token.to_owned())),
+            &options,
+            fetcher,
+        )
+        .expect("client options are valid")
+    }
+
+    /// Acquires a session, holds it for the given duration as if streaming a search, and
+    /// releases it.
+    async fn exercise(client: &Client, hold: Duration) -> Result<(), Error> {
+        let lease = client.acquire().await?;
+        tokio::time::sleep(hold).await;
+        drop(lease);
+
+        Ok(())
+    }
 
     fn read_fixture(name: &str) -> String {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -569,6 +1018,195 @@ mod tests {
 
         String::from_utf8(std::fs::read(path).expect("could not read fixture"))
             .expect("fixture is not valid UTF-8")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn inrush_establishes_sessions_one_at_a_time() {
+        let mock = MockFetch::new(0, Some(Duration::from_millis(5)));
+        let client = client_with("token", 2, Duration::from_secs(60), Arc::clone(&mock));
+
+        let hold = Duration::from_millis(5);
+        let (a, b, c, d) = tokio::join!(
+            exercise(&client, hold),
+            exercise(&client, hold),
+            exercise(&client, hold),
+            exercise(&client, hold),
+        );
+
+        a.expect("first search succeeds");
+        b.expect("second search succeeds");
+        c.expect("third search succeeds");
+        d.expect("fourth search succeeds");
+
+        // The inrush of four requests grows the pool to its capacity of two, one session at
+        // a time: exactly two fetches, never more than one in flight.
+        assert_eq!(mock.calls(), 2);
+        assert_eq!(mock.max_in_flight(), 1);
+        assert_eq!(client.slot_count(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sequential_requests_reuse_the_session() {
+        let mock = MockFetch::new(0, Some(Duration::from_millis(5)));
+        let client = client_with("token", 2, Duration::from_secs(60), Arc::clone(&mock));
+
+        let hold = Duration::from_millis(1);
+        exercise(&client, hold)
+            .await
+            .expect("first search succeeds");
+        exercise(&client, hold)
+            .await
+            .expect("second search succeeds");
+        exercise(&client, hold)
+            .await
+            .expect("third search succeeds");
+
+        // The session from the first request is still valid, so no further fetches happen.
+        assert_eq!(mock.calls(), 1);
+        assert_eq!(client.slot_count(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn request_beyond_capacity_waits_for_a_session() {
+        let mock = MockFetch::new(0, Some(Duration::from_millis(5)));
+        let client = client_with("token", 1, Duration::from_secs(60), Arc::clone(&mock));
+
+        let hold = Duration::from_millis(20);
+        let (a, b) = tokio::join!(exercise(&client, hold), exercise(&client, hold));
+
+        a.expect("first search succeeds");
+        b.expect("second search succeeds");
+
+        // The second request waits for the first to release the session and reuses it.
+        assert_eq!(mock.calls(), 1);
+        assert_eq!(client.slot_count(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_session_is_refreshed_with_a_new_nonce() {
+        let mock = MockFetch::new(0, Some(Duration::from_millis(1)));
+        let client = client_with("token", 1, Duration::from_millis(30), Arc::clone(&mock));
+
+        exercise(&client, Duration::from_millis(1))
+            .await
+            .expect("first search succeeds");
+        assert_eq!(mock.calls(), 1);
+
+        // Outlive the session duration: the next request refreshes the session.
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        exercise(&client, Duration::from_millis(1))
+            .await
+            .expect("second search succeeds");
+
+        assert_eq!(mock.calls(), 2);
+        assert_eq!(client.slot_count(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn concurrent_refreshes_are_single_flight() {
+        let mock = MockFetch::new(0, Some(Duration::from_millis(5)));
+        let client = client_with("token", 1, Duration::from_millis(30), Arc::clone(&mock));
+
+        exercise(&client, Duration::from_millis(1))
+            .await
+            .expect("first search succeeds");
+        tokio::time::sleep(Duration::from_millis(40)).await;
+
+        let hold = Duration::from_millis(10);
+        let (a, b) = tokio::join!(exercise(&client, hold), exercise(&client, hold));
+
+        a.expect("first search succeeds");
+        b.expect("second search succeeds");
+
+        // Both requests race on the one expired session: it is refreshed exactly once, with
+        // no more than one fetch in flight; the other request waits and reuses the result.
+        assert_eq!(mock.calls(), 2);
+        assert_eq!(mock.max_in_flight(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_fetch_backs_off_exponentially() {
+        let mock = MockFetch::new(2, Some(Duration::from_millis(1)));
+        let client = client_with("token", 1, Duration::from_secs(60), Arc::clone(&mock));
+
+        let first = client.acquire().await;
+        assert!(matches!(first, Err(Error::Nonce)), "first fetch fails");
+
+        // The second attempt waits out the first backoff (500 ms) and fails again.
+        let second = client.acquire().await;
+        assert!(matches!(second, Err(Error::Nonce)), "second fetch fails");
+
+        // The third attempt waits out the doubled backoff (1s) and succeeds.
+        let third = client.acquire().await;
+        assert!(third.is_ok(), "third fetch succeeds");
+
+        assert_eq!(mock.calls(), 3);
+        assert_eq!(client.slot_count(), 1);
+
+        // The success resets the backoff.
+        let inner = client.slots.lock().unwrap();
+        assert_eq!(inner.first().unwrap().inner.lock().unwrap().failures, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_establishment_does_not_grow_the_pool() {
+        let mock = MockFetch::new(1, Some(Duration::from_millis(1)));
+        let client = client_with("token", 2, Duration::from_secs(60), Arc::clone(&mock));
+
+        let first = client.acquire().await;
+        assert!(matches!(first, Err(Error::Nonce)), "first fetch fails");
+        assert_eq!(client.slot_count(), 1, "the empty slot absorbs the retry");
+
+        exercise(&client, Duration::from_millis(1))
+            .await
+            .expect("retry succeeds on the same slot");
+
+        assert_eq!(mock.calls(), 2);
+        assert_eq!(client.slot_count(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_caller_releases_the_session() {
+        let mock = MockFetch::new(0, Some(Duration::from_millis(1)));
+        let client = Arc::new(client_with(
+            "token",
+            1,
+            Duration::from_secs(60),
+            Arc::clone(&mock),
+        ));
+
+        let task = tokio::spawn({
+            let client = Arc::clone(&client);
+
+            async move {
+                let lease = client.acquire().await.expect("session is established");
+                // The lease is dropped when the task is cancelled at this await point.
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                drop(lease);
+            }
+        });
+
+        // Let the task establish the session and park on its hold.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert_eq!(mock.calls(), 1);
+
+        task.abort();
+
+        // The cancelled task released the session: the next request reuses it immediately.
+        exercise(&client, Duration::from_millis(1))
+            .await
+            .expect("second search succeeds");
+        assert_eq!(mock.calls(), 1, "the released session is reused");
+    }
+
+    #[test]
+    fn backoff_doubles_and_is_bounded() {
+        assert_eq!(backoff_after_failures(1), Duration::from_millis(500));
+        assert_eq!(backoff_after_failures(2), Duration::from_secs(1));
+        assert_eq!(backoff_after_failures(3), Duration::from_secs(2));
+        assert_eq!(backoff_after_failures(5), Duration::from_secs(8));
+        assert_eq!(backoff_after_failures(7), BACKOFF_MAX);
+        assert_eq!(backoff_after_failures(100), BACKOFF_MAX);
     }
 
     #[test]
@@ -691,7 +1329,7 @@ mod tests {
         };
 
         assert!(matches!(
-            Client::with_token_and_options("token", options),
+            Client::with_token_and_options("token", &options),
             Err(Error::InvalidHeader(_))
         ));
     }

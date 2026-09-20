@@ -47,8 +47,10 @@ impl From<kagi::SearchResult> for SearchResult {
 /// Handles `GET /v1/search`.
 ///
 /// Searches are queued: at most [`MAX_CONCURRENT_SEARCHES`] run at once, and the request blocks
-/// here until a slot and the results are ready. The optional `timeout` covers both the queue
-/// wait and the search itself.
+/// here until a slot and the results are ready — including while the Kagi client establishes
+/// or refreshes a session for the search. The optional `timeout` covers the whole of it: the
+/// queue wait, the session wait, and the search itself. Without it, the request stays pending
+/// until the client disconnects.
 ///
 /// # Errors
 ///

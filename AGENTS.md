@@ -8,7 +8,7 @@ Small axum 0.8 HTTP service exposing LLM-agent tools as JSON under `/v1`: `fetch
 
 `crates/kagi` is a workspace copy of the `kagi` crate from `https://github.com/mkroman/zeta` (taken from zeta's HEAD at vendor time; the crate's `repository` field still points there). The root package depends on it via `kagi = { path = "crates/kagi", ... }`. To update it, re-copy the crate from a zeta checkout and re-apply the vendoring deltas (see below). Never re-point the dependency back at git+`https://github.com/mkroman/zeta` in this workspace.
 
-Vendoring deltas vs upstream: shared deps (`htmlize`, `regex`, `reqwest`, `scraper`, `secrecy`, `serde`, `serde_json`, `thiserror`, `tokio`, `tracing`) use `workspace = true` and are pinned in the root `[workspace.dependencies]`; the root workspace table owns the tokio feature set (add `features` on top of it in member manifests). The crate is marked `publish = false` (it ships only as a build-time dependency, not to crates.io). Do not move shared helpers between the repos (dependency direction: neuradex → kagi, never the reverse).
+Vendoring deltas vs upstream: shared deps (`htmlize`, `regex`, `reqwest`, `scraper`, `secrecy`, `serde`, `serde_json`, `thiserror`, `tokio`, `tracing`) use `workspace = true` and are pinned in the root `[workspace.dependencies]`; the root workspace table owns the tokio feature set (add `features` on top of it in member manifests). The crate is marked `publish = false` (it ships only as a build-time dependency, not to crates.io). The crate also carries a **local divergence from upstream**: a session pool in `client.rs` (per-request checkout, one-at-a-time establishment gated by `creation`, per-session refresh cycles, and bounded exponential backoff after failed fetches) — a future re-vendor must re-apply it; the pool's behavior is pinned by the client tests. Do not move shared helpers between the repos (dependency direction: neuradex → kagi, never the reverse).
 
 ## Verify
 
@@ -21,7 +21,7 @@ Tests are offline unit tests in inline `#[cfg(test)] mod tests`; nothing touches
 
 ## Running locally
 
-- Requires `KAGI_SESSION_TOKEN` (the binary exits at startup without a non-empty value). Optional: `LISTEN_ADDR` (default `127.0.0.1:8080`), `USER_AGENT`.
+- Requires `KAGI_SESSION_TOKEN` (the binary exits at startup without a non-empty value). Optional: `LISTEN_ADDR` (default `127.0.0.1:8080`), `USER_AGENT`, `KAGI_MAX_SESSIONS` (default `kagi::DEFAULT_MAX_SESSIONS`, 2 — the pool's simultaneous-session cap).
 - `cargo run`.
 - Local builds need `cmake` + `libclang` because wreq compiles BoringSSL (and bindgen needs libclang) — the Dockerfile installs both for this reason.
 
