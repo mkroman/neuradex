@@ -1,3 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["crates/kagi"]
+
+[workspace.dependencies]
+htmlize = { version = "1.1.0", features = ["unescape"] }
+regex = "1.12.2"
+reqwest = { version = "0.13.1", default-features = false, features = ["charset", "http2", "system-proxy", "json", "query"] }
+scraper = "0.27.0"
+secrecy = "0.10.3"
+serde = { version = "1.0.215", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2.0"
+tokio = { version = "1.52.3", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+] }
+tracing = "0.1.41"
+url = "2.5.8"
+
 [package]
 name = "neuradex"
 version = "0.1.0"
@@ -10,21 +31,15 @@ axum = { version = "0.8.9", features = ["json"] }
 axum-extra = { version = "0.12.6", default-features = false, features = ["query"] }
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 html5ever = "0.39.0"
-kagi = { git = "https://github.com/mkroman/zeta", default-features = false, features = ["rustls"] }
-secrecy = "0.10.3"
-serde = { version = "1.0.215", features = ["derive"] }
-serde_json = "1.0.149"
-thiserror = "2.0"
-tokio = { version = "1.52.3", features = [
-    "rt-multi-thread",
-    "macros",
-    "signal",
-    "net",
-    "sync",
-] }
-tracing = "0.1.41"
+kagi = { path = "crates/kagi", default-features = false, features = ["rustls"] }
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["signal", "net"] }
+tracing.workspace = true
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-url = "2.5.8"
+url.workspace = true
 wreq = { version = "0.16.1", default-features = false, features = [
     "tokio-rt",
     "webpki-roots",

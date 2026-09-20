@@ -1,0 +1,72 @@
+[package]
+name = "kagi"
+version = "0.1.0"
+edition = "2024"
+description = "A client and parser for Kagi Search."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mkroman/zeta"
+keywords = ["kagi", "search", "scraper", "api"]
+categories = ["api-bindings", "parser", "text-processing"]
+publish = false
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+default = ["default-tls", "gzip", "brotli", "deflate", "zstd"]
+# The default TLS backend selection (rustls), convenient for `default-features = false`.
+default-tls = ["rustls"]
+# TLS backend using rustls with the bundled aws-lc-rs provider and platform verifier roots.
+rustls = ["reqwest/rustls"]
+# TLS backend provided by the operating system through native-tls.
+native-tls = ["reqwest/native-tls"]
+# Same as `native-tls`, but with a statically vendored OpenSSL.
+native-tls-vendored = ["reqwest/native-tls-vendored"]
+# Decompression of responses compressed with gzip.
+gzip = ["reqwest/gzip"]
+# Decompression of responses compressed with brotli.
+brotli = ["reqwest/brotli"]
+# Decompression of responses compressed with deflate.
+deflate = ["reqwest/deflate"]
+# Decompression of responses compressed with zstd.
+zstd = ["reqwest/zstd"]
+
+[dependencies]
+htmlize.workspace = true
+regex.workspace = true
+reqwest = { workspace = true, features = ["cookies"] }
+scraper.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints.clippy]
+# Enable all basic clippy lints
+all = "warn"
+# Enable pedantic lints for stricter code quality
+pedantic = "warn"
+# Enable experimental/unstable lints that may have false positives
+nursery = "warn"
+# Disable cargo-related lints (often too noisy for dependencies)
+cargo = "allow"
+# Allow for higher complexity since it's not a reliable estimate
+cognitive_complexity = "allow"
+
+[lints.rust]
+# Completely disallow unsafe code - no unsafe blocks, functions, or traits
+unsafe_code = "forbid"
+# Require documentation for public items
+missing_docs = "warn"
+# Enforce modern Rust 2018+ idioms and patterns
+rust_2018_idioms = "warn"
+# Catch unnecessary casts between identical types
+trivial_casts = "warn"
+# Catch unnecessary numeric type casts (e.g. u32 as u32)
+trivial_numeric_casts = "warn"
+# Warn when import braces are used unnecessarily (use foo::{bar} vs use foo::bar)
+unused_import_braces = "warn"
+# Catch redundant path qualifications (self::foo when foo would suffice)
+unused_qualifications = "warn"

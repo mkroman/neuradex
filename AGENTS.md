@@ -2,17 +2,19 @@
 
 ## Overview
 
-Small axum 0.8 HTTP service exposing LLM-agent tools as JSON under `/v1`: `fetch`, `peek` (document-head metadata only), and `search` (via Kagi), plus `GET /healthz` (204). Single Rust crate, edition 2024, no workspace. Ships a Dockerfile + Helm chart (`chart/`) and a kind-based deployment-test workflow (`.github/workflows/deployment-test.yaml`); this file is the only instruction source except `support/opencode/README.md` (see "OpenCode tooling").
+Small axum 0.8 HTTP service exposing LLM-agent tools as JSON under `/v1`: `fetch`, `peek` (document-head metadata only), and `search` (via Kagi), plus `GET /healthz` (204). Cargo workspace (edition 2024): the service is the root package (`neuradex`) and the Kagi client/parser is vendored at `crates/kagi` (copied from the `zeta` repo). Ships a Dockerfile + Helm chart (`chart/`) and a kind-based deployment-test workflow (`.github/workflows/deployment-test.yaml`); this file is the only instruction source except `support/opencode/README.md` (see "OpenCode tooling").
 
-## kagi dependency
+## kagi crate
 
-`Cargo.toml` depends on `kagi = { git = "https://github.com/mkroman/zeta" }` — `kagi` is a workspace member of the `zeta` repo, resolved by name inside that repo (git+`path` combined is rejected by cargo). The lockfile pins the commit; `cargo update -p kagi` bumps it, and `--locked` builds (e.g. the Dockerfile) treat the lockfile as authoritative. Do not move shared helpers between the repos (dependency direction: neuradex → kagi, never the reverse).
+`crates/kagi` is a workspace copy of the `kagi` crate from `https://github.com/mkroman/zeta` (taken from zeta's HEAD at vendor time; the crate's `repository` field still points there). The root package depends on it via `kagi = { path = "crates/kagi", ... }`. To update it, re-copy the crate from a zeta checkout and re-apply the vendoring deltas (see below). Never re-point the dependency back at git+`https://github.com/mkroman/zeta` in this workspace.
+
+Vendoring deltas vs upstream: shared deps (`htmlize`, `regex`, `reqwest`, `scraper`, `secrecy`, `serde`, `serde_json`, `thiserror`, `tokio`, `tracing`) use `workspace = true` and are pinned in the root `[workspace.dependencies]`; the root workspace table owns the tokio feature set (add `features` on top of it in member manifests). The crate is marked `publish = false` (it ships only as a build-time dependency, not to crates.io). Do not move shared helpers between the repos (dependency direction: neuradex → kagi, never the reverse).
 
 ## Verify
 
 - `cargo fmt --check` — rustfmt defaults (no `rustfmt.toml`).
-- `cargo clippy --all-targets` — must be warning-free. `all`, `pedantic`, and `nursery` are enabled as `warn` in `[lints]` and are treated as must-fix; `unsafe_code` is forbidden and `missing_docs` requires doc comments on all public items, including `# Errors` sections on `Result`-returning functions.
-- `cargo test` — single test: `cargo test <name>`.
+- `cargo clippy --all-targets --workspace` — must be warning-free across all members. `all`, `pedantic`, and `nursery` are enabled as `warn` in `[lints]` and are treated as must-fix; `unsafe_code` is forbidden and `missing_docs` requires doc comments on all public items, including `# Errors` sections on `Result`-returning functions. The vendored `crates/kagi` carries the same lint set.
+- `cargo test --workspace` — runs the root package plus `crates/kagi` (a root-package workspace defaults to the root package only without `--workspace`; `crates/kagi` has 8 unit tests + 1 doc test that plain `cargo test` would skip). Single test: `cargo test -p neuradex <name>`.
 - Run order: fmt → clippy → test.
 
 Tests are offline unit tests in inline `#[cfg(test)] mod tests`; nothing touches the network or external services.
