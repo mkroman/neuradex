@@ -5,12 +5,11 @@ use std::time::{Duration, Instant};
 
 use axum::Json;
 use axum::extract::State;
-use axum_extra::extract::Query;
 use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::api::v1::error::ApiError;
-use crate::api::v1::extract::SearchQuery;
+use crate::api::v1::extract::{SearchQuery, ValidatedQuery};
 use crate::api::v1::{AppState, redirect};
 use crate::metrics::SearchMetrics;
 
@@ -70,7 +69,7 @@ impl From<kagi::SearchResult> for SearchResult {
 )]
 pub(crate) async fn search(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<SearchQuery>,
+    ValidatedQuery(query): ValidatedQuery<SearchQuery>,
 ) -> Result<Json<SearchResponse>, ApiError> {
     query.validate()?;
 

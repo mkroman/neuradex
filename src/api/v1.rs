@@ -270,4 +270,46 @@ mod tests {
         )
         .await;
     }
+
+    /// Asserts that `response` is the JSON `invalid_param` envelope for a query that failed to
+    /// deserialize, without pinning the parser's exact message.
+    async fn assert_invalid_param(response: Response) {
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json"),
+            "expected the JSON error envelope, not a plain-text rejection",
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let error: Value = serde_json::from_slice(&body).expect("valid json");
+
+        assert_eq!(error["error"]["type"], "invalid_param");
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.starts_with("invalid query parameters: ")),
+            "unexpected message: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn renders_malformed_queries_as_json_errors() {
+        // Each of these fails extraction — an unknown field, a missing required field, and a
+        // non-parseable value — and must render the envelope, not axum's plain-text 400.
+        for path in [
+            "/v1/fetch?nope=1",
+            "/v1/peek?include=redirects",
+            "/v1/search?timeout=abc",
+        ] {
+            let response = send(router_for_test(), "GET", path).await;
+
+            assert_invalid_param(response).await;
+        }
+    }
 }

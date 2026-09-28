@@ -8,12 +8,11 @@ use std::time::Instant;
 
 use axum::Json;
 use axum::extract::State;
-use axum_extra::extract::Query;
 use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::api::v1::error::ApiError;
-use crate::api::v1::extract::{FetchQuery, PEEK_INCLUDES};
+use crate::api::v1::extract::{FetchQuery, PEEK_INCLUDES, ValidatedQuery};
 use crate::api::v1::{AppState, redirect, stream};
 use crate::metadata::PageMetadata;
 use crate::metrics::Metrics;
@@ -50,7 +49,7 @@ pub struct PeekResponse {
 )]
 pub(crate) async fn peek(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<FetchQuery>,
+    ValidatedQuery(query): ValidatedQuery<FetchQuery>,
 ) -> Result<Json<PeekResponse>, ApiError> {
     let url = query.url()?;
     let redirects = query.redirects()?;

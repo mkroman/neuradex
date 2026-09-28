@@ -6,12 +6,11 @@ use std::time::Instant;
 
 use axum::Json;
 use axum::extract::State;
-use axum_extra::extract::Query;
 use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::api::v1::error::ApiError;
-use crate::api::v1::extract::{FETCH_INCLUDES, FetchQuery};
+use crate::api::v1::extract::{FETCH_INCLUDES, FetchQuery, ValidatedQuery};
 use crate::api::v1::{AppState, redirect, stream};
 use crate::metadata::PageMetadata;
 use crate::metrics::Metrics;
@@ -61,7 +60,7 @@ pub struct FetchResponse {
 )]
 pub(crate) async fn fetch(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<FetchQuery>,
+    ValidatedQuery(query): ValidatedQuery<FetchQuery>,
 ) -> Result<Json<FetchResponse>, ApiError> {
     let url = query.url()?;
     let redirects = query.redirects()?;

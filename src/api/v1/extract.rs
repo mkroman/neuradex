@@ -1,12 +1,16 @@
 //! Query parameter parsing shared by the API handlers.
 //!
 //! The wire types are the single source of truth for the query contracts: they deserialize the
-//! request (through [`axum_extra::extract::Query`], which uses `serde_html_form`, so the
-//! `include` parameter may be repeated — `include=redirects&include=headers` — or
-//! comma-separated), document the OpenAPI parameters, and expose the validation each endpoint
-//! applies to its own query.
+//! request (through [`ValidatedQuery`], a thin extractor over [`axum_extra::extract::Query`],
+//! which uses `serde_html_form`, so the `include` parameter may be repeated —
+//! `include=redirects&include=headers` — or comma-separated), document the OpenAPI parameters,
+//! and expose the validation each endpoint applies to its own query.
 
+use axum::extract::FromRequestParts;
+use axum::http::request::Parts;
+use axum_extra::extract::Query;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use url::Url;
 use utoipa::IntoParams;
 
@@ -51,6 +55,33 @@ pub(crate) struct SearchQuery {
     /// The maximum time to wait for the search, in whole seconds.
     #[param(minimum = 1, maximum = 30)]
     pub(crate) timeout: Option<u64>,
+}
+
+/// Extracts the query parameters of an endpoint into its wire type.
+///
+/// A thin wrapper over [`axum_extra::extract::Query`] whose rejection is [`ApiError`], so a
+/// malformed query — an unknown field, a missing or non-parseable parameter — renders the JSON
+/// error envelope instead of axum's plain-text 400 body. Endpoint-specific validation is applied
+/// by the handlers on the extracted value, not here.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ValidatedQuery<T>(pub(crate) T);
+
+impl<S, T> FromRequestParts<S> for ValidatedQuery<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let Query(query) = Query::<T>::from_request_parts(parts, state)
+            .await
+            .map_err(|error| {
+                ApiError::invalid_param(format!("invalid query parameters: {error}"))
+            })?;
+
+        Ok(Self(query))
+    }
 }
 
 /// The optional response sections selected by the `include` parameter.
