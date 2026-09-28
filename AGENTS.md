@@ -2,7 +2,7 @@
 
 ## Overview
 
-Small axum 0.8 HTTP service exposing LLM-agent tools as JSON under `/v1`: `fetch`, `peek` (document-head metadata only), and `search` (via Kagi), plus `GET /healthz` (204). Cargo workspace (edition 2024): the service is the root package (`neuradex`) and the Kagi client/parser is vendored at `crates/kagi` (copied from the `zeta` repo). Ships a Dockerfile + Helm chart (`chart/`) and a kind-based deployment-test workflow (`.github/workflows/deployment-test.yaml`); this file is the only instruction source except `support/opencode/README.md` (see "OpenCode tooling").
+Small axum 0.8 HTTP service exposing LLM-agent tools as JSON under `/v1`: `fetch`, `peek` (document-head metadata only), and `search` (via Kagi), plus `GET /healthz` (204). The OpenAPI document is generated with `utoipa` (6.x) and served at `/openapi.json`, with Swagger UI at `/swagger-ui`; every error response — including router-level 404/405 fallbacks — renders `{"error": {type, message}}`. Cargo workspace (edition 2024): the service is the root package (`neuradex`) and the Kagi client/parser is vendored at `crates/kagi` (copied from the `zeta` repo). Ships a Dockerfile + Helm chart (`chart/`) and a kind-based deployment-test workflow (`.github/workflows/deployment-test.yaml`); this file is the only instruction source except `support/opencode/README.md` (see "OpenCode tooling").
 
 ## kagi crate
 
@@ -31,12 +31,15 @@ Tests are offline unit tests in inline `#[cfg(test)] mod tests`; nothing touches
 - **Tests must exercise the real extraction path** — `Query::try_from_uri` on the actual `FetchQuery`/`SearchQuery` types — not a hand-rolled deserializer call. A mismatch here once shipped a bug where tests passed but production returned 400.
 - **The HTML tokenizer (`html5ever`) is `!Send`.** `HeadParser` runs on `spawn_blocking`, bridged from the async reader via bounded `tokio::sync::mpsc` (async `send` / `blocking_recv`). Never use `std::sync::mpsc` or other blocking sends inside tokio tasks — that pins a worker thread per in-flight request.
 - **Peek aborts the download early**: parsing stops at `</head>` or `<body>`, dropping the channel receiver, which cancels the reader task (hard cap `HEAD_MAX_BYTES`, 2 MiB). Fetch reads the full body up to `FETCH_MAX_BYTES` (25 MiB); both report `truncated: true` only when bytes were actually cut (an exact-fit body is not truncated).
-- Redirects are followed manually (wreq policy `none`) so each hop is counted and reported in metrics; the per-endpoint `include` allow-lists (`FETCH_INCLUDES` vs `PEEK_INCLUDES`) are enforced in the extractors, one `FetchParams`/`PeekParams`/`SearchParams` type per endpoint.
+- **Query wire types are the single source of truth.** `FetchQuery`/`SearchQuery` (in `extract.rs`) deserialize the query (through `axum_extra::extract::Query`), expose the validation the handlers call (`url()`/`redirects()`/`includes()`/`validate()`), and carry the `IntoParams` derive documenting the OpenAPI parameters — there are no separate extractor param structs. Each endpoint validates its own query and owns its `include` allow-list (`FETCH_INCLUDES` vs `PEEK_INCLUDES`).
+- **Every error response uses the envelope.** Router-level `404`/`405` fallbacks render the same `{"error": {type, message}}` body as `ApiError` (via constructors on `ErrorBody`). `ApiError`'s hand-written `IntoResponses` impl documents the four handler-produced statuses (400/415/500/502) and is referenced as `ApiError` from each `#[utoipa::path]`; `ErrorBody` must stay listed in `components(schemas(...))` because manual `IntoResponses` impls are invisible to utoipa's compile-time schema collection.
+- Redirects are followed manually (wreq policy `none`) so each hop is counted and reported in metrics; the per-endpoint `include` allow-lists (`FETCH_INCLUDES` vs `PEEK_INCLUDES`) are enforced in the query validation.
 
 ## Code layout
 
-- `src/main.rs` → `src/http.rs` — binary entry point and `serve` (bind + graceful shutdown on ctrl-c/SIGTERM); `src/api/v1/{fetch,peek,search}.rs` — the three endpoint handlers, wired in `src/api/v1.rs` (`router`, `AppState`, wreq client with `Policy::none()`).
-- `src/api/v1/extract.rs` — query parsing/validation; `src/api/v1/error.rs` — `ApiError`, the single rejection type rendering `{"error": {type, message}}`.
+- `src/main.rs` → `src/http.rs` — binary entry point and `serve` (bind + graceful shutdown on ctrl-c/SIGTERM); `src/api/v1/{fetch,peek,search}.rs` — the three endpoint handlers, annotated with `#[utoipa::path]` and wired in `src/api/v1.rs` (`router` incl. the `SwaggerUi` merge for `/openapi.json` + `/swagger-ui`, the 404/405 JSON fallbacks, `AppState`, wreq client with `Policy::none()`).
+- `src/api/v1/openapi.rs` — the utoipa `ApiDoc` (paths, tags, schemas) behind `/openapi.json`.
+- `src/api/v1/extract.rs` — query wire types (`FetchQuery`/`SearchQuery`), validation, and the `include` allow-lists; `src/api/v1/error.rs` — `ApiError` (the single rejection type) with its `IntoResponses` impl, and `ErrorBody` rendering `{"error": {type, message}}`.
 - `src/api/v1/redirect.rs` — manual redirect loop + `Fetched`; `src/api/v1/stream.rs` — body streaming/truncation/media-type gating, and the async reader → `spawn_blocking` bridge (bounded mpsc) the `!Send`-tokenizer rule refers to.
 - `src/metadata.rs` — streaming `HeadParser` (push-based tokenizer sink); `src/metrics.rs` — response metric types.
 

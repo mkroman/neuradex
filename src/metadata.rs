@@ -15,6 +15,7 @@ use html5ever::tokenizer::{
     BufferQueue, EndTag, StartTag, Tag, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
 use serde::Serialize;
+use utoipa::ToSchema;
 
 /// The prefix of the OpenGraph meta properties.
 const OG_PREFIX: &str = "og:";
@@ -26,7 +27,7 @@ const TWITTER_PREFIX: &str = "twitter:";
 ///
 /// All meta tags are captured generically — keyed by their `property` or `name` attribute — so
 /// additional extractors can be layered on without extending the tokenizer.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, ToSchema)]
 pub struct PageMetadata {
     /// The contents of the first `<title>` element.
     pub title: Option<String>,

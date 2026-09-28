@@ -1,9 +1,10 @@
 //! Request metrics and stats shared by the API endpoints.
 
 use serde::Serialize;
+use utoipa::ToSchema;
 
 /// A single intermediate redirect hop.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct RedirectHop {
     /// The status code of the redirect response.
     pub status: u16,
@@ -12,7 +13,7 @@ pub struct RedirectHop {
 }
 
 /// Request metrics and stats for a fetched page.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct Metrics {
     /// The status code of the final response.
     pub status: u16,
@@ -40,7 +41,7 @@ pub struct Metrics {
 }
 
 /// Request metrics and stats for a search.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SearchMetrics {
     /// The time spent waiting for a search slot before the search started, in milliseconds.
     pub queue_ms: u64,
