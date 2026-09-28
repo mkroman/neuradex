@@ -1,7 +1,10 @@
-//! The OpenAPI document of the API, generated from the `#[utoipa::path]` handlers.
+//! The base OpenAPI document of the API.
 //!
-//! The document is served as JSON at `/openapi.json` and consumed by the Swagger UI at
-//! `/swagger-ui`; both are wired into the router in [`crate::api::v1::router`].
+//! The paths are not listed here: they are derived from the `#[utoipa::path]` handlers at
+//! router-build time through [`utoipa_axum`] (see [`crate::api::v1::api`]), so the router and
+//! the document cannot drift apart. This module only carries the document's metadata — info,
+//! tags, and the explicitly registered schemas (`ErrorBody` must stay listed here because
+//! manual `IntoResponses` impls are invisible to utoipa's compile-time schema collection).
 
 use utoipa::OpenApi;
 
@@ -12,18 +15,12 @@ use crate::api::v1::{
 use crate::metadata::PageMetadata;
 use crate::metrics::{Metrics, RedirectHop, SearchMetrics};
 
-/// The generated OpenAPI documentation of the API.
+/// The metadata of the OpenAPI documentation; the paths are collected by the router.
 #[derive(OpenApi)]
 #[openapi(
     info(
         title = "neuradex",
         description = "A small API service implementing tools for LLM agents.",
-    ),
-    paths(
-        crate::api::v1::healthz,
-        crate::api::v1::fetch::fetch,
-        crate::api::v1::peek::peek,
-        crate::api::v1::search::search,
     ),
     tags(
         (name = "fetch", description = "Fetching pages over HTTP."),
@@ -43,15 +40,18 @@ use crate::metrics::{Metrics, RedirectHop, SearchMetrics};
         RedirectHop,
     ))
 )]
-pub(crate) struct ApiDoc;
+pub(crate) struct BaseDoc;
+
+/// Returns the base document the router-derived paths are collected into.
+pub(crate) fn base() -> utoipa::openapi::OpenApi {
+    BaseDoc::openapi()
+}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    /// The OpenAPI document generated from the API.
+    /// The OpenAPI document derived from the API's routes.
     fn document() -> utoipa::openapi::OpenApi {
-        ApiDoc::openapi()
+        crate::api::v1::api().1
     }
 
     #[test]
@@ -85,6 +85,39 @@ mod tests {
                     "the {status} response is missing from {path}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn documents_the_query_parameters() {
+        let document = document();
+
+        for (path, expected) in [
+            ("/healthz", &[][..]),
+            ("/v1/fetch", &["include", "redirects", "url"][..]),
+            ("/v1/peek", &["include", "redirects", "url"][..]),
+            ("/v1/search", &["limit", "query", "timeout"][..]),
+        ] {
+            let operation = document
+                .paths
+                .paths
+                .get(path)
+                .and_then(|item| item.get.as_ref())
+                .expect("a get operation");
+            let rendered = serde_json::to_value(operation).expect("serializes");
+
+            let mut names: Vec<&str> = rendered["parameters"]
+                .as_array()
+                .map(|parameters| {
+                    parameters
+                        .iter()
+                        .filter_map(|parameter| parameter["name"].as_str())
+                        .collect()
+                })
+                .unwrap_or_default();
+            names.sort_unstable();
+
+            assert_eq!(names, expected, "unexpected query parameters for {path}");
         }
     }
 

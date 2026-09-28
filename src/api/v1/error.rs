@@ -141,14 +141,29 @@ impl From<tokio::task::JoinError> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, kind) = self.classify();
+
+        // 5xx bodies stay generic per the "Invariants" rule: the details are for the logs,
+        // never for the client.
+        let message = if status.is_server_error() {
+            tracing::error!(kind, message = %self, "request failed");
+            generic_message(kind).to_owned()
+        } else {
+            self.to_string()
+        };
+
         let body = ErrorBody {
-            error: ErrorDetail {
-                kind,
-                message: self.to_string(),
-            },
+            error: ErrorDetail { kind, message },
         };
 
         (status, Json(body)).into_response()
+    }
+}
+
+/// Returns the generic, client-safe message rendered for a 5xx error class.
+fn generic_message(kind: &str) -> &'static str {
+    match kind {
+        "upstream_error" => "the upstream request failed",
+        _ => "an internal error occurred",
     }
 }
 
@@ -156,6 +171,7 @@ impl IntoResponse for ApiError {
 mod tests {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
+    use serde_json::Value;
     use serde_json::json;
 
     use super::*;
@@ -178,6 +194,59 @@ mod tests {
             ApiError::internal("panic").classify(),
             (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
         );
+    }
+
+    #[tokio::test]
+    async fn maps_every_constructor_to_its_status_and_type() {
+        // `classify` is an exhaustive match, so a variant added without a mapping fails to
+        // compile; this additionally pins each constructor's pairing on the rendered response,
+        // where the envelope type is serialized — including the generic 5xx bodies.
+        let cases = [
+            (
+                ApiError::invalid_param("nope"),
+                StatusCode::BAD_REQUEST,
+                "invalid_param",
+                "nope",
+            ),
+            (
+                ApiError::unsupported_media_type("binary"),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "unsupported_media_type",
+                "binary",
+            ),
+            (
+                ApiError::upstream("timeout"),
+                StatusCode::BAD_GATEWAY,
+                "upstream_error",
+                "the upstream request failed",
+            ),
+            (
+                ApiError::internal("panic"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "an internal error occurred",
+            ),
+        ];
+
+        for (error, status, kind, expected) in cases {
+            let detail = error.to_string();
+            let response = error.into_response();
+
+            assert_eq!(response.status(), status);
+
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            let rendered: Value = serde_json::from_slice(&body).expect("valid json");
+
+            assert_eq!(rendered["error"]["type"], kind);
+            assert_eq!(rendered["error"]["message"], expected);
+
+            if status.is_server_error() {
+                // The detail is logged, never returned to the client.
+                assert_ne!(rendered["error"]["message"], detail);
+            }
+        }
     }
 
     #[test]
