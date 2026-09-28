@@ -12,13 +12,15 @@ pub mod stream;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Extension;
 use axum::Json;
 use axum::Router;
-use axum::http::{Method, StatusCode, Uri};
+use axum::http::{Method, StatusCode, Uri, header};
+use axum::response::IntoResponse;
+use axum::routing::get;
 use secrecy::SecretString;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
-use utoipa_swagger_ui::SwaggerUi;
 use wreq::header::{ACCEPT_ENCODING, HeaderMap, HeaderValue, USER_AGENT};
 use wreq::redirect::Policy;
 use wreq_util::Emulation;
@@ -34,6 +36,13 @@ pub const MAX_CONCURRENT_SEARCHES: usize = 2;
 
 /// The maximum value accepted by the search endpoint's `timeout` parameter, in seconds.
 pub const MAX_SEARCH_TIMEOUT_SECS: u64 = 30;
+
+/// The API documentation page, embedded into the binary at compile time.
+///
+/// The page is authored in `assets/api-docs.html` and fetches `/openapi.json` at runtime to
+/// render the document; its content is otherwise opaque to this crate — the router tests pin
+/// only the `data-docs="neuradex"` marker attribute.
+const API_DOCS_HTML: &str = include_str!("../../assets/api-docs.html");
 
 /// Errors that can occur while constructing the application state.
 #[derive(Debug, thiserror::Error)]
@@ -138,20 +147,49 @@ fn api() -> (Router<Arc<AppState>>, utoipa::openapi::OpenApi) {
         .split_for_parts()
 }
 
-/// Builds the router for the whole service: the v1 API plus the OpenAPI document and Swagger UI.
+/// Builds the router for the whole service: the v1 API plus the documentation endpoints.
 ///
 /// Every error response — including the router-level `404` and `405` fallbacks — renders the
-/// `{"error": {type, message}}` envelope. The OpenAPI document is served as JSON at
-/// `/openapi.json` and as Swagger UI at `/swagger-ui`, both through the merged
-/// [`utoipa_swagger_ui::SwaggerUi`] router.
+/// `{"error": {type, message}}` envelope. The API operations' routes come from [`api`]; the
+/// infrastructure endpoints (`/docs`, `/openapi.json`, and the legacy `/swagger-ui` redirect)
+/// are hand-registered like the fallbacks — they are not OpenAPI-documented operations.
 pub fn router(state: AppState) -> Router {
     let (router, openapi) = api();
 
     router
+        .route("/docs", get(docs))
+        .route(
+            "/openapi.json",
+            get(serve_openapi).layer(Extension(openapi)),
+        )
+        .route("/swagger-ui", get(swagger_ui_redirect))
+        .route("/swagger-ui/", get(swagger_ui_redirect))
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .with_state(Arc::new(state))
-        .merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", openapi))
+}
+
+/// Serves the API documentation page at `GET /docs`.
+async fn docs() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        API_DOCS_HTML,
+    )
+}
+
+/// Serves the OpenAPI document as JSON at `GET /openapi.json`.
+///
+/// The document is the one [`api`] derives from the routes, injected as an extension at router
+/// construction, so what is served cannot drift from the API operations.
+async fn serve_openapi(
+    Extension(document): Extension<utoipa::openapi::OpenApi>,
+) -> impl IntoResponse {
+    Json(document)
+}
+
+/// Redirects the legacy Swagger UI paths to [`docs`].
+async fn swagger_ui_redirect() -> impl IntoResponse {
+    (StatusCode::FOUND, [(header::LOCATION, "/docs")])
 }
 
 /// Handles `GET /healthz`.
@@ -253,10 +291,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn serves_the_swagger_ui() {
-        let response = send(router_for_test(), "GET", "/swagger-ui/").await;
+    async fn serves_the_documentation_page() {
+        let response = send(router_for_test(), "GET", "/docs").await;
 
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/html; charset=utf-8"),
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let page = String::from_utf8(body.to_vec()).expect("the page is utf-8");
+
+        assert!(
+            page.contains(r#"data-docs="neuradex""#),
+            "the page is missing the data-docs marker"
+        );
+    }
+
+    #[tokio::test]
+    async fn redirects_the_legacy_swagger_ui_paths_to_the_docs() {
+        for path in ["/swagger-ui", "/swagger-ui/"] {
+            let response = send(router_for_test(), "GET", path).await;
+
+            assert_eq!(response.status(), StatusCode::FOUND, "for {path}");
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::LOCATION)
+                    .and_then(|value| value.to_str().ok()),
+                Some("/docs"),
+                "for {path}",
+            );
+        }
     }
 
     #[tokio::test]

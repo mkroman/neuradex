@@ -26,6 +26,6 @@ check() {
 check /healthz 204
 check '/v1/fetch?url=https://example.com' 200
 check /openapi.json 200
-check /swagger-ui/ 200
+check /docs 200
 
 echo "all smoke checks passed"

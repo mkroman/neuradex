@@ -42,7 +42,6 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 url.workspace = true
 utoipa = "6.0.0"
 utoipa-axum = "0.3.0"
-utoipa-swagger-ui = { version = "10.0.1", features = ["axum", "vendored"] }
 wreq = { version = "0.16.1", default-features = false, features = [
     "tokio-rt",
     "webpki-roots",
