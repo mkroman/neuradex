@@ -1,40 +1,42 @@
 # cargo-deny configuration (https://embarkstudios.github.io/cargo-deny/).
 #
 # Policy: `cargo deny check advisories` is the blocking gate in CI
-# (.github/workflows/security.yaml); every other check is kept at warning
-# level so a transitive oddity cannot block CI on its own.
+# (.github/workflows/security.yaml); every other check is left at or below its
+# default so a transitive oddity cannot block CI on its own. Config validation
+# is not scoped to the requested check, so even keys of checks CI does not run
+# must stay valid.
 
 [graph]
 # All targets are checked; nothing needs to be restricted here.
 
 [advisories]
-version = 2
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# Lint levels for each advisory class. Vulnerabilities fail the check;
-# unmaintained and yanked crates are surfaced as warnings only.
-vulnerability = "deny"
-unmaintained = "warn"
+# Vulnerability advisories are always errors (the field configuring them was
+# removed in cargo-deny 0.16). Unmaintained is a scope, not a lint level:
+# `none` keeps unmaintained advisories out of the gate entirely, while yanked
+# crates only warn.
+unmaintained = "none"
 yanked = "warn"
 
 [licenses]
-version = 2
-# The usual permissive set.
+# The usual permissive set (MPL-2.0 and CDLA-Permissive-2.0 come in via the
+# `scraper` and `wreq` trees). Licenses outside this list are always denied
+# when `cargo deny check licenses` runs, so extend it when a new transitive
+# license appears.
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "CC0-1.0",
+    "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
+    "MPL-2.0",
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "Zlib",
 ]
-# Anything outside the allow list (and anything unlicensed) warns instead of
-# denying, so CI is not blocked by a transitive crate with an unusual license.
-default = "warn"
-unlicensed = "warn"
 confidence-threshold = 0.8
 
 [licenses.private]
