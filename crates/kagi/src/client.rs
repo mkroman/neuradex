@@ -17,7 +17,7 @@ use scraper::{ElementRef, Html, Node, Selector};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::sync::{Mutex as AsyncMutex, Notify};
+use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 use tokio::time::Instant;
 use tracing::{debug, error};
 
@@ -152,14 +152,14 @@ impl SlotKind {
 /// A checked-out session slot, restored to the pool on drop.
 ///
 /// Dropping the lease — including when the caller's future is cancelled at an await point —
-/// parks the session back in its slot and wakes a request waiting for a session to free up.
+/// parks the session back in its slot and signals a request waiting for a session to free up.
 struct SessionLease {
     /// The slot the session was checked out from.
     slot: Arc<Slot>,
     /// The checked-out session, parked again on drop.
     session: Option<Session>,
-    /// Wakes requests waiting for a session to be checked back in.
-    check_in: Arc<Notify>,
+    /// Signals requests waiting for a session to be checked back in; one permit per check-in.
+    check_in: Arc<Semaphore>,
 }
 
 impl SessionLease {
@@ -189,7 +189,9 @@ impl Drop for SessionLease {
             inner.session = self.session.take();
         }
 
-        self.check_in.notify_one();
+        // One permit per check-in: permits accumulate when no request is waiting yet, so a
+        // burst of check-ins is never collapsed into a single wakeup.
+        self.check_in.add_permits(1);
     }
 }
 
@@ -226,8 +228,8 @@ pub struct Client {
     slots: Mutex<Vec<Arc<Slot>>>,
     /// Serializes session-creation fetches so that sessions are established one at a time.
     creation: AsyncMutex<()>,
-    /// Wakes requests waiting for a session to be checked back in.
-    check_in: Arc<Notify>,
+    /// Signals requests waiting for a session to be checked back in; one permit per check-in.
+    check_in: Arc<Semaphore>,
     /// Produces the nonce for a fresh session.
     fetch: Box<SessionFetcher>,
 }
@@ -298,7 +300,7 @@ impl Client {
             user_agent: HeaderValue::from_str(&options.user_agent)?,
             slots: Mutex::new(Vec::new()),
             creation: AsyncMutex::new(()),
-            check_in: Arc::new(Notify::new()),
+            check_in: Arc::new(Semaphore::new(0)),
             fetch,
         })
     }
@@ -363,7 +365,15 @@ impl Client {
 
             let Some(slot) = slot else {
                 // The pool is at capacity with every slot checked out: wait for a check-in.
-                self.check_in.notified().await;
+                // Each check-in adds one permit; the permit is consumed rather than returned so
+                // the re-scan below decides progress and the next check-in produces the next
+                // wakeup.
+                self.check_in
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .expect("the semaphore is never closed")
+                    .forget();
                 continue;
             };
 
