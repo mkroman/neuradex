@@ -21,7 +21,7 @@ Tests are offline unit tests in inline `#[cfg(test)] mod tests`; nothing touches
 
 ## Definition of done
 
-Run, in order: `cargo fmt` → `cargo clippy --all-targets --workspace` (CI runs `-D warnings`) → `cargo test --workspace` (see Verify). Alongside the code:
+Run, in order: `cargo fmt` → `cargo clippy --all-targets --workspace` (CI runs `-D warnings`) → `cargo test --workspace` (see Verify). That trio is a finishing pass, not a development loop: while writing an implementation, hold `cargo fmt` and `cargo clippy` until the code is complete — each invocation recompiles the workspace (wreq builds BoringSSL), and the extra compilation time slows the work down more than mid-task linting is worth. Iterate with targeted runs instead (`cargo test -p neuradex <name>`), then run the trio once, in order, at the end. Alongside the code:
 
 - New query parameter ⇒ a field on the wire type in `extract.rs`, a validation method, and the `IntoParams` docs (see "Query wire types are the single source of truth" in Non-obvious rules).
 - New error path ⇒ the JSON envelope plus an envelope test (see Invariants).
