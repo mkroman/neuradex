@@ -12,7 +12,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::api::v1::error::ApiError;
-use crate::api::v1::extract::{FetchQuery, PEEK_INCLUDES, ValidatedQuery};
+use crate::api::v1::extract::{ApiQuery, FetchParams, PEEK_INCLUDES};
 use crate::api::v1::{AppState, redirect, stream};
 use crate::metadata::PageMetadata;
 use crate::metrics::Metrics;
@@ -41,7 +41,7 @@ pub struct PeekResponse {
     get,
     path = "/v1/peek",
     tag = "peek",
-    params(FetchQuery),
+    params(FetchParams),
     responses(
         (status = 200, description = "The page head was fetched", body = PeekResponse),
         ApiError,
@@ -49,11 +49,11 @@ pub struct PeekResponse {
 )]
 pub(crate) async fn peek(
     State(state): State<Arc<AppState>>,
-    ValidatedQuery(query): ValidatedQuery<FetchQuery>,
+    ApiQuery(params): ApiQuery<FetchParams>,
 ) -> Result<Json<PeekResponse>, ApiError> {
-    let url = query.url()?;
-    let redirects = query.redirects()?;
-    let includes = query.includes(PEEK_INCLUDES)?;
+    let url = params.url()?;
+    let redirects = params.redirects()?;
+    let includes = params.includes(PEEK_INCLUDES)?;
 
     let started = Instant::now();
     let (response, fetched) = redirect::fetch(&state.client, url.clone(), redirects).await?;

@@ -10,7 +10,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::api::v1::error::ApiError;
-use crate::api::v1::extract::{FETCH_INCLUDES, FetchQuery, ValidatedQuery};
+use crate::api::v1::extract::{ApiQuery, FETCH_INCLUDES, FetchParams};
 use crate::api::v1::{AppState, redirect, stream};
 use crate::metadata::PageMetadata;
 use crate::metrics::Metrics;
@@ -52,7 +52,7 @@ pub struct FetchResponse {
     get,
     path = "/v1/fetch",
     tag = "fetch",
-    params(FetchQuery),
+    params(FetchParams),
     responses(
         (status = 200, description = "The page was fetched", body = FetchResponse),
         ApiError,
@@ -60,11 +60,11 @@ pub struct FetchResponse {
 )]
 pub(crate) async fn fetch(
     State(state): State<Arc<AppState>>,
-    ValidatedQuery(query): ValidatedQuery<FetchQuery>,
+    ApiQuery(params): ApiQuery<FetchParams>,
 ) -> Result<Json<FetchResponse>, ApiError> {
-    let url = query.url()?;
-    let redirects = query.redirects()?;
-    let includes = query.includes(FETCH_INCLUDES)?;
+    let url = params.url()?;
+    let redirects = params.redirects()?;
+    let includes = params.includes(FETCH_INCLUDES)?;
 
     let started = Instant::now();
     let (response, fetched) = redirect::fetch(&state.client, url.clone(), redirects).await?;
