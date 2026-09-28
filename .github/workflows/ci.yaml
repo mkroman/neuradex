@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Cancel superseded runs on the same ref to free runners and cache writers.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Format, Clippy, Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+      - name: Install build dependencies
+        # cmake + libclang are required because wreq compiles BoringSSL
+        # (bindgen needs libclang).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang libclang-dev
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch head (2026-09-03); clippy + rustfmt included
+        with:
+          toolchain: stable
+      - name: Cache cargo build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Check formatting
+        run: cargo fmt --check
+      # clippy is expected to be warning-free: the workspace enables the `all`,
+      # `pedantic`, and `nursery` lint groups as `warn` in [lints] and treats
+      # them as must-fix, so -D warnings turns any lapse into a hard failure.
+      - name: Run clippy
+        run: cargo clippy --all-targets --workspace -- -D warnings
+      - name: Run tests
+        run: cargo test --workspace

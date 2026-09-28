@@ -1,0 +1,54 @@
+# cargo-deny configuration (https://embarkstudios.github.io/cargo-deny/).
+#
+# Policy: `cargo deny check advisories` is the blocking gate in CI
+# (.github/workflows/security.yaml); every other check is kept at warning
+# level so a transitive oddity cannot block CI on its own.
+
+[graph]
+# All targets are checked; nothing needs to be restricted here.
+
+[advisories]
+version = 2
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Lint levels for each advisory class. Vulnerabilities fail the check;
+# unmaintained and yanked crates are surfaced as warnings only.
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "warn"
+
+[licenses]
+version = 2
+# The usual permissive set.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+]
+# Anything outside the allow list (and anything unlicensed) warns instead of
+# denying, so CI is not blocked by a transitive crate with an unusual license.
+default = "warn"
+unlicensed = "warn"
+confidence-threshold = 0.8
+
+[licenses.private]
+# Workspace crates are not published (publish = false); skip them.
+ignore = true
+
+[bans]
+# Duplicates are reported but never deny: pinning this to "deny" would break
+# CI on the first transitive duplicate.
+multiple-versions = "warn"
+
+[sources]
+# Only crates.io and no git sources are allowed; anything else fails.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
