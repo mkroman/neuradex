@@ -19,27 +19,45 @@ Vendoring deltas vs upstream: shared deps (`htmlize`, `regex`, `reqwest`, `scrap
 
 Tests are offline unit tests in inline `#[cfg(test)] mod tests`; nothing touches the network or external services.
 
+## Definition of done
+
+Run, in order: `cargo fmt` → `cargo clippy --all-targets --workspace` (CI runs `-D warnings`) → `cargo test --workspace` (see Verify). Alongside the code:
+
+- New query parameter ⇒ a field on the wire type in `extract.rs`, a validation method, and the `IntoParams` docs (see "Query wire types are the single source of truth" in Non-obvious rules).
+- New error path ⇒ the JSON envelope plus an envelope test (see Invariants).
+- Blocking work ⇒ `spawn_blocking` (see the `!Send`-tokenizer rule in Non-obvious rules).
+
 ## Running locally
 
 - Requires `KAGI_SESSION_TOKEN` (the binary exits at startup without a non-empty value). Optional: `LISTEN_ADDR` (default `127.0.0.1:8080`), `USER_AGENT`, `KAGI_MAX_SESSIONS` (default `kagi::DEFAULT_MAX_SESSIONS`, 2 — the pool's simultaneous-session cap).
 - `cargo run`.
 - Local builds need `cmake` + `libclang` because wreq compiles BoringSSL (and bindgen needs libclang) — the Dockerfile installs both for this reason.
+- Debugging unexpected 400s: run with `RUST_LOG=axum::rejection=trace` to log built-in extractor rejections.
 
 ## Non-obvious rules
 
 - **Multi-value query params must go through `axum_extra::extract::Query`, not `axum::extract::Query`.** The latter uses `serde_urlencoded`, which 400s on repeated keys (`?include=redirects&include=headers`); axum-extra uses `serde_html_form`, which merges repeats into `Vec`. Optional lists use `Vec<T>` + `#[serde(default)]`, never `Option<Vec<T>>` (breaks for one occurrence).
-- **Tests must exercise the real extraction path** — `Query::try_from_uri` on the actual `FetchQuery`/`SearchQuery` types — not a hand-rolled deserializer call. A mismatch here once shipped a bug where tests passed but production returned 400.
+- **Tests must exercise the real extraction path** — `Query::try_from_uri` on the actual `FetchParams`/`SearchParams` types — not a hand-rolled deserializer call. A mismatch here once shipped a bug where tests passed but production returned 400.
 - **The HTML tokenizer (`html5ever`) is `!Send`.** `HeadParser` runs on `spawn_blocking`, bridged from the async reader via bounded `tokio::sync::mpsc` (async `send` / `blocking_recv`). Never use `std::sync::mpsc` or other blocking sends inside tokio tasks — that pins a worker thread per in-flight request.
 - **Peek aborts the download early**: parsing stops at `</head>` or `<body>`, dropping the channel receiver, which cancels the reader task (hard cap `HEAD_MAX_BYTES`, 2 MiB). Fetch reads the full body up to `FETCH_MAX_BYTES` (25 MiB); both report `truncated: true` only when bytes were actually cut (an exact-fit body is not truncated).
-- **Query wire types are the single source of truth.** `FetchQuery`/`SearchQuery` (in `extract.rs`) deserialize the query (through `ValidatedQuery<T>`, a thin extractor over `axum_extra::extract::Query` whose rejection is `ApiError` — never extract `Query<T>` directly in a handler, or malformed queries fall back to axum's plain-text 400 instead of the JSON envelope), expose the validation the handlers call (`url()`/`redirects()`/`includes()`/`validate()`), and carry the `IntoParams` derive documenting the OpenAPI parameters — there are no separate extractor param structs. Each endpoint validates its own query and owns its `include` allow-list (`FETCH_INCLUDES` vs `PEEK_INCLUDES`); the router-level tests in `src/api/v1.rs` pin the envelope on malformed queries.
+- **Query wire types are the single source of truth.** `FetchParams`/`SearchParams` (in `extract.rs`) deserialize the query (through `ApiQuery<T>`, a thin extractor over `axum_extra::extract::Query` whose rejection is `ApiError` — never extract `Query<T>` directly in a handler, or malformed queries fall back to axum's plain-text 400 instead of the JSON envelope), expose the validation the handlers call (`url()`/`redirects()`/`includes()`/`validate()`), and carry the `IntoParams` derive documenting the OpenAPI parameters — there are no separate extractor param structs. Each endpoint validates its own query and owns its `include` allow-list (`FETCH_INCLUDES` vs `PEEK_INCLUDES`); the router-level tests in `src/api/v1.rs` pin the envelope on malformed queries.
+- **Routes and OpenAPI docs come from one place.** Handlers are registered through `utoipa_axum`'s `routes!` on the `OpenApiRouter` in `src/api/v1.rs::api`, which also produces `/openapi.json` — never hand-register an annotated handler with `route(...)` or hand-list paths in the document.
 - **Every error response uses the envelope.** Router-level `404`/`405` fallbacks render the same `{"error": {type, message}}` body as `ApiError` (via constructors on `ErrorBody`). `ApiError`'s hand-written `IntoResponses` impl documents the four handler-produced statuses (400/415/500/502) and is referenced as `ApiError` from each `#[utoipa::path]`; `ErrorBody` must stay listed in `components(schemas(...))` because manual `IntoResponses` impls are invisible to utoipa's compile-time schema collection.
 - Redirects are followed manually (wreq policy `none`) so each hop is counted and reported in metrics; the per-endpoint `include` allow-lists (`FETCH_INCLUDES` vs `PEEK_INCLUDES`) are enforced in the query validation.
+
+## Invariants
+
+- **One JSON error envelope for every failure.** Handler-produced errors and the router-level 404/405 fallbacks (see "Every error response uses the envelope" above) all render the same body; every new error path ships with an envelope test — a router-level oneshot test in `src/api/v1.rs` plus a per-variant mapping test in `src/api/v1/error.rs`.
+- **5xx bodies are generic.** Error details go to tracing, never to the client; `ApiError`'s `IntoResponse` logs the detail and renders a generic message for every 5xx class.
+- **Extractors are named for what they actually guarantee.** The `Validated*` prefix is reserved for extractors that run validation; `ApiQuery` only normalizes the rejection shape (see "Query wire types are the single source of truth" above). Do not adopt validation-extractor crates without an explicit need.
+- **Middleware is route-scoped rather than global-plus-path-predicate.** Once a layer stack grows, its ordering is pinned by a oneshot test.
+- **New dependencies must be workspace-pinned, justified, and noted in this file.**
 
 ## Code layout
 
 - `src/main.rs` → `src/http.rs` — binary entry point and `serve` (bind + graceful shutdown on ctrl-c/SIGTERM); `src/api/v1/{fetch,peek,search}.rs` — the three endpoint handlers, annotated with `#[utoipa::path]` and wired in `src/api/v1.rs` (`router` incl. the `SwaggerUi` merge for `/openapi.json` + `/swagger-ui`, the 404/405 JSON fallbacks, `AppState`, wreq client with `Policy::none()`).
-- `src/api/v1/openapi.rs` — the utoipa `ApiDoc` (paths, tags, schemas) behind `/openapi.json`.
-- `src/api/v1/extract.rs` — query wire types (`FetchQuery`/`SearchQuery`), validation, and the `include` allow-lists; `src/api/v1/error.rs` — `ApiError` (the single rejection type) with its `IntoResponses` impl, and `ErrorBody` rendering `{"error": {type, message}}`.
+- `src/api/v1/openapi.rs` — the base OpenAPI document (info, tags, schemas) that `src/api/v1.rs::api` collects the router-derived paths into via `utoipa_axum` (`routes!`/`OpenApiRouter`/`split_for_parts`); routes and docs derive from the same `#[utoipa::path]` handlers, so they cannot drift.
+- `src/api/v1/extract.rs` — query wire types (`FetchParams`/`SearchParams`), validation, and the `include` allow-lists; `src/api/v1/error.rs` — `ApiError` (the single rejection type) with its `IntoResponses` impl, and `ErrorBody` rendering `{"error": {type, message}}`.
 - `src/api/v1/redirect.rs` — manual redirect loop + `Fetched`; `src/api/v1/stream.rs` — body streaming/truncation/media-type gating, and the async reader → `spawn_blocking` bridge (bounded mpsc) the `!Send`-tokenizer rule refers to.
 - `src/metadata.rs` — streaming `HeadParser` (push-based tokenizer sink); `src/metrics.rs` — response metric types.
 

@@ -27,7 +27,7 @@ export default Plugin.define({
         execute: async ({ query }, { signal }) => {
           const base = (process.env.NEURADEX_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/+$/, "")
           const url = new URL("/v1/search", base)
-          url.searchParams.set("q", query)
+          url.searchParams.set("query", query)
           url.searchParams.set("limit", String(DEFAULT_LIMIT))
 
           let response: Response

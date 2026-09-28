@@ -1,0 +1,53 @@
+name: Security
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  # Weekly audit of Cargo.lock against the RustSec advisory database.
+  schedule:
+    - cron: "17 5 * * 1" # Mondays 05:17 UTC
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: Cargo Deny
+    # Advisory checks only: `cargo deny check advisories` is the blocking gate;
+    # licenses/bans/sources are warning-level in deny.toml. Skip the scheduled
+    # runs, which are reserved for cargo-audit.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+      - name: Check advisories
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories
+
+  cargo-audit:
+    name: Cargo Audit
+    # Reserved for the weekly schedule (and manual dispatch); pull requests and
+    # pushes are already covered by the cargo-deny advisory check.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+      # Audit Cargo.lock against the RustSec database without compiling
+      # cargo-audit.
+      - name: Audit Cargo.lock
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

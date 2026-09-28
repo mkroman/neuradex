@@ -12,7 +12,7 @@ The neuradex service has been deployed{{ if .Values.ingress.enabled }} and an In
   In-cluster: http://{{ $fullname }}:{{ .Values.service.port }}/
   Locally:    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ $fullname }} 8080:{{ .Values.service.port }}
 
-             curl http://127.0.0.1:8080/v1/search?q=test
+             curl http://127.0.0.1:8080/v1/search?query=test
 {{- end }}
 
 2. Health probe: GET /healthz returns 204.

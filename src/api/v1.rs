@@ -15,9 +15,9 @@ use std::time::Duration;
 use axum::Json;
 use axum::Router;
 use axum::http::{Method, StatusCode, Uri};
-use axum::routing::get;
 use secrecy::SecretString;
-use utoipa::OpenApi;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 use utoipa_swagger_ui::SwaggerUi;
 use wreq::header::{ACCEPT_ENCODING, HeaderMap, HeaderValue, USER_AGENT};
 use wreq::redirect::Policy;
@@ -124,6 +124,20 @@ fn default_headers(user_agent: &str) -> Result<HeaderMap, BuildError> {
     Ok(headers)
 }
 
+/// Builds the v1 API router together with the OpenAPI document derived from its routes.
+///
+/// The paths are collected from the `#[utoipa::path]` handlers at build time through
+/// [`utoipa_axum`], so the router and the document cannot drift apart; the document's metadata
+/// (info, tags, schemas) comes from [`openapi::base`].
+fn api() -> (Router<Arc<AppState>>, utoipa::openapi::OpenApi) {
+    OpenApiRouter::with_openapi(openapi::base())
+        .routes(routes!(healthz))
+        .routes(routes!(peek::peek))
+        .routes(routes!(fetch::fetch))
+        .routes(routes!(search::search))
+        .split_for_parts()
+}
+
 /// Builds the router for the whole service: the v1 API plus the OpenAPI document and Swagger UI.
 ///
 /// Every error response — including the router-level `404` and `405` fallbacks — renders the
@@ -131,15 +145,13 @@ fn default_headers(user_agent: &str) -> Result<HeaderMap, BuildError> {
 /// `/openapi.json` and as Swagger UI at `/swagger-ui`, both through the merged
 /// [`utoipa_swagger_ui::SwaggerUi`] router.
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/healthz", get(healthz))
-        .route("/v1/peek", get(peek::peek))
-        .route("/v1/fetch", get(fetch::fetch))
-        .route("/v1/search", get(search::search))
+    let (router, openapi) = api();
+
+    router
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .with_state(Arc::new(state))
-        .merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", openapi::ApiDoc::openapi()))
+        .merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", openapi))
 }
 
 /// Handles `GET /healthz`.
@@ -310,6 +322,39 @@ mod tests {
             let response = send(router_for_test(), "GET", path).await;
 
             assert_invalid_param(response).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn renders_invalid_query_values_as_json_errors() {
+        // Each of these extracts cleanly but fails the handlers' own validation — before any
+        // network I/O — so the exact messages can be pinned through the router.
+        for (path, message) in [
+            ("/v1/search?query=", "the query parameter is empty"),
+            (
+                "/v1/fetch?url=not%20a%20url",
+                "invalid url: relative URL without a base",
+            ),
+            (
+                "/v1/fetch?url=https://maero.dk&redirects=6",
+                "redirects must be between 0 and 5",
+            ),
+            (
+                "/v1/fetch?url=https://maero.dk&include=nope",
+                "unknown include: nope",
+            ),
+            (
+                "/v1/peek?url=https://maero.dk&include=headers",
+                "unknown include: headers",
+            ),
+            (
+                "/v1/search?query=rust&timeout=31",
+                "the timeout parameter must be between 1 and 30 seconds",
+            ),
+        ] {
+            let response = send(router_for_test(), "GET", path).await;
+
+            assert_error(response, StatusCode::BAD_REQUEST, "invalid_param", message).await;
         }
     }
 }

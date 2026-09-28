@@ -9,7 +9,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::api::v1::error::ApiError;
-use crate::api::v1::extract::{SearchQuery, ValidatedQuery};
+use crate::api::v1::extract::{ApiQuery, SearchParams};
 use crate::api::v1::{AppState, redirect};
 use crate::metrics::SearchMetrics;
 
@@ -61,7 +61,7 @@ impl From<kagi::SearchResult> for SearchResult {
     get,
     path = "/v1/search",
     tag = "search",
-    params(SearchQuery),
+    params(SearchParams),
     responses(
         (status = 200, description = "The search completed", body = SearchResponse),
         ApiError,
@@ -69,12 +69,12 @@ impl From<kagi::SearchResult> for SearchResult {
 )]
 pub(crate) async fn search(
     State(state): State<Arc<AppState>>,
-    ValidatedQuery(query): ValidatedQuery<SearchQuery>,
+    ApiQuery(params): ApiQuery<SearchParams>,
 ) -> Result<Json<SearchResponse>, ApiError> {
-    query.validate()?;
+    params.validate()?;
 
     let started = Instant::now();
-    let timeout = query.timeout.map(Duration::from_secs);
+    let timeout = params.timeout.map(Duration::from_secs);
 
     let timed_out = |timeout: Option<Duration>| {
         ApiError::upstream(timeout.map_or_else(
@@ -99,7 +99,7 @@ pub(crate) async fn search(
 
             let results: Vec<SearchResult> = state
                 .kagi_client
-                .search(&query.q)
+                .search(&params.query)
                 .await
                 .map_err(|error| ApiError::upstream(error.to_string()))?
                 .into_iter()
@@ -111,7 +111,7 @@ pub(crate) async fn search(
         .await
         .map_err(|_| timed_out(timeout))??;
 
-    if let Some(limit) = query.limit {
+    if let Some(limit) = params.limit {
         results.truncate(limit);
     }
 
@@ -122,7 +122,7 @@ pub(crate) async fn search(
     };
 
     Ok(Json(SearchResponse {
-        query: query.q,
+        query: params.query,
         results,
         metrics,
     }))
