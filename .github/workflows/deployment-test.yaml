@@ -88,7 +88,7 @@ jobs:
             --wait --timeout 5m
       - name: Wait for deployment availability
         run: kubectl wait --for=condition=available deployment/neuradex --timeout=120s
-      - name: Assert /healthz and /v1/fetch from inside the cluster
+      - name: Assert /healthz, /v1/fetch, /openapi.json, and /swagger-ui from inside the cluster
         run: |
           kubectl run curl --quiet --restart=Never --image=curlimages/curl:8.18.0 --command -- sleep 300
           kubectl wait --for=condition=Ready pod/curl --timeout=60s
@@ -97,6 +97,12 @@ jobs:
           [ "$code" = "204" ] || exit 1
           code=$(kubectl exec curl -- curl -sS -o /dev/null --write-out '%{http_code}' "http://neuradex/v1/fetch?url=https://example.com")
           echo "fetch: $code"
+          [ "$code" = "200" ] || exit 1
+          code=$(kubectl exec curl -- curl -sS -o /dev/null --write-out '%{http_code}' http://neuradex/openapi.json)
+          echo "openapi.json: $code"
+          [ "$code" = "200" ] || exit 1
+          code=$(kubectl exec curl -- curl -sS -o /dev/null --write-out '%{http_code}' http://neuradex/swagger-ui/)
+          echo "swagger-ui: $code"
           [ "$code" = "200" ] || exit 1
       - name: Clean up the curl pod
         if: always()

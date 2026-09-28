@@ -3,6 +3,7 @@
 pub mod error;
 pub mod extract;
 pub mod fetch;
+pub mod openapi;
 pub mod peek;
 pub mod redirect;
 pub mod search;
@@ -11,15 +12,19 @@ pub mod stream;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Json;
 use axum::Router;
-use axum::http::StatusCode;
+use axum::http::{Method, StatusCode, Uri};
 use axum::routing::get;
 use secrecy::SecretString;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 use wreq::header::{ACCEPT_ENCODING, HeaderMap, HeaderValue, USER_AGENT};
 use wreq::redirect::Policy;
 use wreq_util::Emulation;
 
 pub use error::ApiError;
+use error::ErrorBody;
 
 /// The maximum number of redirects the fetch endpoints will follow.
 pub const MAX_REDIRECTS: u32 = 5;
@@ -70,6 +75,7 @@ impl AppState {
         user_agent: &str,
         kagi_token: SecretString,
         timeout: Duration,
+        max_sessions: usize,
     ) -> Result<Self, BuildError> {
         let default_headers = default_headers(user_agent)?;
 
@@ -82,8 +88,13 @@ impl AppState {
             .timeout(timeout)
             .build()?;
 
-        let kagi_client =
-            kagi::Client::with_token_and_options(kagi_token, kagi::ClientOptions::default())?;
+        let kagi_client = kagi::Client::with_token_and_options(
+            kagi_token,
+            &kagi::ClientOptions {
+                max_sessions,
+                ..kagi::ClientOptions::default()
+            },
+        )?;
 
         Ok(Self {
             client,
@@ -113,16 +124,192 @@ fn default_headers(user_agent: &str) -> Result<HeaderMap, BuildError> {
     Ok(headers)
 }
 
-/// Builds the v1 API router.
+/// Builds the router for the whole service: the v1 API plus the OpenAPI document and Swagger UI.
+///
+/// Every error response — including the router-level `404` and `405` fallbacks — renders the
+/// `{"error": {type, message}}` envelope. The OpenAPI document is served as JSON at
+/// `/openapi.json` and as Swagger UI at `/swagger-ui`, both through the merged
+/// [`utoipa_swagger_ui::SwaggerUi`] router.
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/peek", get(peek::peek))
         .route("/v1/fetch", get(fetch::fetch))
         .route("/v1/search", get(search::search))
+        .fallback(not_found)
+        .method_not_allowed_fallback(method_not_allowed)
         .with_state(Arc::new(state))
+        .merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", openapi::ApiDoc::openapi()))
 }
 
-async fn healthz() -> StatusCode {
+/// Handles `GET /healthz`.
+#[utoipa::path(
+    get,
+    path = "/healthz",
+    tag = "healthz",
+    responses((status = 204, description = "The service is healthy."))
+)]
+pub(crate) async fn healthz() -> StatusCode {
     StatusCode::NO_CONTENT
+}
+
+/// Handles requests that do not match any route.
+async fn not_found(uri: Uri) -> (StatusCode, Json<ErrorBody>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorBody::not_found(uri.path())),
+    )
+}
+
+/// Handles requests for a valid route with an unsupported method.
+async fn method_not_allowed(method: Method, uri: Uri) -> (StatusCode, Json<ErrorBody>) {
+    (
+        StatusCode::METHOD_NOT_ALLOWED,
+        Json(ErrorBody::method_not_allowed(&method, uri.path())),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use axum::body::Body;
+    use axum::http::Request;
+    use axum::response::Response;
+    use secrecy::SecretString;
+    use serde_json::Value;
+    use tower::ServiceExt;
+
+    use super::*;
+
+    /// Builds a router around a state constructed with test settings.
+    fn router_for_test() -> Router {
+        let state = AppState::new(
+            "test-agent",
+            SecretString::from("test-token"),
+            Duration::from_secs(30),
+            2,
+        )
+        .expect("valid state");
+
+        router(state)
+    }
+
+    /// Sends a request with `method` to `path` through `router`.
+    async fn send(router: Router, method: &str, path: &str) -> Response {
+        let request = Request::builder()
+            .method(method)
+            .uri(path)
+            .body(Body::empty())
+            .expect("valid request");
+
+        router
+            .oneshot(request)
+            .await
+            .expect("the router is infallible")
+    }
+
+    /// Asserts that `response` is a JSON error of `kind` with the given `message`.
+    async fn assert_error(response: Response, status: StatusCode, kind: &str, message: &str) {
+        assert_eq!(response.status(), status);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let error: Value = serde_json::from_slice(&body).expect("valid json");
+
+        assert_eq!(error["error"]["type"], kind);
+        assert_eq!(error["error"]["message"], message);
+    }
+
+    #[tokio::test]
+    async fn serves_the_openapi_document() {
+        let response = send(router_for_test(), "GET", "/openapi.json").await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let document: Value = serde_json::from_slice(&body).expect("valid json");
+
+        for path in ["/healthz", "/v1/fetch", "/v1/peek", "/v1/search"] {
+            assert!(document["paths"].get(path).is_some(), "missing {path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn serves_the_swagger_ui() {
+        let response = send(router_for_test(), "GET", "/swagger-ui/").await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn renders_unmatched_routes_as_json_errors() {
+        let response = send(router_for_test(), "GET", "/nope").await;
+
+        assert_error(
+            response,
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "no route for /nope",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn renders_unsupported_methods_as_json_errors() {
+        let response = send(router_for_test(), "POST", "/v1/search").await;
+
+        assert_error(
+            response,
+            StatusCode::METHOD_NOT_ALLOWED,
+            "method_not_allowed",
+            "method POST is not allowed for /v1/search",
+        )
+        .await;
+    }
+
+    /// Asserts that `response` is the JSON `invalid_param` envelope for a query that failed to
+    /// deserialize, without pinning the parser's exact message.
+    async fn assert_invalid_param(response: Response) {
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json"),
+            "expected the JSON error envelope, not a plain-text rejection",
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let error: Value = serde_json::from_slice(&body).expect("valid json");
+
+        assert_eq!(error["error"]["type"], "invalid_param");
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.starts_with("invalid query parameters: ")),
+            "unexpected message: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn renders_malformed_queries_as_json_errors() {
+        // Each of these fails extraction — an unknown field, a missing required field, and a
+        // non-parseable value — and must render the envelope, not axum's plain-text 400.
+        for path in [
+            "/v1/fetch?nope=1",
+            "/v1/peek?include=redirects",
+            "/v1/search?timeout=abc",
+        ] {
+            let response = send(router_for_test(), "GET", path).await;
+
+            assert_invalid_param(response).await;
+        }
+    }
 }

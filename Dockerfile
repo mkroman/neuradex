@@ -29,6 +29,7 @@ FROM chef AS planner
 
 COPY Cargo.toml Cargo.lock ./
 COPY src src
+COPY crates crates
 
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -36,17 +37,15 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS builder
 COPY --from=planner /usr/src/app/recipe.json recipe.json
 
-# Cook dependencies — cached as long as recipe.json is unchanged. The git cache
-# mount covers the kagi dependency fetched from github.com/mkroman/zeta.
+# Cook dependencies — cached as long as recipe.json is unchanged.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     cargo chef cook --release --recipe-path recipe.json
 
 COPY Cargo.toml Cargo.lock ./
 COPY src src
+COPY crates crates
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     cargo auditable build --release --locked --bin neuradex && \
     strip target/release/neuradex && \
     cp target/release/neuradex /usr/local/bin/neuradex

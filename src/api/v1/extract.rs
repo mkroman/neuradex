@@ -1,11 +1,18 @@
-//! Query parameter extractors shared by the API handlers.
+//! Query parameter parsing shared by the API handlers.
+//!
+//! The wire types are the single source of truth for the query contracts: they deserialize the
+//! request (through [`ValidatedQuery`], a thin extractor over [`axum_extra::extract::Query`],
+//! which uses `serde_html_form`, so the `include` parameter may be repeated —
+//! `include=redirects&include=headers` — or comma-separated), document the OpenAPI parameters,
+//! and expose the validation each endpoint applies to its own query.
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum_extra::extract::Query;
 use serde::Deserialize;
-use std::time::Duration;
+use serde::de::DeserializeOwned;
 use url::Url;
+use utoipa::IntoParams;
 
 use crate::api::v1::error::ApiError;
 use crate::api::v1::{MAX_REDIRECTS, MAX_SEARCH_TIMEOUT_SECS};
@@ -19,94 +26,61 @@ pub const PEEK_INCLUDES: &[&str] = &["redirects"];
 /// The `include` values accepted by the fetch endpoint.
 pub const FETCH_INCLUDES: &[&str] = &["redirects", "headers"];
 
-/// The raw query parameters of the fetch endpoints, as they arrive on the wire.
-///
-/// Extracted with [`axum_extra::extract::Query`], which uses `serde_html_form`: the `include`
-/// parameter may be repeated (`include=redirects&include=headers`) or comma-separated.
-#[derive(Debug, Deserialize)]
+/// The query parameters of the page-fetching endpoints (`/v1/fetch` and `/v1/peek`), as they
+/// arrive on the wire.
+#[derive(Debug, Deserialize, IntoParams)]
 #[serde(deny_unknown_fields)]
-struct FetchQuery {
+#[into_params(parameter_in = Query)]
+pub(crate) struct FetchQuery {
     /// The URL to fetch.
-    url: String,
+    pub(crate) url: String,
     /// The maximum number of redirects to follow.
-    redirects: Option<u32>,
+    #[param(minimum = 0, maximum = 5)]
+    pub(crate) redirects: Option<u32>,
     /// The optional data to include in the response; may be repeated and comma-separated.
     #[serde(default)]
-    include: Vec<String>,
+    #[param(style = Form, explode = true)]
+    pub(crate) include: Vec<String>,
 }
 
-/// The raw query parameters of the search endpoint, as they arrive on the wire.
-#[derive(Debug, Deserialize)]
+/// The query parameters of the search endpoint (`/v1/search`), as they arrive on the wire.
+#[derive(Debug, Deserialize, IntoParams)]
 #[serde(deny_unknown_fields)]
-struct SearchQuery {
+#[into_params(parameter_in = Query)]
+pub(crate) struct SearchQuery {
     /// The search query.
-    q: String,
+    pub(crate) q: String,
     /// The maximum number of results to return.
-    limit: Option<usize>,
+    pub(crate) limit: Option<usize>,
     /// The maximum time to wait for the search, in whole seconds.
-    timeout: Option<u64>,
+    #[param(minimum = 1, maximum = 30)]
+    pub(crate) timeout: Option<u64>,
 }
 
-/// The parameters accepted by the fetch endpoint (`/v1/fetch`).
-#[derive(Clone, Debug)]
-pub struct FetchParams {
-    /// The URL to fetch.
-    pub url: Url,
-    /// The maximum number of redirects to follow.
-    pub redirects: u32,
-    /// The optional data to include in the response.
-    pub includes: IncludeSet,
-}
+/// Extracts the query parameters of an endpoint into its wire type.
+///
+/// A thin wrapper over [`axum_extra::extract::Query`] whose rejection is [`ApiError`], so a
+/// malformed query — an unknown field, a missing or non-parseable parameter — renders the JSON
+/// error envelope instead of axum's plain-text 400 body. Endpoint-specific validation is applied
+/// by the handlers on the extracted value, not here.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ValidatedQuery<T>(pub(crate) T);
 
-/// The parameters accepted by the peek endpoint (`/v1/peek`).
-#[derive(Clone, Debug)]
-pub struct PeekParams {
-    /// The URL to fetch.
-    pub url: Url,
-    /// The maximum number of redirects to follow.
-    pub redirects: u32,
-    /// The optional data to include in the response.
-    pub includes: IncludeSet,
-}
+impl<S, T> FromRequestParts<S> for ValidatedQuery<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
 
-/// The parameters accepted by the search endpoint (`/v1/search`).
-#[derive(Clone, Debug)]
-pub struct SearchParams {
-    /// The search query.
-    pub query: String,
-    /// The maximum number of results to return, if limited.
-    pub limit: Option<usize>,
-    /// The maximum time to wait for the search, including queueing, if limited.
-    pub timeout: Option<Duration>,
-}
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let Query(query) = Query::<T>::from_request_parts(parts, state)
+            .await
+            .map_err(|error| {
+                ApiError::invalid_param(format!("invalid query parameters: {error}"))
+            })?;
 
-impl SearchParams {
-    /// Builds the search parameters from the raw query.
-    fn from_query(query: SearchQuery) -> Result<Self, ApiError> {
-        if query.q.is_empty() {
-            return Err(ApiError::invalid_param("the q parameter is empty"));
-        }
-
-        if query.timeout == Some(0) {
-            return Err(ApiError::invalid_param(
-                "the timeout parameter must be at least 1 second",
-            ));
-        }
-
-        if query
-            .timeout
-            .is_some_and(|timeout| timeout > MAX_SEARCH_TIMEOUT_SECS)
-        {
-            return Err(ApiError::invalid_param(format!(
-                "the timeout parameter must be between 1 and {MAX_SEARCH_TIMEOUT_SECS} seconds"
-            )));
-        }
-
-        Ok(Self {
-            query: query.q,
-            limit: query.limit,
-            timeout: query.timeout.map(Duration::from_secs),
-        })
+        Ok(Self(query))
     }
 }
 
@@ -153,10 +127,22 @@ impl IncludeSet {
 }
 
 impl FetchQuery {
-    /// Validates the query against the `include` values `allowed` by the calling endpoint.
-    fn into_params(self, allowed_includes: &[&str]) -> Result<FetchParams, ApiError> {
-        let url = Url::parse(&self.url)
-            .map_err(|error| ApiError::invalid_param(format!("invalid url: {error}")))?;
+    /// Parses and validates the `url` parameter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the value is not a valid URL.
+    pub(crate) fn url(&self) -> Result<Url, ApiError> {
+        Url::parse(&self.url)
+            .map_err(|error| ApiError::invalid_param(format!("invalid url: {error}")))
+    }
+
+    /// Resolves the number of redirects to follow, defaulting to [`DEFAULT_REDIRECTS`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the value exceeds [`MAX_REDIRECTS`].
+    pub(crate) fn redirects(&self) -> Result<u32, ApiError> {
         let redirects = self.redirects.unwrap_or(DEFAULT_REDIRECTS);
 
         if redirects > MAX_REDIRECTS {
@@ -165,77 +151,64 @@ impl FetchQuery {
             )));
         }
 
-        let includes = IncludeSet::parse(&self.include, allowed_includes)?;
+        Ok(redirects)
+    }
 
-        Ok(FetchParams {
-            url,
-            redirects,
-            includes,
-        })
+    /// Parses the `include` parameter values, validating each entry against `allowed`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an unknown include value is requested.
+    pub(crate) fn includes(&self, allowed: &[&str]) -> Result<IncludeSet, ApiError> {
+        IncludeSet::parse(&self.include, allowed)
     }
 }
 
-impl<S: Send + Sync> FromRequestParts<S> for FetchParams {
-    type Rejection = ApiError;
+impl SearchQuery {
+    /// Validates the query parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the query is empty or the timeout is out of range.
+    pub(crate) fn validate(&self) -> Result<(), ApiError> {
+        if self.q.is_empty() {
+            return Err(ApiError::invalid_param("the q parameter is empty"));
+        }
 
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let Query(query) = Query::<FetchQuery>::from_request_parts(parts, state)
-            .await
-            .map_err(|error| {
-                ApiError::invalid_param(format!("invalid query parameters: {error}"))
-            })?;
+        if self.timeout == Some(0) {
+            return Err(ApiError::invalid_param(
+                "the timeout parameter must be at least 1 second",
+            ));
+        }
 
-        query.into_params(FETCH_INCLUDES)
-    }
-}
+        if self
+            .timeout
+            .is_some_and(|timeout| timeout > MAX_SEARCH_TIMEOUT_SECS)
+        {
+            return Err(ApiError::invalid_param(format!(
+                "the timeout parameter must be between 1 and {MAX_SEARCH_TIMEOUT_SECS} seconds"
+            )));
+        }
 
-impl<S: Send + Sync> FromRequestParts<S> for PeekParams {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let Query(query) = Query::<FetchQuery>::from_request_parts(parts, state)
-            .await
-            .map_err(|error| {
-                ApiError::invalid_param(format!("invalid query parameters: {error}"))
-            })?;
-
-        let params = query.into_params(PEEK_INCLUDES)?;
-
-        Ok(Self {
-            url: params.url,
-            redirects: params.redirects,
-            includes: params.includes,
-        })
-    }
-}
-
-impl<S: Send + Sync> FromRequestParts<S> for SearchParams {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let Query(query) = Query::<SearchQuery>::from_request_parts(parts, state)
-            .await
-            .map_err(|error| {
-                ApiError::invalid_param(format!("invalid query parameters: {error}"))
-            })?;
-
-        Self::from_query(query)
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use axum::http::Uri;
+    use axum_extra::extract::Query;
 
     use super::*;
 
-    /// Parses `pairs` and validates them, mirroring the `Query` extraction path.
-    fn fetch_query(pairs: &str) -> Result<FetchParams, ApiError> {
-        let query: FetchQuery = serde_html_form::from_str(pairs).map_err(|error| {
-            ApiError::invalid_param(format!("invalid query parameters: {error}"))
-        })?;
+    /// Parses `pairs` into `FetchQuery`, mirroring the `Query` extraction path.
+    fn fetch_query(pairs: &str) -> Result<FetchQuery, serde_html_form::de::Error> {
+        serde_html_form::from_str(pairs)
+    }
 
-        query.into_params(FETCH_INCLUDES)
+    /// Parses `pairs` into `SearchQuery`, mirroring the `Query` extraction path.
+    fn search_query(pairs: &str) -> Result<SearchQuery, serde_html_form::de::Error> {
+        serde_html_form::from_str(pairs)
     }
 
     #[test]
@@ -246,10 +219,10 @@ mod tests {
                 .expect("valid uri");
 
         let Query(query) = Query::<FetchQuery>::try_from_uri(&uri).expect("valid query");
-        let params = query.into_params(FETCH_INCLUDES).expect("valid params");
+        let includes = query.includes(FETCH_INCLUDES).expect("valid includes");
 
-        assert!(params.includes.redirects);
-        assert!(params.includes.headers);
+        assert!(includes.redirects);
+        assert!(includes.headers);
     }
 
     #[test]
@@ -263,47 +236,52 @@ mod tests {
 
     #[test]
     fn parses_fetch_params() {
-        let params =
+        let query =
             fetch_query("url=https://maero.dk&redirects=2&include=redirects").expect("valid");
 
-        assert_eq!(params.url.as_str(), "https://maero.dk/");
-        assert_eq!(params.redirects, 2);
-        assert!(params.includes.redirects);
-        assert!(!params.includes.headers);
+        assert_eq!(query.url().expect("valid").as_str(), "https://maero.dk/");
+        assert_eq!(query.redirects().expect("valid"), 2);
+        assert!(query.includes(FETCH_INCLUDES).expect("valid").redirects);
+        assert!(!query.includes(FETCH_INCLUDES).expect("valid").headers);
     }
 
     #[test]
     fn parses_repeated_includes() {
-        let params =
+        let query =
             fetch_query("url=https://maero.dk&include=redirects&include=headers").expect("valid");
+        let includes = query.includes(FETCH_INCLUDES).expect("valid");
 
-        assert!(params.includes.redirects);
-        assert!(params.includes.headers);
+        assert!(includes.redirects);
+        assert!(includes.headers);
     }
 
     #[test]
     fn parses_comma_separated_includes() {
-        let params =
+        let query =
             fetch_query("url=https://maero.dk&include=redirects,%20headers").expect("valid");
+        let includes = query.includes(FETCH_INCLUDES).expect("valid");
 
-        assert!(params.includes.redirects);
-        assert!(params.includes.headers);
+        assert!(includes.redirects);
+        assert!(includes.headers);
     }
 
     #[test]
     fn defaults_redirects() {
-        let params = fetch_query("url=https://maero.dk").expect("valid");
+        let query = fetch_query("url=https://maero.dk").expect("valid");
 
-        assert_eq!(params.redirects, DEFAULT_REDIRECTS);
-        assert_eq!(params.includes, IncludeSet::default());
+        assert_eq!(query.redirects().expect("valid"), DEFAULT_REDIRECTS);
+        assert_eq!(
+            query.includes(FETCH_INCLUDES).expect("valid"),
+            IncludeSet::default()
+        );
     }
 
     #[test]
     fn rejects_out_of_range_redirects() {
-        assert!(matches!(
-            fetch_query("url=https://maero.dk&redirects=6"),
-            Err(ApiError::InvalidParam(_))
-        ));
+        let query = fetch_query("url=https://maero.dk&redirects=6").expect("valid");
+
+        assert!(matches!(query.redirects(), Err(ApiError::InvalidParam(_))));
+
         assert!(fetch_query("url=https://maero.dk&redirects=-1").is_err());
     }
 
@@ -314,29 +292,26 @@ mod tests {
 
     #[test]
     fn requires_a_url() {
-        assert!(matches!(fetch_query(""), Err(ApiError::InvalidParam(_))));
-        assert!(matches!(
-            fetch_query("url=not a url"),
-            Err(ApiError::InvalidParam(_))
-        ));
+        assert!(fetch_query("").is_err());
+
+        let query = fetch_query("url=not a url").expect("valid");
+        assert!(matches!(query.url(), Err(ApiError::InvalidParam(_))));
     }
 
     #[test]
     fn rejects_unknown_parameters_and_includes() {
         assert!(fetch_query("url=https://maero.dk&nope=1").is_err());
+
+        let query = fetch_query("url=https://maero.dk&include=nope").expect("valid");
         assert!(matches!(
-            fetch_query("url=https://maero.dk&include=nope"),
+            query.includes(FETCH_INCLUDES),
             Err(ApiError::InvalidParam(_))
         ));
 
         // `include=headers` is valid for the fetch endpoint, but not for peek.
-        let peek_query: FetchQuery =
-            serde_html_form::from_str("url=https://maero.dk&include=headers").expect("valid");
-        assert!(peek_query.into_params(PEEK_INCLUDES).is_err());
-
-        let fetch_query: FetchQuery =
-            serde_html_form::from_str("url=https://maero.dk&include=headers").expect("valid");
-        assert!(fetch_query.into_params(FETCH_INCLUDES).is_ok());
+        let peek_query = fetch_query("url=https://maero.dk&include=headers").expect("valid");
+        assert!(peek_query.includes(PEEK_INCLUDES).is_err());
+        assert!(peek_query.includes(FETCH_INCLUDES).is_ok());
     }
 
     #[test]
@@ -346,11 +321,11 @@ mod tests {
             .expect("valid uri");
 
         let Query(query) = Query::<SearchQuery>::try_from_uri(&uri).expect("valid query");
-        let params = SearchParams::from_query(query).expect("valid params");
 
-        assert_eq!(params.query, "rust programming");
-        assert_eq!(params.limit, Some(10));
-        assert_eq!(params.timeout, None);
+        assert!(query.validate().is_ok());
+        assert_eq!(query.q, "rust programming");
+        assert_eq!(query.limit, Some(10));
+        assert_eq!(query.timeout, None);
     }
 
     #[test]
@@ -360,9 +335,9 @@ mod tests {
             .expect("valid uri");
 
         let Query(query) = Query::<SearchQuery>::try_from_uri(&uri).expect("valid query");
-        let params = SearchParams::from_query(query).expect("valid params");
 
-        assert_eq!(params.timeout, Some(Duration::from_secs(10)));
+        assert!(query.validate().is_ok());
+        assert_eq!(query.timeout, Some(10));
     }
 
     #[test]
@@ -371,14 +346,10 @@ mod tests {
             ("q=rust&timeout=0", "the timeout parameter must be at least"),
             ("q=rust&timeout=31", "the timeout parameter must be between"),
         ] {
-            let uri: Uri = format!("https://maero.dk/v1/search?{raw}")
-                .parse()
-                .expect("valid uri");
-
-            let Query(query) = Query::<SearchQuery>::try_from_uri(&uri).expect("valid query");
+            let query = search_query(raw).expect("valid");
 
             assert!(
-                matches!(SearchParams::from_query(query), Err(ApiError::InvalidParam(message)) if message.contains(expected)),
+                matches!(query.validate(), Err(ApiError::InvalidParam(message)) if message.contains(expected)),
                 "expected {raw} to be rejected"
             );
         }
@@ -396,13 +367,9 @@ mod tests {
     #[test]
     fn rejects_an_empty_search_query() {
         let uri: Uri = "https://maero.dk/v1/search?q=".parse().expect("valid uri");
-
         let Query(query) = Query::<SearchQuery>::try_from_uri(&uri).expect("valid query");
 
-        assert!(matches!(
-            SearchParams::from_query(query),
-            Err(ApiError::InvalidParam(_))
-        ));
+        assert!(matches!(query.validate(), Err(ApiError::InvalidParam(_))));
     }
 
     #[test]
