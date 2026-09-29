@@ -1,6 +1,5 @@
 use std::{
     future::Future,
-    pin::Pin,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
@@ -21,7 +20,7 @@ use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 use tokio::time::Instant;
 use tracing::{debug, error};
 
-use super::{BASE_URL, ClientOptions, Error, ImageResult, SearchResult};
+use super::{ClientOptions, Error, ImageResult, SearchResult};
 
 /// The base duration of the exponential backoff between session fetch retries.
 const BACKOFF_BASE: Duration = Duration::from_millis(500);
@@ -121,6 +120,22 @@ impl SlotInner {
     }
 }
 
+impl Slot {
+    /// Records a failed fetch on the slot: its backoff doubles, bounded.
+    fn record_failure(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.failures = inner.failures.saturating_add(1);
+
+        let backoff = backoff_after_failures(inner.failures);
+        debug!(
+            failures = inner.failures,
+            ?backoff,
+            "backing off session fetch"
+        );
+        inner.next_retry = Some(Instant::now() + backoff);
+    }
+}
+
 /// What kind of slot a check-out is looking for, in preference order: a parked session that is
 /// still valid, one that has expired, or an empty slot to establish a session on.
 #[derive(Clone, Copy)]
@@ -177,7 +192,7 @@ impl SessionLease {
     /// next request re-establishes the session after the slot's backoff.
     fn invalidate(&mut self) {
         self.session = None;
-        Client::record_failure(&self.slot);
+        self.slot.record_failure();
     }
 }
 
@@ -195,46 +210,42 @@ impl Drop for SessionLease {
     }
 }
 
-/// Produces the nonce for a fresh session with the given HTTP client.
+/// Establishes a session for the pool: produces the nonce for a fresh session with the
+/// session's HTTP client.
 ///
-/// The production implementation performs the session-cookie and nonce requests; tests supply
-/// a mock. The future borrows the session's HTTP client so that its requests land in the
-/// session's cookie jar.
-type SessionFetchFuture<'a> = Pin<Box<dyn Future<Output = Result<String, Error>> + Send + 'a>>;
-type SessionFetcher = dyn for<'a> Fn(&'a reqwest::Client) -> SessionFetchFuture<'a> + Send + Sync;
-
-/// Client for searching with Kagi.
-///
-/// The client keeps a pool of up to [`ClientOptions::max_sessions`] persistent sessions. Each
-/// in-flight search uses its own session; an inrush of requests grows the pool by establishing
-/// sessions one at a time, and requests beyond the pool capacity wait for a session to free
-/// up. Sessions expire independently and are refreshed with a new nonce after their own
-/// duration; a stream response rejecting the session's credentials (401/403) drops the session
-/// so the next request re-establishes it.
-pub struct Client {
-    /// Kagi login token.
-    token: Arc<SecretString>,
-    /// The `Accept-Language` header sent with requests.
-    language: HeaderValue,
-    /// The maximum number of simultaneous sessions.
-    max_sessions: usize,
-    /// The duration of a single session.
-    session_duration: Duration,
-    /// The duration before an HTTP request times out; used to build per-session clients.
-    timeout: Duration,
-    /// The `User-Agent` used to build per-session clients.
-    user_agent: HeaderValue,
-    /// The session slots, bounded by [`Client::max_sessions`].
-    slots: Mutex<Vec<Arc<Slot>>>,
-    /// Serializes session-creation fetches so that sessions are established one at a time.
-    creation: AsyncMutex<()>,
-    /// Signals requests waiting for a session to be checked back in; one permit per check-in.
-    check_in: Arc<Semaphore>,
+/// The production implementation performs the session-cookie and nonce requests; tests
+/// substitute their own implementation to exercise the pool without network round trips.
+pub trait SessionFetcher: Send + Sync {
     /// Produces the nonce for a fresh session.
-    fetch: Box<SessionFetcher>,
+    ///
+    /// The returned future borrows the session's HTTP client so that its requests land in
+    /// the session's cookie jar.
+    fn fetch_nonce(
+        &self,
+        http: &reqwest::Client,
+        token: &SecretString,
+        language: &HeaderValue,
+        base_url: &str,
+    ) -> impl Future<Output = Result<String, Error>> + Send;
 }
 
-impl Client {
+/// The production session-fetcher implementation: performs the session-cookie and nonce
+/// requests.
+pub struct HttpSessionFetcher;
+
+impl SessionFetcher for HttpSessionFetcher {
+    fn fetch_nonce(
+        &self,
+        http: &reqwest::Client,
+        token: &SecretString,
+        language: &HeaderValue,
+        base_url: &str,
+    ) -> impl Future<Output = Result<String, Error>> + Send {
+        http_fetch_session(http, token, language, base_url)
+    }
+}
+
+impl Client<HttpSessionFetcher> {
     /// Constructs a new [`Client`] for searching with Kagi using the given session token and
     /// default options.
     ///
@@ -243,7 +254,7 @@ impl Client {
     /// # Panics
     ///
     /// Panics if the HTTP client fails to build.
-    pub fn with_token(token: impl Into<SecretString>) -> Client {
+    pub fn with_token(token: impl Into<SecretString>) -> Client<HttpSessionFetcher> {
         Self::with_token_and_options(token, &ClientOptions::default())
             .expect("could not build http client")
     }
@@ -263,24 +274,46 @@ impl Client {
     pub fn with_token_and_options(
         token: impl Into<SecretString>,
         options: &ClientOptions,
-    ) -> Result<Client, Error> {
-        let token = Arc::new(token.into());
-        let language = HeaderValue::from_str(&options.language)?;
-
-        let fetch: Box<SessionFetcher> = {
-            let token = Arc::clone(&token);
-
-            Box::new(move |http: &reqwest::Client| -> SessionFetchFuture<'_> {
-                let token = Arc::clone(&token);
-                let language = language.clone();
-
-                Box::pin(async move { http_fetch_session(http, &token, &language).await })
-            })
-        };
-
-        Self::assemble(token, options, fetch)
+    ) -> Result<Client<HttpSessionFetcher>, Error> {
+        Client::assemble(Arc::new(token.into()), options, HttpSessionFetcher)
     }
+}
 
+/// Client for searching with Kagi.
+///
+/// The client keeps a pool of up to [`ClientOptions::max_sessions`] persistent sessions. Each
+/// in-flight search uses its own session; an inrush of requests grows the pool by establishing
+/// sessions one at a time, and requests beyond the pool capacity wait for a session to free
+/// up. Sessions expire independently and are refreshed with a new nonce after their own
+/// duration; a stream response rejecting the session's credentials (401/403) drops the session
+/// so the next request re-establishes it.
+pub struct Client<F = HttpSessionFetcher> {
+    /// Kagi login token.
+    token: Arc<SecretString>,
+    /// The `Accept-Language` header sent with requests.
+    language: HeaderValue,
+    /// The maximum number of simultaneous sessions.
+    max_sessions: usize,
+    /// The duration of a single session.
+    session_duration: Duration,
+    /// The duration before an HTTP request times out; used to build per-session clients.
+    timeout: Duration,
+    /// The `User-Agent` used to build per-session clients.
+    user_agent: HeaderValue,
+    /// The base URL requests are sent to; `ClientOptions::base_url` in production, overridden
+    /// to a mock server's URI in tests.
+    base_url: String,
+    /// The session slots, bounded by [`Client::max_sessions`].
+    slots: Mutex<Vec<Arc<Slot>>>,
+    /// Serializes session-creation fetches so that sessions are established one at a time.
+    creation: AsyncMutex<()>,
+    /// Signals requests waiting for a session to be checked back in; one permit per check-in.
+    check_in: Arc<Semaphore>,
+    /// Produces the nonce for a fresh session.
+    fetch: F,
+}
+
+impl<F: SessionFetcher> Client<F> {
     /// Assembles a client from its parts. Split out so tests can supply their own fetcher.
     ///
     /// # Errors
@@ -289,8 +322,8 @@ impl Client {
     fn assemble(
         token: Arc<SecretString>,
         options: &ClientOptions,
-        fetch: Box<SessionFetcher>,
-    ) -> Result<Client, Error> {
+        fetch: F,
+    ) -> Result<Client<F>, Error> {
         Ok(Client {
             token,
             language: HeaderValue::from_str(&options.language)?,
@@ -298,6 +331,7 @@ impl Client {
             session_duration: options.session_duration,
             timeout: options.timeout,
             user_agent: HeaderValue::from_str(&options.user_agent)?,
+            base_url: options.base_url.clone(),
             slots: Mutex::new(Vec::new()),
             creation: AsyncMutex::new(()),
             check_in: Arc::new(Semaphore::new(0)),
@@ -468,23 +502,13 @@ impl Client {
         }
     }
 
-    /// Records a failed fetch on the slot: its backoff doubles, bounded.
-    fn record_failure(slot: &Slot) {
-        let mut inner = slot.inner.lock().unwrap();
-        inner.failures = inner.failures.saturating_add(1);
-
-        let backoff = backoff_after_failures(inner.failures);
-        debug!(
-            failures = inner.failures,
-            ?backoff,
-            "backing off session fetch"
-        );
-        inner.next_retry = Some(Instant::now() + backoff);
-    }
-
     /// Fetches a fresh session for the given checked-out slot.
     async fn fetch_session(&self, slot: &Slot) -> Result<Session, Error> {
-        match (self.fetch)(&slot.http).await {
+        match self
+            .fetch
+            .fetch_nonce(&slot.http, &self.token, &self.language, &self.base_url)
+            .await
+        {
             Ok(nonce) => {
                 {
                     let mut inner = slot.inner.lock().unwrap();
@@ -498,7 +522,7 @@ impl Client {
                 })
             }
             Err(error) => {
-                Self::record_failure(slot);
+                slot.record_failure();
                 Err(error)
             }
         }
@@ -542,8 +566,12 @@ impl Client {
         let mut lease = self.acquire().await?;
         let nonce = lease.take_nonce();
 
-        let url = url_with_query(&format!("/socket/{endpoint}"), &[("q", query)]);
-        let referer = url_with_query(&format!("/{endpoint}"), &[("q", query)]);
+        let url = url_with_query(
+            &self.base_url,
+            &format!("/socket/{endpoint}"),
+            &[("q", query)],
+        );
+        let referer = url_with_query(&self.base_url, &format!("/{endpoint}"), &[("q", query)]);
         let req = stream_request(lease.http(), &self.token, &self.language, url)
             .header(REFERER, referer.as_str());
         let req = if let Some(nonce) = nonce {
@@ -605,8 +633,9 @@ async fn http_fetch_session(
     http: &reqwest::Client,
     token: &SecretString,
     language: &HeaderValue,
+    base_url: &str,
 ) -> Result<String, Error> {
-    let token_url = url_with_query("/search", &[("token", token.expose_secret())]);
+    let token_url = url_with_query(base_url, "/search", &[("token", token.expose_secret())]);
     debug!("requesting session cookies");
 
     let res = document_request(http, token, language, token_url.as_str())
@@ -619,7 +648,7 @@ async fn http_fetch_session(
     }
 
     debug!("requesting nonce");
-    let res = document_request(http, token, language, BASE_URL)
+    let res = document_request(http, token, language, base_url)
         .send()
         .await
         .map_err(Error::RequestNonce)?;
@@ -687,14 +716,15 @@ fn invalidates_session(status: StatusCode) -> bool {
     matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
 }
 
-/// Builds a Kagi URL with the given query parameters, percent-encoding as needed.
+/// Builds a URL with the given query parameters on `base_url`, percent-encoding as needed.
 ///
 /// # Panics
 ///
-/// Panics if the static [`BASE_URL`] is not a valid URL.
-fn url_with_query(path: &str, params: &[(&str, &str)]) -> reqwest::Url {
-    reqwest::Url::parse_with_params(&format!("{BASE_URL}{path}"), params)
-        .expect("the static base url always produces a valid url")
+/// Panics if the base URL is not valid; the static [`BASE_URL`] in production always is, and
+/// test overrides point at mock server URIs.
+fn url_with_query(base: &str, path: &str, params: &[(&str, &str)]) -> reqwest::Url {
+    reqwest::Url::parse_with_params(&format!("{base}{path}"), params)
+        .expect("the base url always produces a valid url")
 }
 
 // Extracts the `window.sse_nonce` value from the raw HTML content.
@@ -963,7 +993,6 @@ mod tests {
     };
 
     use super::*;
-
     /// A session fetcher that fails its first `failures` calls, optionally sleeps, and tracks
     /// the number of concurrent in-flight fetches.
     struct MockFetch {
@@ -1013,36 +1042,45 @@ mod tests {
         }
     }
 
+    /// A [`SessionFetcher`] backed by [`MockFetch`], sharing its call state.
+    struct MockFetcher(Arc<MockFetch>);
+
+    impl SessionFetcher for MockFetcher {
+        async fn fetch_nonce(
+            &self,
+            _http: &reqwest::Client,
+            _token: &SecretString,
+            _language: &HeaderValue,
+            _base_url: &str,
+        ) -> Result<String, Error> {
+            self.0.hit().await
+        }
+    }
+
     /// Builds a client whose session fetch is the given mock.
     fn client_with(
         token: &str,
         max_sessions: usize,
         session_duration: Duration,
         fetch: Arc<MockFetch>,
-    ) -> Client {
-        let fetcher: Box<SessionFetcher> = Box::new(move |_http: &reqwest::Client| {
-            let mock = Arc::clone(&fetch);
-
-            Box::pin(async move { mock.hit().await })
-        });
-
+    ) -> Client<MockFetcher> {
         let options = ClientOptions {
             session_duration,
             max_sessions,
             ..ClientOptions::default()
         };
 
-        Client::assemble(
+        Client::<MockFetcher>::assemble(
             Arc::new(SecretString::from(token.to_owned())),
             &options,
-            fetcher,
+            MockFetcher(fetch),
         )
         .expect("client options are valid")
     }
 
     /// Acquires a session, holds it for the given duration as if streaming a search, and
     /// releases it.
-    async fn exercise(client: &Client, hold: Duration) -> Result<(), Error> {
+    async fn exercise(client: &Client<MockFetcher>, hold: Duration) -> Result<(), Error> {
         let lease = client.acquire().await?;
         tokio::time::sleep(hold).await;
         drop(lease);
@@ -1428,5 +1466,193 @@ mod tests {
             Client::with_token_and_options("token", &options),
             Err(Error::InvalidHeader(_))
         ));
+    }
+}
+
+/// Tests of the client's real HTTP layer against a loopback mock server: the session-cookie
+/// and nonce requests of [`http_fetch_session`], and the socket stream of [`Client::stream`].
+#[cfg(test)]
+mod http_tests {
+    use wiremock::matchers::{header, method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::*;
+
+    /// A KagiMessage-encoded JSON string of the search-results payload.
+    const RESULTS_PAYLOAD: &str = r#"{"items": [{"title": "Hello, world", "url": "https://en.wikipedia.org/wiki/Hello,_world", "snippet": "greeting"}]}"#;
+
+    /// The `kagi_session` cookie the establishment mock sets.
+    const SESSION_COOKIE: &str = "kagi_session=test-session";
+
+    /// The nonce the establishment mock's page carries.
+    const SESSION_NONCE: &str = "0123456789abcdef0123456789abcdef";
+
+    /// Builds a client whose requests go to `server`.
+    fn client_at(server: &MockServer) -> Client {
+        let options = ClientOptions {
+            base_url: server.uri(),
+            ..ClientOptions::default()
+        };
+
+        Client::with_token_and_options("token", &options).expect("client options are valid")
+    }
+
+    /// Mounts the requests of session establishment on `server`: the token request that sets
+    /// the session cookie when `cookies` is set, and the nonce page — only when the flow is
+    /// expected to reach it, i.e. when a cookie is served and `nonce` is set.
+    ///
+    /// The flow stops after the token request when no cookie is served, so a nonce page
+    /// mounted unconditionally would never be hit and fail its request-count expectation.
+    async fn mount_session_establishment(server: &MockServer, cookies: bool, nonce: bool) {
+        let token_response = if cookies {
+            ResponseTemplate::new(200).insert_header("Set-Cookie", SESSION_COOKIE)
+        } else {
+            ResponseTemplate::new(200)
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .and(query_param("token", "token"))
+            .respond_with(token_response)
+            .expect(1)
+            .mount(server)
+            .await;
+
+        if cookies && nonce {
+            let nonce_page = format!(
+                r#"<html><head><script>window.sse_nonce = "{SESSION_NONCE}";</script></head></html>"#,
+            );
+
+            Mock::given(method("GET"))
+                .and(path("/"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(nonce_page))
+                .expect(1)
+                .mount(server)
+                .await;
+        }
+    }
+
+    /// Mounts the socket stream endpoint on `server` with the given response template.
+    async fn mount_socket_search(server: &MockServer, response: ResponseTemplate) {
+        Mock::given(method("GET"))
+            .and(path("/socket/search"))
+            .respond_with(response)
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    /// A successful SSE stream response carrying one structured result.
+    fn results_response() -> ResponseTemplate {
+        let payload = Value::String(RESULTS_PAYLOAD.to_owned());
+
+        ResponseTemplate::new(200).set_body_raw(
+            format!(
+                "data: {}\n",
+                serde_json::to_string(&serde_json::json!([{
+                    "tag": "search_results_json",
+                    "payload": payload,
+                }]))
+                .expect("the sse payload is valid json")
+            ),
+            "text/event-stream",
+        )
+    }
+
+    #[tokio::test]
+    async fn establishes_a_session_over_http() {
+        let server = MockServer::start().await;
+        mount_session_establishment(&server, true, true).await;
+        mount_socket_search(&server, results_response()).await;
+
+        let results = client_at(&server)
+            .search("rust")
+            .await
+            .expect("the search succeeds");
+
+        // The nonce served by the mock server became the session's first stream nonce, and
+        // the SSE payload was parsed into results.
+        assert_eq!(
+            results.first().map(|result| result.title.as_str()),
+            Some("Hello, world")
+        );
+
+        // Establishment and the socket request each happened exactly once, in order.
+        let received = server.received_requests().await.expect("requests");
+        let paths: Vec<&str> = received.iter().map(|request| request.url.path()).collect();
+
+        assert_eq!(paths, ["/search", "/", "/socket/search"]);
+    }
+
+    #[tokio::test]
+    async fn the_socket_request_carries_the_session_cookie() {
+        let server = MockServer::start().await;
+        mount_session_establishment(&server, true, true).await;
+
+        // The socket mock only matches when the cookie set during establishment is sent
+        // along: an unmatching request is served a 404 and fails the search.
+        Mock::given(method("GET"))
+            .and(path("/socket/search"))
+            .and(header("cookie", SESSION_COOKIE))
+            .respond_with(results_response())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let results = client_at(&server)
+            .search("rust")
+            .await
+            .expect("the cookie is forwarded to the socket request");
+
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn establishment_requires_session_cookies() {
+        let server = MockServer::start().await;
+        mount_session_establishment(&server, false /* cookies */, true).await;
+
+        let error = client_at(&server).search("rust").await.expect_err("fails");
+
+        assert!(matches!(error, Error::SessionCookies), "got {error:?}");
+    }
+
+    #[tokio::test]
+    async fn establishment_requires_a_nonce() {
+        let server = MockServer::start().await;
+        mount_session_establishment(&server, true, false /* nonce */).await;
+
+        let error = client_at(&server).search("rust").await.expect_err("fails");
+
+        assert!(matches!(error, Error::Nonce), "got {error:?}");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_socket_request_invalidates_the_session() {
+        let server = MockServer::start().await;
+        mount_session_establishment(&server, true, true).await;
+        mount_socket_search(&server, ResponseTemplate::new(401)).await;
+
+        let client = client_at(&server);
+        let error = client.search("rust").await.expect_err("fails");
+
+        assert!(matches!(error, Error::StreamStatus(_)), "got {error:?}");
+
+        // The 401 dropped the session and backed the slot off like a failed fetch, so the
+        // next request re-establishes the session instead of reusing a dead one.
+        let (failures, backed_off, session_parked) = {
+            let slots = client.slots.lock().unwrap();
+            let inner = slots.first().unwrap().inner.lock().unwrap();
+
+            (
+                inner.failures,
+                inner.next_retry.is_some(),
+                inner.session.is_none(),
+            )
+        };
+
+        assert_eq!(failures, 1);
+        assert!(backed_off);
+        assert!(session_parked, "the rejected session is dropped");
     }
 }

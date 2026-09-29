@@ -49,7 +49,7 @@ use std::time::Duration;
 mod client;
 mod error;
 
-pub use client::Client;
+pub use client::{Client, HttpSessionFetcher};
 pub use error::Error;
 
 /// Kagi base URL.
@@ -86,6 +86,12 @@ pub struct ClientOptions {
     /// pool by establishing sessions one at a time, and requests beyond the pool capacity
     /// wait for a session to free up. Values below 1 are treated as 1.
     pub max_sessions: usize,
+    /// The base URL requests are sent to; defaults to [`BASE_URL`].
+    ///
+    /// Overriding it is meant for tests: the mock server's URI is passed here so that the
+    /// client's real HTTP flow — cookies, nonce, and socket streams — can be exercised
+    /// against a loopback HTTP mock instead of Kagi itself.
+    pub base_url: String,
 }
 
 impl Default for ClientOptions {
@@ -96,6 +102,7 @@ impl Default for ClientOptions {
             session_duration: SESSION_DURATION,
             language: LANGUAGE.to_string(),
             max_sessions: DEFAULT_MAX_SESSIONS,
+            base_url: BASE_URL.to_string(),
         }
     }
 }

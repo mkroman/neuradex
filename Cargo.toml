@@ -18,6 +18,10 @@ tokio = { version = "1.52.3", features = [
 ] }
 tracing = "0.1.41"
 url = "2.5.8"
+# Loopback HTTP mock server for tests (see AGENTS.md, "OpenCode tooling" sibling notes under
+# Verify): the fetch/peek endpoints and the kagi client's real HTTP layer are tested against
+# mock servers wiremock spins up per test.
+wiremock = "0.6.5"
 # The OpenAPI object model with the `macros` feature (utoipa's only default feature).
 # `default-features = false` pins us to exactly this set, but `macros` itself is not
 # optional: utoipa 6.0.0 cannot compile without it — `openapi::schema` references the
@@ -74,6 +78,7 @@ utoipa = ["dep:utoipa", "dep:utoipa-axum"]
 [dev-dependencies]
 serde_html_form = "0.2.7"
 tower = { version = "0.5.2", features = ["util"] }
+wiremock.workspace = true
 
 [lints.clippy]
 all = "warn"
