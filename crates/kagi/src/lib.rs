@@ -49,7 +49,7 @@ use std::time::Duration;
 mod client;
 mod error;
 
-pub use client::Client;
+pub use client::{Client, HttpSessionFetcher};
 pub use error::Error;
 
 /// Kagi base URL.

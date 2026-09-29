@@ -1,6 +1,5 @@
 use std::{
     future::Future,
-    pin::Pin,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
@@ -121,6 +120,22 @@ impl SlotInner {
     }
 }
 
+impl Slot {
+    /// Records a failed fetch on the slot: its backoff doubles, bounded.
+    fn record_failure(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.failures = inner.failures.saturating_add(1);
+
+        let backoff = backoff_after_failures(inner.failures);
+        debug!(
+            failures = inner.failures,
+            ?backoff,
+            "backing off session fetch"
+        );
+        inner.next_retry = Some(Instant::now() + backoff);
+    }
+}
+
 /// What kind of slot a check-out is looking for, in preference order: a parked session that is
 /// still valid, one that has expired, or an empty slot to establish a session on.
 #[derive(Clone, Copy)]
@@ -177,7 +192,7 @@ impl SessionLease {
     /// next request re-establishes the session after the slot's backoff.
     fn invalidate(&mut self) {
         self.session = None;
-        Client::record_failure(&self.slot);
+        self.slot.record_failure();
     }
 }
 
@@ -195,13 +210,74 @@ impl Drop for SessionLease {
     }
 }
 
-/// Produces the nonce for a fresh session with the given HTTP client.
+/// Establishes a session for the pool: produces the nonce for a fresh session with the
+/// session's HTTP client.
 ///
-/// The production implementation performs the session-cookie and nonce requests; tests supply
-/// a mock. The future borrows the session's HTTP client so that its requests land in the
-/// session's cookie jar.
-type SessionFetchFuture<'a> = Pin<Box<dyn Future<Output = Result<String, Error>> + Send + 'a>>;
-type SessionFetcher = dyn for<'a> Fn(&'a reqwest::Client) -> SessionFetchFuture<'a> + Send + Sync;
+/// The production implementation performs the session-cookie and nonce requests; tests
+/// substitute their own implementation to exercise the pool without network round trips.
+pub trait SessionFetcher: Send + Sync {
+    /// Produces the nonce for a fresh session.
+    ///
+    /// The returned future borrows the session's HTTP client so that its requests land in
+    /// the session's cookie jar.
+    fn fetch_nonce(
+        &self,
+        http: &reqwest::Client,
+        token: &SecretString,
+        language: &HeaderValue,
+        base_url: &str,
+    ) -> impl Future<Output = Result<String, Error>> + Send;
+}
+
+/// The production session-fetcher implementation: performs the session-cookie and nonce
+/// requests.
+pub struct HttpSessionFetcher;
+
+impl SessionFetcher for HttpSessionFetcher {
+    fn fetch_nonce(
+        &self,
+        http: &reqwest::Client,
+        token: &SecretString,
+        language: &HeaderValue,
+        base_url: &str,
+    ) -> impl Future<Output = Result<String, Error>> + Send {
+        http_fetch_session(http, token, language, base_url)
+    }
+}
+
+impl Client<HttpSessionFetcher> {
+    /// Constructs a new [`Client`] for searching with Kagi using the given session token and
+    /// default options.
+    ///
+    /// The token is the value of the `kagi_session` cookie from an authenticated browser session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the HTTP client fails to build.
+    pub fn with_token(token: impl Into<SecretString>) -> Client<HttpSessionFetcher> {
+        Self::with_token_and_options(token, &ClientOptions::default())
+            .expect("could not build http client")
+    }
+
+    /// Constructs a new [`Client`] for searching with Kagi using the given session token and
+    /// options.
+    ///
+    /// The token is the value of the `kagi_session` cookie from an authenticated browser session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the HTTP client fails to build.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidHeader`] if a configured header value is invalid.
+    pub fn with_token_and_options(
+        token: impl Into<SecretString>,
+        options: &ClientOptions,
+    ) -> Result<Client<HttpSessionFetcher>, Error> {
+        Client::assemble(Arc::new(token.into()), options, HttpSessionFetcher)
+    }
+}
 
 /// Client for searching with Kagi.
 ///
@@ -211,7 +287,7 @@ type SessionFetcher = dyn for<'a> Fn(&'a reqwest::Client) -> SessionFetchFuture<
 /// up. Sessions expire independently and are refreshed with a new nonce after their own
 /// duration; a stream response rejecting the session's credentials (401/403) drops the session
 /// so the next request re-establishes it.
-pub struct Client {
+pub struct Client<F = HttpSessionFetcher> {
     /// Kagi login token.
     token: Arc<SecretString>,
     /// The `Accept-Language` header sent with requests.
@@ -234,60 +310,10 @@ pub struct Client {
     /// Signals requests waiting for a session to be checked back in; one permit per check-in.
     check_in: Arc<Semaphore>,
     /// Produces the nonce for a fresh session.
-    fetch: Box<SessionFetcher>,
+    fetch: F,
 }
 
-impl Client {
-    /// Constructs a new [`Client`] for searching with Kagi using the given session token and
-    /// default options.
-    ///
-    /// The token is the value of the `kagi_session` cookie from an authenticated browser session.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the HTTP client fails to build.
-    pub fn with_token(token: impl Into<SecretString>) -> Client {
-        Self::with_token_and_options(token, &ClientOptions::default())
-            .expect("could not build http client")
-    }
-
-    /// Constructs a new [`Client`] for searching with Kagi using the given session token and
-    /// options.
-    ///
-    /// The token is the value of the `kagi_session` cookie from an authenticated browser session.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the HTTP client fails to build.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::InvalidHeader`] if a configured header value is invalid.
-    pub fn with_token_and_options(
-        token: impl Into<SecretString>,
-        options: &ClientOptions,
-    ) -> Result<Client, Error> {
-        let token = Arc::new(token.into());
-        let language = HeaderValue::from_str(&options.language)?;
-
-        let fetch: Box<SessionFetcher> = {
-            let token = Arc::clone(&token);
-            let base_url = options.base_url.clone();
-
-            Box::new(move |http: &reqwest::Client| -> SessionFetchFuture<'_> {
-                let token = Arc::clone(&token);
-                let language = language.clone();
-                let base_url = base_url.clone();
-
-                Box::pin(
-                    async move { http_fetch_session(http, &token, &language, &base_url).await },
-                )
-            })
-        };
-
-        Self::assemble(token, options, fetch)
-    }
-
+impl<F: SessionFetcher> Client<F> {
     /// Assembles a client from its parts. Split out so tests can supply their own fetcher.
     ///
     /// # Errors
@@ -296,8 +322,8 @@ impl Client {
     fn assemble(
         token: Arc<SecretString>,
         options: &ClientOptions,
-        fetch: Box<SessionFetcher>,
-    ) -> Result<Client, Error> {
+        fetch: F,
+    ) -> Result<Client<F>, Error> {
         Ok(Client {
             token,
             language: HeaderValue::from_str(&options.language)?,
@@ -476,23 +502,13 @@ impl Client {
         }
     }
 
-    /// Records a failed fetch on the slot: its backoff doubles, bounded.
-    fn record_failure(slot: &Slot) {
-        let mut inner = slot.inner.lock().unwrap();
-        inner.failures = inner.failures.saturating_add(1);
-
-        let backoff = backoff_after_failures(inner.failures);
-        debug!(
-            failures = inner.failures,
-            ?backoff,
-            "backing off session fetch"
-        );
-        inner.next_retry = Some(Instant::now() + backoff);
-    }
-
     /// Fetches a fresh session for the given checked-out slot.
     async fn fetch_session(&self, slot: &Slot) -> Result<Session, Error> {
-        match (self.fetch)(&slot.http).await {
+        match self
+            .fetch
+            .fetch_nonce(&slot.http, &self.token, &self.language, &self.base_url)
+            .await
+        {
             Ok(nonce) => {
                 {
                     let mut inner = slot.inner.lock().unwrap();
@@ -506,7 +522,7 @@ impl Client {
                 })
             }
             Err(error) => {
-                Self::record_failure(slot);
+                slot.record_failure();
                 Err(error)
             }
         }
@@ -1026,36 +1042,45 @@ mod tests {
         }
     }
 
+    /// A [`SessionFetcher`] backed by [`MockFetch`], sharing its call state.
+    struct MockFetcher(Arc<MockFetch>);
+
+    impl SessionFetcher for MockFetcher {
+        async fn fetch_nonce(
+            &self,
+            _http: &reqwest::Client,
+            _token: &SecretString,
+            _language: &HeaderValue,
+            _base_url: &str,
+        ) -> Result<String, Error> {
+            self.0.hit().await
+        }
+    }
+
     /// Builds a client whose session fetch is the given mock.
     fn client_with(
         token: &str,
         max_sessions: usize,
         session_duration: Duration,
         fetch: Arc<MockFetch>,
-    ) -> Client {
-        let fetcher: Box<SessionFetcher> = Box::new(move |_http: &reqwest::Client| {
-            let mock = Arc::clone(&fetch);
-
-            Box::pin(async move { mock.hit().await })
-        });
-
+    ) -> Client<MockFetcher> {
         let options = ClientOptions {
             session_duration,
             max_sessions,
             ..ClientOptions::default()
         };
 
-        Client::assemble(
+        Client::<MockFetcher>::assemble(
             Arc::new(SecretString::from(token.to_owned())),
             &options,
-            fetcher,
+            MockFetcher(fetch),
         )
         .expect("client options are valid")
     }
 
     /// Acquires a session, holds it for the given duration as if streaming a search, and
     /// releases it.
-    async fn exercise(client: &Client, hold: Duration) -> Result<(), Error> {
+    async fn exercise(client: &Client<MockFetcher>, hold: Duration) -> Result<(), Error> {
         let lease = client.acquire().await?;
         tokio::time::sleep(hold).await;
         drop(lease);
