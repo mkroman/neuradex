@@ -21,10 +21,10 @@ pub(crate) const FETCH_MAX_BYTES: u64 = 25 * 1024 * 1024;
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "utoipa", schema(examples(json!({
-    "url": "https://maero.dk/",
+    "url": "https://example.com/",
     "metadata": {
         "title": "Maero",
-        "canonical": "https://maero.dk/",
+        "canonical": "https://example.com/",
         "description": "A small API service implementing tools for LLM agents.",
         "og": {"site_name": "Maero"},
         "twitter": {},
@@ -36,7 +36,7 @@ pub(crate) const FETCH_MAX_BYTES: u64 = 25 * 1024 * 1024;
     "response_headers": {"content-type": "text/html; charset=utf-8", "content-length": "5123"},
     "metrics": {
         "status": 200,
-        "final_url": "https://maero.dk/",
+        "final_url": "https://example.com/",
         "http_version": "HTTP/2",
         "content_type": "text/html",
         "content_length": 5123,

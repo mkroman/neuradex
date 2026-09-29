@@ -467,15 +467,15 @@ mod tests {
                 "invalid url: relative URL without a base",
             ),
             (
-                "/v1/fetch?url=https://maero.dk&redirects=6",
+                "/v1/fetch?url=https://example.com&redirects=6",
                 "redirects must be between 0 and 5",
             ),
             (
-                "/v1/fetch?url=https://maero.dk&include=nope",
+                "/v1/fetch?url=https://example.com&include=nope",
                 "unknown include: nope",
             ),
             (
-                "/v1/peek?url=https://maero.dk&include=headers",
+                "/v1/peek?url=https://example.com&include=headers",
                 "unknown include: headers",
             ),
             (

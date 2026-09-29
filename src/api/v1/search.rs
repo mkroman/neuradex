@@ -166,7 +166,7 @@ mod tests {
         let results: Vec<SearchResult> = (0..5)
             .map(|index| SearchResult {
                 title: format!("title {index}"),
-                url: format!("https://maero.dk/{index}"),
+                url: format!("https://example.com/{index}"),
                 description: String::new(),
             })
             .collect();
@@ -174,7 +174,7 @@ mod tests {
         let mut limited = results.clone();
         limited.truncate(3);
         assert_eq!(limited.len(), 3);
-        assert_eq!(limited.last().unwrap().url, "https://maero.dk/2");
+        assert_eq!(limited.last().unwrap().url, "https://example.com/2");
 
         let mut unlimited = results;
         unlimited.truncate(usize::MAX);

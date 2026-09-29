@@ -35,7 +35,7 @@ pub(crate) struct FetchParams {
     /// The absolute URL of the page to fetch.
     #[cfg_attr(
         feature = "utoipa",
-        param(example = "https://maero.dk", format = "uri")
+        param(example = "https://example.com", format = "uri")
     )]
     pub(crate) url: String,
     /// The maximum number of redirects to follow; defaults to 5.
@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn extracts_repeated_includes_through_the_real_extractor() {
         let uri: Uri =
-            "https://maero.dk/v1/fetch?url=https://maero.dk&include=redirects&include=headers"
+            "https://example.com/v1/fetch?url=https://example.com&include=redirects&include=headers"
                 .parse()
                 .expect("valid uri");
 
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_parameters_through_the_real_extractor() {
-        let uri: Uri = "https://maero.dk/v1/fetch?url=https://maero.dk&nope=1"
+        let uri: Uri = "https://example.com/v1/fetch?url=https://example.com&nope=1"
             .parse()
             .expect("valid uri");
 
@@ -252,9 +252,9 @@ mod tests {
     #[test]
     fn parses_fetch_params() {
         let query =
-            fetch_params("url=https://maero.dk&redirects=2&include=redirects").expect("valid");
+            fetch_params("url=https://example.com&redirects=2&include=redirects").expect("valid");
 
-        assert_eq!(query.url().expect("valid").as_str(), "https://maero.dk/");
+        assert_eq!(query.url().expect("valid").as_str(), "https://example.com/");
         assert_eq!(query.redirects().expect("valid"), 2);
         assert!(query.includes(FETCH_INCLUDES).expect("valid").redirects);
         assert!(!query.includes(FETCH_INCLUDES).expect("valid").headers);
@@ -262,8 +262,8 @@ mod tests {
 
     #[test]
     fn parses_repeated_includes() {
-        let query =
-            fetch_params("url=https://maero.dk&include=redirects&include=headers").expect("valid");
+        let query = fetch_params("url=https://example.com&include=redirects&include=headers")
+            .expect("valid");
         let includes = query.includes(FETCH_INCLUDES).expect("valid");
 
         assert!(includes.redirects);
@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn parses_comma_separated_includes() {
         let query =
-            fetch_params("url=https://maero.dk&include=redirects,%20headers").expect("valid");
+            fetch_params("url=https://example.com&include=redirects,%20headers").expect("valid");
         let includes = query.includes(FETCH_INCLUDES).expect("valid");
 
         assert!(includes.redirects);
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn defaults_redirects() {
-        let query = fetch_params("url=https://maero.dk").expect("valid");
+        let query = fetch_params("url=https://example.com").expect("valid");
 
         assert_eq!(query.redirects().expect("valid"), DEFAULT_REDIRECTS);
         assert_eq!(
@@ -293,16 +293,16 @@ mod tests {
 
     #[test]
     fn rejects_out_of_range_redirects() {
-        let query = fetch_params("url=https://maero.dk&redirects=6").expect("valid");
+        let query = fetch_params("url=https://example.com&redirects=6").expect("valid");
 
         assert!(matches!(query.redirects(), Err(ApiError::InvalidParam(_))));
 
-        assert!(fetch_params("url=https://maero.dk&redirects=-1").is_err());
+        assert!(fetch_params("url=https://example.com&redirects=-1").is_err());
     }
 
     #[test]
     fn rejects_non_integer_redirects() {
-        assert!(fetch_params("url=https://maero.dk&redirects=abc").is_err());
+        assert!(fetch_params("url=https://example.com&redirects=abc").is_err());
     }
 
     #[test]
@@ -315,23 +315,23 @@ mod tests {
 
     #[test]
     fn rejects_unknown_parameters_and_includes() {
-        assert!(fetch_params("url=https://maero.dk&nope=1").is_err());
+        assert!(fetch_params("url=https://example.com&nope=1").is_err());
 
-        let query = fetch_params("url=https://maero.dk&include=nope").expect("valid");
+        let query = fetch_params("url=https://example.com&include=nope").expect("valid");
         assert!(matches!(
             query.includes(FETCH_INCLUDES),
             Err(ApiError::InvalidParam(_))
         ));
 
         // `include=headers` is valid for the fetch endpoint, but not for peek.
-        let peek_query = fetch_params("url=https://maero.dk&include=headers").expect("valid");
+        let peek_query = fetch_params("url=https://example.com&include=headers").expect("valid");
         assert!(peek_query.includes(PEEK_INCLUDES).is_err());
         assert!(peek_query.includes(FETCH_INCLUDES).is_ok());
     }
 
     #[test]
     fn extracts_search_params_through_the_real_extractor() {
-        let uri: Uri = "https://maero.dk/v1/search?query=rust+programming&limit=10"
+        let uri: Uri = "https://example.com/v1/search?query=rust+programming&limit=10"
             .parse()
             .expect("valid uri");
 
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn extracts_the_search_timeout_through_the_real_extractor() {
-        let uri: Uri = "https://maero.dk/v1/search?query=rust&timeout=10"
+        let uri: Uri = "https://example.com/v1/search?query=rust&timeout=10"
             .parse()
             .expect("valid uri");
 
@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn rejects_non_integer_search_timeouts() {
-        let uri: Uri = "https://maero.dk/v1/search?query=rust&timeout=1.5"
+        let uri: Uri = "https://example.com/v1/search?query=rust&timeout=1.5"
             .parse()
             .expect("valid uri");
 
@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn rejects_an_empty_search_params() {
-        let uri: Uri = "https://maero.dk/v1/search?query="
+        let uri: Uri = "https://example.com/v1/search?query="
             .parse()
             .expect("valid uri");
         let Query(query) = Query::<SearchParams>::try_from_uri(&uri).expect("valid query");
@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_search_parameters() {
-        let uri: Uri = "https://maero.dk/v1/search?query=rust&nope=1"
+        let uri: Uri = "https://example.com/v1/search?query=rust&nope=1"
             .parse()
             .expect("valid uri");
 

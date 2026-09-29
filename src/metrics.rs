@@ -7,7 +7,7 @@ use serde::Serialize;
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "utoipa",
-    schema(examples(json!({"status": 301, "url": "https://maero.dk/index.html"})))
+    schema(examples(json!({"status": 301, "url": "https://example.com/index.html"})))
 )]
 pub struct RedirectHop {
     /// The status code of the redirect response.
@@ -22,7 +22,7 @@ pub struct RedirectHop {
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "utoipa", schema(examples(json!({
     "status": 200,
-    "final_url": "https://maero.dk/",
+    "final_url": "https://example.com/",
     "http_version": "HTTP/2",
     "content_type": "text/html",
     "content_length": 5123,

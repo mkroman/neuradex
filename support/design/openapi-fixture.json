@@ -43,7 +43,7 @@
               "type": "string",
               "format": "uri"
             },
-            "example": "https://maero.dk"
+            "example": "https://example.com"
           },
           {
             "name": "redirects",
@@ -221,7 +221,7 @@
               "type": "string",
               "format": "uri"
             },
-            "example": "https://maero.dk"
+            "example": "https://example.com"
           },
           {
             "name": "redirects",
@@ -656,7 +656,7 @@
           {
             "body": "<!doctype html>\n<html>…</html>",
             "metadata": {
-              "canonical": "https://maero.dk/",
+              "canonical": "https://example.com/",
               "description": "A small API service implementing tools for LLM agents.",
               "og": {
                 "site_name": "Maero"
@@ -671,7 +671,7 @@
               "bytes_read": 5123,
               "content_length": 5123,
               "content_type": "text/html",
-              "final_url": "https://maero.dk/",
+              "final_url": "https://example.com/",
               "http_version": "HTTP/2",
               "redirects": [],
               "redirects_followed": 0,
@@ -689,7 +689,7 @@
               "content-type": "text/html; charset=utf-8"
             },
             "truncated": false,
-            "url": "https://maero.dk/"
+            "url": "https://example.com/"
           }
         ]
       },
@@ -781,7 +781,7 @@
             "bytes_read": 5123,
             "content_length": 5123,
             "content_type": "text/html",
-            "final_url": "https://maero.dk/",
+            "final_url": "https://example.com/",
             "http_version": "HTTP/2",
             "redirects": [],
             "redirects_followed": 0,
@@ -856,7 +856,7 @@
         },
         "examples": [
           {
-            "canonical": "https://maero.dk/",
+            "canonical": "https://example.com/",
             "description": "A small API service implementing tools for LLM agents.",
             "og": {
               "site_name": "Maero",
@@ -898,7 +898,7 @@
         "examples": [
           {
             "metadata": {
-              "canonical": "https://maero.dk/",
+              "canonical": "https://example.com/",
               "description": "A small API service implementing tools for LLM agents.",
               "og": {
                 "site_name": "Maero"
@@ -911,7 +911,7 @@
               "bytes_read": 1024,
               "content_length": 5123,
               "content_type": "text/html",
-              "final_url": "https://maero.dk/",
+              "final_url": "https://example.com/",
               "http_version": "HTTP/2",
               "redirects": [],
               "redirects_followed": 0,
@@ -920,7 +920,7 @@
               "truncated": false,
               "ttfb_ms": 87
             },
-            "url": "https://maero.dk/"
+            "url": "https://example.com/"
           }
         ]
       },
@@ -947,7 +947,7 @@
         "examples": [
           {
             "status": 301,
-            "url": "https://maero.dk/index.html"
+            "url": "https://example.com/index.html"
           }
         ]
       },

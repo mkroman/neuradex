@@ -30,7 +30,7 @@ const TWITTER_PREFIX: &str = "twitter:";
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "utoipa", schema(examples(json!({
     "title": "Maero",
-    "canonical": "https://maero.dk/",
+    "canonical": "https://example.com/",
     "description": "A small API service implementing tools for LLM agents.",
     "og": {"site_name": "Maero", "title": "Hello"},
     "twitter": {"card": "summary"},
@@ -441,11 +441,14 @@ mod tests {
     #[test]
     fn extracts_canonical_link() {
         let metadata = parse_metadata(
-            r#"<head><link rel="canonical" href="https://maero.dk/page">
+            r#"<head><link rel="canonical" href="https://example.com/page">
             <link rel="stylesheet" href="style.css"></head>"#,
         );
 
-        assert_eq!(metadata.canonical.as_deref(), Some("https://maero.dk/page"));
+        assert_eq!(
+            metadata.canonical.as_deref(),
+            Some("https://example.com/page")
+        );
     }
 
     #[test]

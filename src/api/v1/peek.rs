@@ -20,10 +20,10 @@ use crate::metrics::Metrics;
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "utoipa", schema(examples(json!({
-    "url": "https://maero.dk/",
+    "url": "https://example.com/",
     "metadata": {
         "title": "Maero",
-        "canonical": "https://maero.dk/",
+        "canonical": "https://example.com/",
         "description": "A small API service implementing tools for LLM agents.",
         "og": {"site_name": "Maero"},
         "twitter": {},
@@ -31,7 +31,7 @@ use crate::metrics::Metrics;
     },
     "metrics": {
         "status": 200,
-        "final_url": "https://maero.dk/",
+        "final_url": "https://example.com/",
         "http_version": "HTTP/2",
         "content_type": "text/html",
         "content_length": 5123,
