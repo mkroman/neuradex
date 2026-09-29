@@ -1,1 +1,14 @@
-          {% match endpoint.schema_tree %}{% when Some with (tree) %}<section class="widget" aria-label="Response schema"><h3 class="widget-label"><span>Response schema</span><span class="widget-tools"><button class="tool" type="button" data-tree-action="expand">expand all</button><button class="tool" type="button" data-tree-action="collapse">collapse all</button></span></h3><div class="schema-tree">{{ tree.render()?|safe }}</div></section>{% when None %}{% endmatch %}
+{%- match endpoint.schema_tree %}
+{%- when Some with (tree) %}
+<section class="widget" aria-label="Response schema">
+  <h3 class="widget-label">
+    <span>Response schema</span>
+    <span class="widget-tools">
+      <button class="tool" type="button" data-tree-action="expand">expand all</button>
+      <button class="tool" type="button" data-tree-action="collapse">collapse all</button>
+    </span>
+  </h3>
+  <div class="schema-tree">{{ tree.render()?|safe }}</div>
+</section>
+{%- when None %}
+{%- endmatch %}

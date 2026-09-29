@@ -1,17 +1,29 @@
-          <section class="widget tryit" aria-label="Request builder" data-path="{{ endpoint.path }}">
-            <h3 class="widget-label">Try it</h3>
-            {% if !endpoint.params.is_empty() %}
-            <div class="tryit-fields">
-              {% for param in endpoint.params %}
-              <div class="field">
-                <label class="field-label" for="field-{{ endpoint.id }}-{{ param.name }}"><span class="param-name">{{ param.name }}</span>{% if param.required %}<span class="req">*</span>{% else %}<span class="opt">optional</span>{% endif %}</label>
-                <input id="field-{{ endpoint.id }}-{{ param.name }}" type="text" value="{{ param.seed }}" data-name="{{ param.name }}"{% if param.is_array %} data-array="true"{% endif %} spellcheck="false" autocomplete="off" aria-label="{{ param.name }} parameter">
-                {% if !param.anns.is_empty() %}<span class="ann-list field-hint">{% for anno in param.anns %}<span class="ann"><span class="ann-k">{{ anno.key }}</span> <span class="ann-v">{{ anno.value }}</span></span>{% endfor %}</span>{% endif %}
-              </div>
-              {% endfor %}
-            </div>
-            {% endif %}
-            <div class="url-preview" aria-hidden="true">GET {{ endpoint.path }}</div>
-            <div class="actions"><button class="action action-primary" type="button">send request</button><button class="action action-secondary" type="button">copy as cURL</button></div>
-            <div class="result" hidden aria-live="polite"></div>
-          </section>
+<section class="widget tryit" aria-label="Request builder" data-path="{{ endpoint.path }}">
+  <h3 class="widget-label">Try it</h3>
+  {%- if !endpoint.params.is_empty() %}
+  <div class="tryit-fields">
+    {%- for param in endpoint.params %}
+    <div class="field">
+      <label class="field-label" for="field-{{ endpoint.id }}-{{ param.name }}">
+        <span class="param-name">{{ param.name }}</span>
+        {%- if param.required %}<span class="req">*</span>{% else %}<span class="opt">optional</span>{% endif %}
+      </label>
+      <input id="field-{{ endpoint.id }}-{{ param.name }}" type="text" value="{{ param.seed }}" data-name="{{ param.name }}"{% if param.is_array %} data-array="true"{% endif %} spellcheck="false" autocomplete="off" aria-label="{{ param.name }} parameter">
+      {%- if !param.anns.is_empty() %}
+      <span class="ann-list field-hint">
+        {%- for anno in param.anns -%}
+        <span class="ann"><span class="ann-k">{{ anno.key }}</span> <span class="ann-v">{{ anno.value }}</span></span>
+        {%- endfor -%}
+      </span>
+      {%- endif %}
+    </div>
+    {%- endfor %}
+  </div>
+  {%- endif %}
+  <div class="url-preview" aria-hidden="true">GET {{ endpoint.path }}</div>
+  <div class="actions">
+    <button class="action action-primary" type="button">send request</button>
+    <button class="action action-secondary" type="button">copy as cURL</button>
+  </div>
+  <div class="result" hidden aria-live="polite"></div>
+</section>
