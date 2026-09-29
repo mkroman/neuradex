@@ -476,26 +476,40 @@ fn responses(op: &Value) -> Vec<ResponseView> {
 }
 
 /// The names of the component schemas a response references, in first-mention order.
+///
+/// Walks the response's `content` value structurally, collecting the names of every
+/// local `#/components/schemas/` `$ref` — so pointer-shaped text inside prose or
+/// examples never becomes a link.
 fn find_refs(response: &Value) -> Vec<String> {
-    const NEEDLE: &str = "#/components/schemas/";
-    let Ok(json) = serde_json::to_string(&field(response, "content").unwrap_or(&Value::Null))
-    else {
-        return Vec::new();
-    };
+    fn walk(value: &Value, names: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(reference) = map
+                    .get("$ref")
+                    .and_then(Value::as_str)
+                    .and_then(|r| r.strip_prefix("#/components/schemas/"))
+                    && !names.iter().any(|seen| seen == reference)
+                {
+                    names.push(reference.to_owned());
+                }
+                for child in map.values() {
+                    walk(child, names);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, names);
+                }
+            }
+            _ => {}
+        }
+    }
 
     let mut names = Vec::new();
-    let mut rest = json.as_str();
-    while let Some(start) = rest.find(NEEDLE) {
-        let after = &rest[start + NEEDLE.len()..];
-        let name: String = after
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
-            .collect();
-        if !name.is_empty() && !names.contains(&name) {
-            names.push(name);
-        }
-        rest = after;
-    }
+    walk(
+        field(response, "content").unwrap_or(&Value::Null),
+        &mut names,
+    );
     names
 }
 
@@ -624,5 +638,33 @@ mod tests {
         assert!(responses[1].refs.is_empty());
         // The referenced schema lands in the appendix with its anchor id.
         assert_eq!(page.schemas_toc[0].href, "schema-Thing");
+    }
+
+    #[test]
+    fn collects_refs_structurally_not_by_text() {
+        let response = json!({
+            "content": {"application/json": {"schema": {
+                "allOf": [
+                    {"$ref": "#/components/schemas/Alpha"},
+                    {"type": "array", "items": {"$ref": "#/components/schemas/Beta"}},
+                    {"properties": {"first": {"$ref": "#/components/schemas/Alpha"}}},
+                    {"not": "a description about #/components/schemas/Gamma"}
+                ]
+            }}}
+        });
+
+        // Nested `$ref`s are collected in first-mention order; pointer-shaped text in
+        // a string value is not a reference.
+        assert_eq!(find_refs(&response), vec!["Alpha", "Beta"]);
+
+        let dedup = json!({
+            "content": {"application/json": {"schema": {
+                "allOf": [
+                    {"$ref": "#/components/schemas/Alpha"},
+                    {"$ref": "#/components/schemas/Alpha"}
+                ]
+            }}}
+        });
+        assert_eq!(find_refs(&dedup), vec!["Alpha"]);
     }
 }

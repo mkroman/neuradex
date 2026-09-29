@@ -30,7 +30,7 @@ Run, in order: `cargo fmt` → `cargo clippy --all-targets --workspace` (CI runs
 - New query parameter ⇒ a field on the wire type in `extract.rs`, a validation method, and the `IntoParams` docs (see "Query wire types are the single source of truth" in Non-obvious rules).
 - New error path ⇒ the JSON envelope plus an envelope test (see Invariants).
 - Blocking work ⇒ `spawn_blocking` (see the `!Send`-tokenizer rule in Non-obvious rules).
-- Feature matrix ⇒ `cargo check --no-default-features` and `cargo check --no-default-features --features utoipa` must pass alongside the default-feature pass (CI runs both; `docs` implies `utoipa`, so the lean build exercises every `#[cfg]`/`#[cfg_attr]` gate).
+- Feature matrix ⇒ `cargo test --no-default-features` and `cargo test --no-default-features --features utoipa` must pass alongside the default-feature pass (CI runs both; `docs` implies `utoipa`, so the lean build exercises every `#[cfg]`/`#[cfg_attr]` gate; `cargo test` rather than `cargo check` so the unconditional router-envelope tests are actually executed in both router shapes).
 
 ## Git workflow
 

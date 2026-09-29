@@ -14,7 +14,10 @@
   doc.querySelectorAll('#content .ep').forEach(sec => {
     const a = $('#toc a[href="#' + sec.id + '"]');
     filterTargets.push({
-      endpoint: true,
+      /* The schema appendix is filterable like any section, but it is not an
+         endpoint: counting it would make the filter say "5 of 5 endpoints"
+         on a page that introduces four. */
+      endpoint: !sec.classList.contains('ep-appendix'),
       section: sec,
       li: a ? a.parentElement : null,
       hay: sec.textContent.toLowerCase(),

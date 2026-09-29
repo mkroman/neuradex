@@ -1,16 +1,18 @@
 //! Builds OpenAPI schemas as the page's collapsible `<details>` trees.
 //!
 //! The trees recurse over arbitrary schema shapes, so they render through their own
-//! askama partials (`templates/partials/schema-node.html` and `schema-row.html`) with
-//! escaping disabled: every interpolated field is pre-escaped here. The markup and
-//! class names are the ones the theme's stylesheet and behavior script expect.
+//! askama partials (`templates/partials/schema-node.html` and `schema-row.html`).
+//! Plain-text fields (names, labels, annotations) are escaped by the template; the
+//! pre-rendered HTML fields (`*_html`, the highlighted examples, and the recursive
+//! children) are interpolated with `|safe`. The markup and class names are the ones
+//! the theme's stylesheet and behavior script expect.
 
-use std::fmt::Write as _;
-
-use askama::Template;
 use serde_json::Value;
 
+use askama::Template;
+
 use crate::html::{esc, field, prose, ref_name, resolve_ref, str_field};
+use crate::model::Anno;
 
 /// The maximum nesting depth expanded inline; deeper branches point at the schema appendix.
 const MAX_DEPTH: usize = 4;
@@ -22,13 +24,15 @@ const EXAMPLE_CAP: usize = 20_000;
 pub struct SchemaNode {
     /// Whether the node is expanded by default (only the root is).
     pub open: bool,
-    /// The node label, pre-escaped.
+    /// The node label.
     pub name: String,
-    /// The type pill, as HTML.
-    pub type_pill: String,
+    /// The type label for the type pill, e.g. `object` or a `$ref` target name.
+    pub type_label: String,
+    /// Whether the type pill marks a `$ref` to another schema.
+    pub type_is_ref: bool,
     /// Whether the node is a required property of its parent.
     pub required: bool,
-    /// The first line of the target's description, backticks stripped, pre-escaped.
+    /// The first line of the target's description, backticks stripped.
     pub brief: Option<String>,
     /// What the node's body resolves to.
     pub body: SchemaBody,
@@ -37,11 +41,10 @@ pub struct SchemaNode {
 /// The body of a schema node: one of the three truncated render modes, or the full
 /// resolved body.
 pub enum SchemaBody {
-    /// The `$ref` could not be resolved; the payload is the reference or node label,
-    /// pre-escaped.
+    /// The `$ref` could not be resolved; the payload is the reference or node label.
     Unresolved(String),
     /// The `$ref` resolves to a node already on the stack; the payload is the target
-    /// name, pre-escaped.
+    /// name.
     Cycle(String),
     /// The depth guard cut the expansion; the appendix has the rest.
     Deep,
@@ -49,20 +52,20 @@ pub enum SchemaBody {
     Resolved(ResolvedBody),
 }
 
-/// The resolved body of a schema node; all HTML fields are pre-rendered.
+/// The resolved body of a schema node; the `*_html` fields are pre-rendered HTML.
 pub struct ResolvedBody {
     /// The description, as HTML.
     pub description_html: String,
-    /// The constraint annotations, as HTML.
-    pub anns_html: String,
+    /// The constraint annotations, in document order.
+    pub anns: Vec<Anno>,
     /// The properties, in document order.
     pub props: Vec<SchemaEntry>,
     /// The element schema of an array, if any.
     pub items: Option<Box<SchemaNode>>,
     /// `example` or `examples`, by count.
     pub examples_label: String,
-    /// The examples, as HTML.
-    pub examples_html: String,
+    /// The examples, as highlighted HTML for a `<code>` element each.
+    pub examples: Vec<String>,
 }
 
 /// One child of a resolved body: either an expandable node or a flat row.
@@ -75,16 +78,18 @@ pub enum SchemaEntry {
 
 /// A flat (non-expandable) property row; see `templates/partials/schema-row.html`.
 pub struct SchemaRow {
-    /// The property name, pre-escaped.
+    /// The property name.
     pub name: String,
-    /// The type pill, as HTML.
-    pub type_pill: String,
+    /// The type label for the type pill, e.g. `string` or a `$ref` target name.
+    pub type_label: String,
+    /// Whether the type pill marks a `$ref` to another schema.
+    pub type_is_ref: bool,
     /// Whether the property is required.
     pub required: bool,
     /// The description, as HTML.
     pub description_html: String,
-    /// The constraint annotations, as HTML.
-    pub anns_html: String,
+    /// The constraint annotations, in document order.
+    pub anns: Vec<Anno>,
 }
 
 /// Renders `schema` as a tree rooted at `name`, expanded by default.
@@ -108,10 +113,10 @@ fn node(
     let target = reference.map_or(Some(schema), |r| resolve_ref(spec, r));
 
     let body = target.map_or_else(
-        || SchemaBody::Unresolved(esc(reference.unwrap_or(name))),
+        || SchemaBody::Unresolved(reference.unwrap_or(name).to_owned()),
         |target| match ref_target.as_deref() {
             Some(target_name) if stack.iter().any(|key| key == target_name) => {
-                SchemaBody::Cycle(esc(target_name))
+                SchemaBody::Cycle(target_name.to_owned())
             }
             _ if depth > MAX_DEPTH && is_branch(target) => SchemaBody::Deep,
             _ => SchemaBody::Resolved(resolved_body(
@@ -125,22 +130,24 @@ fn node(
         },
     );
 
+    let (type_label, type_is_ref) = type_info(schema);
     SchemaNode {
         open,
-        name: esc(name),
-        type_pill: type_pill(schema),
+        name: name.to_owned(),
+        type_label,
+        type_is_ref,
         required,
         brief: brief(target),
         body,
     }
 }
 
-/// The first line of the target's description, backticks stripped, pre-escaped — the
-/// one-line summary shown in the node's summary row.
+/// The first line of the target's description, backticks stripped — the one-line
+/// summary shown in the node's summary row.
 fn brief(target: Option<&Value>) -> Option<String> {
     let text = str_field(target?, "description")?;
     let line = text.lines().next().unwrap_or_default().replace('`', "");
-    (!line.is_empty()).then(|| esc(&line))
+    (!line.is_empty()).then_some(line)
 }
 
 /// Builds the fully expanded body of one node.
@@ -153,7 +160,7 @@ fn resolved_body(
     stack: &mut Vec<String>,
 ) -> ResolvedBody {
     let description_html = str_field(target, "description").map_or_else(String::new, prose);
-    let anns_html = schema_anns(target);
+    let anns = schema_anns(target);
 
     let required_names: Vec<&str> = field(target, "required")
         .and_then(Value::as_array)
@@ -202,22 +209,18 @@ fn resolved_body(
     } else {
         "example"
     };
-    let examples_html = examples.iter().fold(String::new(), |mut out, example| {
-        let _ = write!(
-            out,
-            "<pre class=\"json-view small\"><code>{}</code></pre>",
-            highlight_json(example, EXAMPLE_CAP)
-        );
-        out
-    });
+    let examples = examples
+        .iter()
+        .map(|example| highlight_json(example, EXAMPLE_CAP))
+        .collect();
 
     ResolvedBody {
         description_html,
-        anns_html,
+        anns,
         props,
         items,
         examples_label: examples_label.to_owned(),
-        examples_html,
+        examples,
     }
 }
 
@@ -229,16 +232,18 @@ fn stack_key(ref_target: Option<&str>, name: &str) -> String {
 
 /// Builds a flat (non-expandable) property row.
 fn property_row(name: &str, property: &Value, required_names: &[&str]) -> SchemaRow {
+    let (type_label, type_is_ref) = type_info(property);
     SchemaRow {
-        name: esc(name),
-        type_pill: type_pill(property),
+        name: name.to_owned(),
+        type_label,
+        type_is_ref,
         required: required_names.contains(&name),
         description_html: str_field(property, "description").map_or_else(String::new, prose),
-        anns_html: schema_anns(property),
+        anns: schema_anns(property),
     }
 }
 
-/// The `(label, css)` of a schema's type pill.
+/// The `(label, is_ref)` of a schema's type pill.
 fn type_info(schema: &Value) -> (String, bool) {
     if let Some(reference) = str_field(schema, "$ref") {
         return (ref_name(reference).to_owned(), true);
@@ -262,14 +267,6 @@ fn type_info(schema: &Value) -> (String, bool) {
     }
 }
 
-fn type_pill(schema: &Value) -> String {
-    let (label, is_ref) = type_info(schema);
-    let mut out = String::from("<span class=\"type-pill");
-    let _ = write!(out, "{}", if is_ref { " ref" } else { "" });
-    let _ = write!(out, "\">{}</span>", esc(&label));
-    out
-}
-
 /// Whether a schema renders as an expandable branch rather than a flat row.
 fn is_branch(schema: &Value) -> bool {
     if schema.get("$ref").is_some() {
@@ -288,40 +285,39 @@ fn is_branch(schema: &Value) -> bool {
     false
 }
 
-/// The constraint annotations of a schema, as `key:value` HTML pairs.
-fn schema_anns(schema: &Value) -> String {
-    let mut out = String::new();
-    let mut pair = |key: &str, value: String| {
-        let _ = write!(
-            out,
-            "<span class=\"ann\"><span class=\"ann-k\">{}</span> <span class=\"ann-v\">{}</span></span>",
-            esc(key),
-            esc(&value)
-        );
+/// The constraint annotations of a schema: `format`, `default`, the numeric bounds,
+/// `pattern`, and `enum`, in that order.
+fn schema_anns(schema: &Value) -> Vec<Anno> {
+    let mut anns = Vec::new();
+    let mut push = |key: &str, value: String| {
+        anns.push(Anno {
+            key: key.to_owned(),
+            value,
+        });
     };
     if let Some(format) = str_field(schema, "format") {
-        pair("format", format.to_owned());
+        push("format", format.to_owned());
     }
     if let Some(default) = field(schema, "default") {
-        pair("default", default.to_string());
+        push("default", default.to_string());
     }
     if let Some(minimum) = field(schema, "minimum") {
-        pair("min", minimum.to_string());
+        push("min", minimum.to_string());
     }
     if let Some(maximum) = field(schema, "maximum") {
-        pair("max", maximum.to_string());
+        push("max", maximum.to_string());
     }
     if let Some(min_length) = field(schema, "minLength") {
-        pair("min length", min_length.to_string());
+        push("min length", min_length.to_string());
     }
     if let Some(max_length) = field(schema, "maxLength") {
-        pair("max length", max_length.to_string());
+        push("max length", max_length.to_string());
     }
     if let Some(pattern) = str_field(schema, "pattern") {
-        pair("pattern", pattern.to_owned());
+        push("pattern", pattern.to_owned());
     }
     if let Some(Value::Array(values)) = field(schema, "enum") {
-        pair(
+        push(
             "enum",
             values
                 .iter()
@@ -330,17 +326,25 @@ fn schema_anns(schema: &Value) -> String {
                 .join(" | "),
         );
     }
-    out
+    anns
 }
 
 /// The schema's `examples` as a list, mirroring the behavior script's handling.
+///
+/// Named Example Objects (the object form of `examples`) are unwrapped to their
+/// `value` payload when present, so the summary fields of the wrapper are not shown.
 fn example_values(schema: &Value) -> Vec<&Value> {
     match field(schema, "examples") {
         Some(Value::Array(items)) => items.iter().collect(),
-        Some(Value::Object(map)) => map.values().collect(),
+        Some(Value::Object(map)) => map.values().map(example_payload).collect(),
         Some(other) => vec![other],
         None => Vec::new(),
     }
+}
+
+/// The example payload of one entry of an object-valued `examples`.
+fn example_payload(example: &Value) -> &Value {
+    field(example, "value").unwrap_or(example)
 }
 
 /// Renders a JSON value as syntax-highlighted HTML, mirroring the behavior script's
@@ -389,7 +393,9 @@ fn highlight_text(text: &str, cap: usize) -> String {
                 }
                 if k < bytes.len() && bytes[k] == b':' {
                     out.push_str(&esc(&slice[last..i]));
-                    let _ = write!(out, "<span class=\"j-key\">{}</span>", esc(&slice[i..j]));
+                    out.push_str("<span class=\"j-key\">");
+                    out.push_str(&esc(&slice[i..j]));
+                    out.push_str("</span>");
                     out.push_str(&esc(&slice[j..=k]));
                     i = k + 1;
                     last = i;
@@ -415,11 +421,11 @@ fn highlight_text(text: &str, cap: usize) -> String {
             }
         };
         out.push_str(&esc(&slice[last..i]));
-        let _ = write!(
-            out,
-            "<span class=\"{class}\">{}</span>",
-            esc(&slice[i..end])
-        );
+        out.push_str("<span class=\"");
+        out.push_str(class);
+        out.push_str("\">");
+        out.push_str(&esc(&slice[i..end]));
+        out.push_str("</span>");
         i = end;
         last = i;
     }
@@ -430,19 +436,22 @@ fn highlight_text(text: &str, cap: usize) -> String {
     out
 }
 
-/// The askama wrapper for `templates/partials/schema-node.html`; escaping is off because
-/// every `SchemaNode` field is pre-escaped above.
+/// The askama wrapper for `templates/partials/schema-node.html`. Escaping stays on:
+/// the plain-text fields (`name`, `type_label`, `brief`, `Unresolved`/`Cycle`
+/// payloads, annotations) are escaped by the template, while the pre-rendered HTML
+/// fields (`description_html`, highlighted examples) and the recursive children are
+/// interpolated with `|safe` in the partial.
 #[derive(Template)]
-#[template(path = "partials/schema-node.html", escape = "none")]
+#[template(path = "partials/schema-node.html")]
 struct SchemaNodeTemplate<'a> {
     /// The node to render.
     node: &'a SchemaNode,
 }
 
-/// The askama wrapper for `templates/partials/schema-row.html`; escaping is off because
-/// every `SchemaRow` field is pre-escaped above.
+/// The askama wrapper for `templates/partials/schema-row.html`; see
+/// [`SchemaNodeTemplate`] for the escaping contract.
 #[derive(Template)]
-#[template(path = "partials/schema-row.html", escape = "none")]
+#[template(path = "partials/schema-row.html")]
 struct SchemaRowTemplate<'a> {
     /// The row to render.
     row: &'a SchemaRow,
@@ -504,6 +513,43 @@ mod tests {
 
         assert!(html.contains(r#"<span class="type-pill ref">Node</span>"#));
         assert!(html.contains("↺ recursive reference to Node"));
+    }
+
+    #[test]
+    fn escapes_hostile_names_and_annotations() {
+        // The schema partials render every plain-text field through askama's escaper,
+        // so a hostile document cannot inject markup through names, descriptions,
+        // briefs, or annotation values.
+        let spec = json!({
+            "components": {"schemas": {
+                "Bad": {"type": "object",
+                        "description": "</summary> in a description.",
+                        "properties": {
+                    "</details><script>alert(1)</script>": {
+                        "type": "string",
+                        "description": "The `</script>` property.",
+                        "pattern": "a\"b<c>&d"
+                    },
+                    "branch": {"type": "object", "properties": {
+                        "<em>inner</em>": {"type": "string"}
+                    }}
+                }}
+            }}
+        });
+        let schema = &spec["components"]["schemas"]["Bad"];
+        let html = root(&spec, "Bad", schema).render().expect("renders");
+
+        // Property names and the branch's inner name are template-escaped.
+        assert!(!html.contains("<script>alert(1)"));
+        assert!(html.contains("&#60;/details&#62;&#60;script&#62;alert(1)&#60;/script&#62;"));
+        assert!(html.contains("&#60;em&#62;inner&#60;/em&#62;"));
+        // The brief strips the backticks and escapes the rest.
+        assert!(html.contains("&#60;/summary&#62; in a description."));
+        // Prose renders its own `<code>` and escapes the text around it.
+        assert!(html.contains("<code>&lt;/script&gt;</code>"));
+        // Annotation values are template-escaped too.
+        assert!(!html.contains(r#"a"b<c>&d"#));
+        assert!(html.contains("a&#34;b&#60;c&#62;&#38;d"));
     }
 
     #[test]
@@ -570,6 +616,30 @@ mod tests {
 
         assert!(html.contains(r#"<p class="ex-label">examples</p>"#));
         assert_eq!(html.matches("<pre class=\"json-view small\">").count(), 2);
+    }
+
+    #[test]
+    fn unwraps_named_example_objects() {
+        // The object form of `examples` (named Example Objects): each entry carries the
+        // payload in `value`, alongside display metadata that must not be rendered.
+        let spec = json!({
+            "components": {"schemas": {"Shaped": {"type": "object", "examples": {
+                "plain": {"summary": "A plain thing.", "value": {"name": "plain"}},
+                "wrapper": {"externalValue": "https://example.com/x.json"}
+            }}}}
+        });
+        let schema = &spec["components"]["schemas"]["Shaped"];
+        let html = root(&spec, "Shaped", schema).render().expect("renders");
+
+        // The `value` payload is unwrapped; the wrapper's `summary` is not rendered,
+        // and an entry without `value` falls back to the raw entry.
+        assert!(html.contains(r#"<span class="j-key">&quot;name&quot;</span>"#));
+        assert!(html.contains("plain"));
+        // The wrapper's `summary` metadata is not rendered (the word "summary" also
+        // appears in the <summary> element, so match the metadata text itself).
+        assert!(!html.contains("A plain thing."));
+        // An entry without `value` falls back to the raw entry.
+        assert!(html.contains("&quot;externalValue&quot;"));
     }
 
     #[test]
