@@ -159,6 +159,8 @@ pub fn router(state: AppState) -> Router {
     get,
     path = "/healthz",
     tag = "healthz",
+    summary = "Check the service health.",
+    description = "Returns `204 No Content` when the service is up. Used as the liveness probe.",
     responses((status = 204, description = "The service is healthy."))
 )]
 pub(crate) async fn healthz() -> StatusCode {

@@ -20,8 +20,37 @@ pub(crate) const FETCH_MAX_BYTES: u64 = 25 * 1024 * 1024;
 
 /// The response of the fetch endpoint.
 #[derive(Debug, Serialize, ToSchema)]
+#[schema(examples(json!({
+    "url": "https://maero.dk/",
+    "metadata": {
+        "title": "Maero",
+        "canonical": "https://maero.dk/",
+        "description": "A small API service implementing tools for LLM agents.",
+        "og": {"site_name": "Maero"},
+        "twitter": {},
+        "other": {"viewport": "width=device-width"}
+    },
+    "body": "<!doctype html>\n<html>…</html>",
+    "truncated": false,
+    "request_headers": {"user-agent": "neuradex/0.1", "accept-encoding": "gzip, deflate, br, zstd"},
+    "response_headers": {"content-type": "text/html; charset=utf-8", "content-length": "5123"},
+    "metrics": {
+        "status": 200,
+        "final_url": "https://maero.dk/",
+        "http_version": "HTTP/2",
+        "content_type": "text/html",
+        "content_length": 5123,
+        "bytes_read": 5123,
+        "ttfb_ms": 87,
+        "total_ms": 120,
+        "redirects_followed": 0,
+        "redirects": [],
+        "truncated": false
+    }
+})))]
 pub struct FetchResponse {
     /// The requested URL.
+    #[schema(format = "uri")]
     pub url: String,
     /// The metadata extracted from the document head.
     pub metadata: PageMetadata,
@@ -52,6 +81,13 @@ pub struct FetchResponse {
     get,
     path = "/v1/fetch",
     tag = "fetch",
+    summary = "Fetch a page.",
+    description = "Fetches the page and returns its document-head metadata, body, and request \
+                   metrics. Up to `redirects` redirects are followed by hand, and each hop can \
+                   be reported through `include=redirects`. The body is decoded as UTF-8 text \
+                   with invalid sequences replaced; binary content types are rejected, and \
+                   bodies beyond 25 MiB are cut short with `truncated: true`. The request and \
+                   response headers are returned when `include=headers` is requested.",
     params(FetchParams),
     responses(
         (status = 200, description = "The page was fetched", body = FetchResponse),

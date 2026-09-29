@@ -34,6 +34,12 @@ pub enum ApiError {
 
 /// The JSON body of an error response.
 #[derive(Debug, Serialize, ToSchema)]
+#[schema(examples(json!({
+    "error": {
+        "type": "invalid_param",
+        "message": "the timeout parameter must be between 1 and 30 seconds"
+    }
+})))]
 pub(crate) struct ErrorBody {
     /// The error details.
     error: ErrorDetail,

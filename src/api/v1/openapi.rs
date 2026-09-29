@@ -20,7 +20,10 @@ use crate::metrics::{Metrics, RedirectHop, SearchMetrics};
 #[openapi(
     info(
         title = "neuradex",
-        description = "A small API service implementing tools for LLM agents.",
+        description = "A small API service implementing tools for LLM agents: fetching pages \
+                       (`/v1/fetch`, `/v1/peek`) and searching the web (`/v1/search`). Every \
+                       error response — including router-level 404 and 405 — is rendered as \
+                       `{\"error\": {\"type\", \"message\"}}`; see the `ErrorBody` schema.",
     ),
     tags(
         (name = "fetch", description = "Fetching pages over HTTP."),
@@ -168,5 +171,100 @@ mod tests {
         let json = document().to_pretty_json().expect("serializes");
 
         assert!(json.contains("\"openapi\""));
+    }
+
+    #[test]
+    fn summarizes_the_operations() {
+        let document = document();
+
+        for path in ["/healthz", "/v1/fetch", "/v1/peek", "/v1/search"] {
+            let operation = document
+                .paths
+                .paths
+                .get(path)
+                .and_then(|item| item.get.as_ref())
+                .expect("a get operation");
+
+            assert!(
+                operation
+                    .summary
+                    .as_deref()
+                    .is_some_and(|s| !s.trim().is_empty()),
+                "the operation for {path} is missing a summary"
+            );
+            assert!(
+                operation
+                    .description
+                    .as_deref()
+                    .is_some_and(|s| !s.trim().is_empty()),
+                "the operation for {path} is missing a description"
+            );
+            // The handlers' `# Errors` sections are for rustdoc, not for API consumers.
+            let description = operation.description.as_deref().expect("a description");
+            assert!(
+                !description.contains("# Errors"),
+                "the description for {path} leaks the doc-comment error section"
+            );
+        }
+    }
+
+    #[test]
+    fn documents_examples_and_defaults_on_the_query_parameters() {
+        let document = document();
+
+        let parameters = |path: &str| -> Vec<serde_json::Value> {
+            let operation = document
+                .paths
+                .paths
+                .get(path)
+                .and_then(|item| item.get.as_ref())
+                .expect("a get operation");
+            serde_json::to_value(operation).expect("serializes")["parameters"]
+                .as_array()
+                .expect("parameters")
+                .to_owned()
+        };
+
+        let find = |parameters: &[serde_json::Value], name: &str| -> serde_json::Value {
+            parameters
+                .iter()
+                .find(|parameter| parameter["name"] == name)
+                .unwrap_or_else(|| panic!("the {name} parameter is missing"))
+                .to_owned()
+        };
+
+        let fetch = parameters("/v1/fetch");
+        let redirects = find(&fetch, "redirects");
+        assert_eq!(redirects["schema"]["default"], 5, "the effective default");
+        assert_eq!(redirects["schema"]["maximum"], 5);
+        assert!(find(&fetch, "url")["example"].is_string());
+        assert!(find(&fetch, "include")["example"].is_array());
+
+        let search = parameters("/v1/search");
+        assert!(find(&search, "query")["example"].is_string());
+        assert_eq!(find(&search, "timeout")["schema"]["maximum"], 30);
+        assert!(find(&search, "limit")["example"].is_i64());
+    }
+
+    #[test]
+    fn documents_examples_on_the_schemas() {
+        let rendered = serde_json::to_value(document()).expect("the document serializes to json");
+
+        for schema in [
+            "ErrorBody",
+            "FetchResponse",
+            "Metrics",
+            "PageMetadata",
+            "PeekResponse",
+            "RedirectHop",
+            "SearchMetrics",
+            "SearchResponse",
+            "SearchResult",
+        ] {
+            assert!(
+                rendered["components"]["schemas"][schema]["examples"].is_array(),
+                "the {schema} schema is missing examples"
+            );
+        }
     }
 }

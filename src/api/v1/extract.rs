@@ -32,14 +32,15 @@ pub const FETCH_INCLUDES: &[&str] = &["redirects", "headers"];
 #[serde(deny_unknown_fields)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct FetchParams {
-    /// The URL to fetch.
+    /// The absolute URL of the page to fetch.
+    #[param(example = "https://maero.dk", format = "uri")]
     pub(crate) url: String,
-    /// The maximum number of redirects to follow.
-    #[param(minimum = 0, maximum = 5)]
+    /// The maximum number of redirects to follow; defaults to 5.
+    #[param(minimum = 0, maximum = 5, default = 5, example = 2)]
     pub(crate) redirects: Option<u32>,
     /// The optional data to include in the response; may be repeated and comma-separated.
     #[serde(default)]
-    #[param(style = Form, explode = true)]
+    #[param(style = Form, explode = true, example = json!(["redirects"]))]
     pub(crate) include: Vec<String>,
 }
 
@@ -49,11 +50,14 @@ pub(crate) struct FetchParams {
 #[into_params(parameter_in = Query)]
 pub(crate) struct SearchParams {
     /// The search query.
+    #[param(example = "rust programming")]
     pub(crate) query: String,
     /// The maximum number of results to return.
+    #[param(example = 10)]
     pub(crate) limit: Option<usize>,
-    /// The maximum time to wait for the search, in whole seconds.
-    #[param(minimum = 1, maximum = 30)]
+    /// The maximum time to wait for the search — the queue wait, the session wait, and the
+    /// search itself — in whole seconds.
+    #[param(minimum = 1, maximum = 30, example = 10)]
     pub(crate) timeout: Option<u64>,
 }
 
