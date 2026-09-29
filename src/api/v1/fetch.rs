@@ -7,7 +7,6 @@ use std::time::Instant;
 use axum::Json;
 use axum::extract::State;
 use serde::Serialize;
-use utoipa::ToSchema;
 
 use crate::api::v1::error::ApiError;
 use crate::api::v1::extract::{ApiQuery, FETCH_INCLUDES, FetchParams};
@@ -19,12 +18,13 @@ use crate::metrics::Metrics;
 pub(crate) const FETCH_MAX_BYTES: u64 = 25 * 1024 * 1024;
 
 /// The response of the fetch endpoint.
-#[derive(Debug, Serialize, ToSchema)]
-#[schema(examples(json!({
-    "url": "https://maero.dk/",
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "utoipa", schema(examples(json!({
+    "url": "https://example.com/",
     "metadata": {
         "title": "Maero",
-        "canonical": "https://maero.dk/",
+        "canonical": "https://example.com/",
         "description": "A small API service implementing tools for LLM agents.",
         "og": {"site_name": "Maero"},
         "twitter": {},
@@ -36,7 +36,7 @@ pub(crate) const FETCH_MAX_BYTES: u64 = 25 * 1024 * 1024;
     "response_headers": {"content-type": "text/html; charset=utf-8", "content-length": "5123"},
     "metrics": {
         "status": 200,
-        "final_url": "https://maero.dk/",
+        "final_url": "https://example.com/",
         "http_version": "HTTP/2",
         "content_type": "text/html",
         "content_length": 5123,
@@ -47,10 +47,10 @@ pub(crate) const FETCH_MAX_BYTES: u64 = 25 * 1024 * 1024;
         "redirects": [],
         "truncated": false
     }
-})))]
+}))))]
 pub struct FetchResponse {
     /// The requested URL.
-    #[schema(format = "uri")]
+    #[cfg_attr(feature = "utoipa", schema(format = "uri"))]
     pub url: String,
     /// The metadata extracted from the document head.
     pub metadata: PageMetadata,
@@ -77,21 +77,24 @@ pub struct FetchResponse {
 /// # Errors
 ///
 /// Returns an error for invalid parameters, binary content types, and failed requests.
-#[utoipa::path(
-    get,
-    path = "/v1/fetch",
-    tag = "fetch",
-    summary = "Fetch a page.",
-    description = "Fetches the page and returns its document-head metadata, body, and request \
-                   metrics. Up to `redirects` redirects are followed by hand, and each hop can \
-                   be reported through `include=redirects`. The body is decoded as UTF-8 text \
-                   with invalid sequences replaced; binary content types are rejected, and \
-                   bodies beyond 25 MiB are cut short with `truncated: true`. The request and \
-                   response headers are returned when `include=headers` is requested.",
-    params(FetchParams),
-    responses(
-        (status = 200, description = "The page was fetched", body = FetchResponse),
-        ApiError,
+#[cfg_attr(
+    feature = "utoipa",
+    utoipa::path(
+        get,
+        path = "/v1/fetch",
+        tag = "fetch",
+        summary = "Fetch a page.",
+        description = "Fetches the page and returns its document-head metadata, body, and request \
+                       metrics. Up to `redirects` redirects are followed by hand, and each hop can \
+                       be reported through `include=redirects`. The body is decoded as UTF-8 text \
+                       with invalid sequences replaced; binary content types are rejected, and \
+                       bodies beyond 25 MiB are cut short with `truncated: true`. The request and \
+                       response headers are returned when `include=headers` is requested.",
+        params(FetchParams),
+        responses(
+            (status = 200, description = "The page was fetched", body = FetchResponse),
+            ApiError,
+        )
     )
 )]
 pub(crate) async fn fetch(

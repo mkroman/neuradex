@@ -1,0 +1,1083 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "neuradex",
+    "description": "A small API service implementing tools for LLM agents: fetching pages (`/v1/fetch`, `/v1/peek`) and searching the web (`/v1/search`). Every error response — including router-level 404 and 405 — is rendered as `{\"error\": {\"type\", \"message\"}}`; see the `ErrorBody` schema.",
+    "license": {
+      "name": "MIT OR Apache-2.0",
+      "identifier": "MIT OR Apache-2.0"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": [
+          "healthz"
+        ],
+        "summary": "Check the service health.",
+        "description": "Returns `204 No Content` when the service is up. Used as the liveness probe.",
+        "operationId": "healthz",
+        "responses": {
+          "204": {
+            "description": "The service is healthy."
+          }
+        }
+      }
+    },
+    "/v1/fetch": {
+      "get": {
+        "tags": [
+          "fetch"
+        ],
+        "summary": "Fetch a page.",
+        "description": "Fetches the page and returns its document-head metadata, body, and request metrics. Up to `redirects` redirects are followed by hand, and each hop can be reported through `include=redirects`. The body is decoded as UTF-8 text with invalid sequences replaced; binary content types are rejected, and bodies beyond 25 MiB are cut short with `truncated: true`. The request and response headers are returned when `include=headers` is requested.",
+        "operationId": "fetch",
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "description": "The absolute URL of the page to fetch.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            },
+            "example": "https://example.com"
+          },
+          {
+            "name": "redirects",
+            "in": "query",
+            "description": "The maximum number of redirects to follow; defaults to 5.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 5,
+              "maximum": 5,
+              "minimum": 0
+            },
+            "example": 2
+          },
+          {
+            "name": "include",
+            "in": "query",
+            "description": "The optional data to include in the response; may be repeated and comma-separated.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true,
+            "example": [
+              "redirects"
+            ]
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The page was fetched",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FetchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A request parameter is missing, malformed, or out of range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The JSON body of an error response.",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail",
+                      "description": "The error details."
+                    }
+                  },
+                  "examples": [
+                    {
+                      "error": {
+                        "message": "the timeout parameter must be between 1 and 30 seconds",
+                        "type": "invalid_param"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The target response has a content type that cannot be returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The JSON body of an error response.",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail",
+                      "description": "The error details."
+                    }
+                  },
+                  "examples": [
+                    {
+                      "error": {
+                        "message": "the timeout parameter must be between 1 and 30 seconds",
+                        "type": "invalid_param"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal, unexpected failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The JSON body of an error response.",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail",
+                      "description": "The error details."
+                    }
+                  },
+                  "examples": [
+                    {
+                      "error": {
+                        "message": "the timeout parameter must be between 1 and 30 seconds",
+                        "type": "invalid_param"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The upstream request failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The JSON body of an error response.",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail",
+                      "description": "The error details."
+                    }
+                  },
+                  "examples": [
+                    {
+                      "error": {
+                        "message": "the timeout parameter must be between 1 and 30 seconds",
+                        "type": "invalid_param"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/peek": {
+      "get": {
+        "tags": [
+          "peek"
+        ],
+        "summary": "Fetch a page's head metadata.",
+        "description": "Fetches the page and returns only its document-head metadata. The response is streamed through the head parser and the download is aborted as soon as the head has been received — through `</head>` or the start of `<body>` — so the endpoint returns as early as possible. Unlike `/v1/fetch`, the body is not returned and `include=headers` is not supported.",
+        "operationId": "peek",
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "description": "The absolute URL of the page to fetch.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            },
+            "example": "https://example.com"
+          },
+          {
+            "name": "redirects",
+            "in": "query",
+            "description": "The maximum number of redirects to follow; defaults to 5.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 5,
+              "maximum": 5,
+              "minimum": 0
+            },
+            "example": 2
+          },
+          {
+            "name": "include",
+            "in": "query",
+            "description": "The optional data to include in the response; may be repeated and comma-separated.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "style": "form",
+            "explode": true,
+            "example": [
+              "redirects"
+            ]
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The page head was fetched",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PeekResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A request parameter is missing, malformed, or out of range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The JSON body of an error response.",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail",
+                      "description": "The error details."
+                    }
+                  },
+                  "examples": [
+                    {
+                      "error": {
+                        "message": "the timeout parameter must be between 1 and 30 seconds",
+                        "type": "invalid_param"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The target response has a content type that cannot be returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The JSON body of an error response.",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail",
+                      "description": "The error details."
+                    }
+                  },
+                  "examples": [
+                    {
+                      "error": {
+                        "message": "the timeout parameter must be between 1 and 30 seconds",
+                        "type": "invalid_param"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal, unexpected failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The JSON body of an error response.",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail",
+                      "description": "The error details."
+                    }
+                  },
+                  "examples": [
+                    {
+                      "error": {
+                        "message": "the timeout parameter must be between 1 and 30 seconds",
+                        "type": "invalid_param"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The upstream request failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The JSON body of an error response.",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail",
+                      "description": "The error details."
+                    }
+                  },
+                  "examples": [
+                    {
+                      "error": {
+                        "message": "the timeout parameter must be between 1 and 30 seconds",
+                        "type": "invalid_param"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/search": {
+      "get": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Search the web.",
+        "description": "Searches the web through Kagi. Searches are queued: at most two run at once, and the request blocks until a slot and the results are ready. The optional `timeout` covers the whole of it — the queue wait, the session wait, and the search itself; without it, the request stays pending until the client disconnects. Results are truncated to `limit`.",
+        "operationId": "search",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "description": "The search query.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "rust programming"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "The maximum number of results to return.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "example": 10
+          },
+          {
+            "name": "timeout",
+            "in": "query",
+            "description": "The maximum time to wait for the search — the queue wait, the session wait, and the\nsearch itself — in whole seconds.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "maximum": 30,
+              "minimum": 1
+            },
+            "example": 10
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The search completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A request parameter is missing, malformed, or out of range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The JSON body of an error response.",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail",
+                      "description": "The error details."
+                    }
+                  },
+                  "examples": [
+                    {
+                      "error": {
+                        "message": "the timeout parameter must be between 1 and 30 seconds",
+                        "type": "invalid_param"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The target response has a content type that cannot be returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The JSON body of an error response.",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail",
+                      "description": "The error details."
+                    }
+                  },
+                  "examples": [
+                    {
+                      "error": {
+                        "message": "the timeout parameter must be between 1 and 30 seconds",
+                        "type": "invalid_param"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal, unexpected failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The JSON body of an error response.",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail",
+                      "description": "The error details."
+                    }
+                  },
+                  "examples": [
+                    {
+                      "error": {
+                        "message": "the timeout parameter must be between 1 and 30 seconds",
+                        "type": "invalid_param"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The upstream request failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The JSON body of an error response.",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail",
+                      "description": "The error details."
+                    }
+                  },
+                  "examples": [
+                    {
+                      "error": {
+                        "message": "the timeout parameter must be between 1 and 30 seconds",
+                        "type": "invalid_param"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ErrorBody": {
+        "type": "object",
+        "description": "The JSON body of an error response.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail",
+            "description": "The error details."
+          }
+        },
+        "examples": [
+          {
+            "error": {
+              "message": "the timeout parameter must be between 1 and 30 seconds",
+              "type": "invalid_param"
+            }
+          }
+        ]
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "description": "The details of an error response.",
+        "required": [
+          "type",
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "The human-readable error message."
+          },
+          "type": {
+            "type": "string",
+            "description": "The machine-readable error type."
+          }
+        }
+      },
+      "FetchResponse": {
+        "type": "object",
+        "description": "The response of the fetch endpoint.",
+        "required": [
+          "url",
+          "metadata",
+          "body",
+          "truncated",
+          "metrics"
+        ],
+        "properties": {
+          "body": {
+            "type": "string",
+            "description": "The response body, decoded as UTF-8 with invalid sequences replaced."
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/PageMetadata",
+            "description": "The metadata extracted from the document head."
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/Metrics",
+            "description": "The request metrics and stats."
+          },
+          "request_headers": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The request headers, when requested through `include=headers`.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "response_headers": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The response headers, when requested through `include=headers`.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether the body was cut short by the size limit."
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The requested URL."
+          }
+        },
+        "examples": [
+          {
+            "body": "<!doctype html>\n<html>…</html>",
+            "metadata": {
+              "canonical": "https://example.com/",
+              "description": "A small API service implementing tools for LLM agents.",
+              "og": {
+                "site_name": "Maero"
+              },
+              "other": {
+                "viewport": "width=device-width"
+              },
+              "title": "Maero",
+              "twitter": {}
+            },
+            "metrics": {
+              "bytes_read": 5123,
+              "content_length": 5123,
+              "content_type": "text/html",
+              "final_url": "https://example.com/",
+              "http_version": "HTTP/2",
+              "redirects": [],
+              "redirects_followed": 0,
+              "status": 200,
+              "total_ms": 120,
+              "truncated": false,
+              "ttfb_ms": 87
+            },
+            "request_headers": {
+              "accept-encoding": "gzip, deflate, br, zstd",
+              "user-agent": "neuradex/0.1"
+            },
+            "response_headers": {
+              "content-length": "5123",
+              "content-type": "text/html; charset=utf-8"
+            },
+            "truncated": false,
+            "url": "https://example.com/"
+          }
+        ]
+      },
+      "Metrics": {
+        "type": "object",
+        "description": "Request metrics and stats for a fetched page.",
+        "required": [
+          "status",
+          "final_url",
+          "http_version",
+          "bytes_read",
+          "ttfb_ms",
+          "total_ms",
+          "redirects_followed",
+          "truncated"
+        ],
+        "properties": {
+          "bytes_read": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The number of body bytes read (decompressed).",
+            "minimum": 0
+          },
+          "content_length": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The content length announced by the final response, if any.",
+            "minimum": 0
+          },
+          "content_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The content type of the final response, without parameters.",
+            "example": "text/html"
+          },
+          "final_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The URL of the final response, after following redirects."
+          },
+          "http_version": {
+            "type": "string",
+            "description": "The HTTP version of the final response, e.g. `HTTP/1.1`.",
+            "example": "HTTP/2"
+          },
+          "redirects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RedirectHop"
+            },
+            "description": "The intermediate redirect hops, when requested through `include=redirects`."
+          },
+          "redirects_followed": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of redirects followed.",
+            "minimum": 0
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The status code of the final response.",
+            "minimum": 0
+          },
+          "total_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The total processing time, in milliseconds.",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether the response was cut short by a size limit."
+          },
+          "ttfb_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The time until the headers of the final response were received, in milliseconds.",
+            "minimum": 0
+          }
+        },
+        "examples": [
+          {
+            "bytes_read": 5123,
+            "content_length": 5123,
+            "content_type": "text/html",
+            "final_url": "https://example.com/",
+            "http_version": "HTTP/2",
+            "redirects": [],
+            "redirects_followed": 0,
+            "status": 200,
+            "total_ms": 120,
+            "truncated": false,
+            "ttfb_ms": 87
+          }
+        ]
+      },
+      "PageMetadata": {
+        "type": "object",
+        "description": "Page metadata extracted from a document head.\n\nAll meta tags are captured generically — keyed by their `property` or `name` attribute — so\nadditional extractors can be layered on without extending the tokenizer.",
+        "required": [
+          "og",
+          "twitter",
+          "other"
+        ],
+        "properties": {
+          "canonical": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "The `href` of the first `<link rel=\"canonical\">` element."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `content` of the first `<meta name=\"description\">` tag."
+          },
+          "og": {
+            "type": "object",
+            "description": "The OpenGraph meta properties, without the `og:` prefix.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "other": {
+            "type": "object",
+            "description": "All other named or proprietary meta tags, keyed by their property or name.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The contents of the first `<title>` element."
+          },
+          "twitter": {
+            "type": "object",
+            "description": "The Twitter Card meta names, without the `twitter:` prefix.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "examples": [
+          {
+            "canonical": "https://example.com/",
+            "description": "A small API service implementing tools for LLM agents.",
+            "og": {
+              "site_name": "Maero",
+              "title": "Hello"
+            },
+            "other": {
+              "viewport": "width=device-width"
+            },
+            "title": "Maero",
+            "twitter": {
+              "card": "summary"
+            }
+          }
+        ]
+      },
+      "PeekResponse": {
+        "type": "object",
+        "description": "The response of the peek endpoint.",
+        "required": [
+          "url",
+          "metadata",
+          "metrics"
+        ],
+        "properties": {
+          "metadata": {
+            "$ref": "#/components/schemas/PageMetadata",
+            "description": "The metadata extracted from the document head."
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/Metrics",
+            "description": "The request metrics and stats."
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The requested URL."
+          }
+        },
+        "examples": [
+          {
+            "metadata": {
+              "canonical": "https://example.com/",
+              "description": "A small API service implementing tools for LLM agents.",
+              "og": {
+                "site_name": "Maero"
+              },
+              "other": {},
+              "title": "Maero",
+              "twitter": {}
+            },
+            "metrics": {
+              "bytes_read": 1024,
+              "content_length": 5123,
+              "content_type": "text/html",
+              "final_url": "https://example.com/",
+              "http_version": "HTTP/2",
+              "redirects": [],
+              "redirects_followed": 0,
+              "status": 200,
+              "total_ms": 95,
+              "truncated": false,
+              "ttfb_ms": 87
+            },
+            "url": "https://example.com/"
+          }
+        ]
+      },
+      "RedirectHop": {
+        "type": "object",
+        "description": "A single intermediate redirect hop.",
+        "required": [
+          "status",
+          "url"
+        ],
+        "properties": {
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The status code of the redirect response.",
+            "minimum": 0
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The URL that returned the redirect."
+          }
+        },
+        "examples": [
+          {
+            "status": 301,
+            "url": "https://example.com/index.html"
+          }
+        ]
+      },
+      "SearchMetrics": {
+        "type": "object",
+        "description": "Request metrics and stats for a search.",
+        "required": [
+          "queue_ms",
+          "total_ms",
+          "result_count"
+        ],
+        "properties": {
+          "queue_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The time spent waiting for a search slot before the search started, in milliseconds.",
+            "minimum": 0
+          },
+          "result_count": {
+            "type": "integer",
+            "description": "The number of results returned.",
+            "minimum": 0
+          },
+          "total_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The total processing time, in milliseconds.",
+            "minimum": 0
+          }
+        },
+        "examples": [
+          {
+            "queue_ms": 12,
+            "result_count": 10,
+            "total_ms": 340
+          }
+        ]
+      },
+      "SearchResponse": {
+        "type": "object",
+        "description": "The response of the search endpoint.",
+        "required": [
+          "query",
+          "results",
+          "metrics"
+        ],
+        "properties": {
+          "metrics": {
+            "$ref": "#/components/schemas/SearchMetrics",
+            "description": "The request metrics and stats."
+          },
+          "query": {
+            "type": "string",
+            "description": "The search query."
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchResult"
+            },
+            "description": "The search results."
+          }
+        },
+        "examples": [
+          {
+            "metrics": {
+              "queue_ms": 12,
+              "result_count": 1,
+              "total_ms": 340
+            },
+            "query": "rust programming",
+            "results": [
+              {
+                "description": "Learn Rust with an official book.",
+                "title": "The Rust Programming Language",
+                "url": "https://doc.rust-lang.org/book/"
+              }
+            ]
+          }
+        ]
+      },
+      "SearchResult": {
+        "type": "object",
+        "description": "A single search result.",
+        "required": [
+          "title",
+          "url",
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "The description of the search result."
+          },
+          "title": {
+            "type": "string",
+            "description": "The title of the search result."
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The URL of the search result."
+          }
+        },
+        "examples": [
+          {
+            "description": "Learn Rust with an official book.",
+            "title": "The Rust Programming Language",
+            "url": "https://doc.rust-lang.org/book/"
+          }
+        ]
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "fetch",
+      "description": "Fetching pages over HTTP."
+    },
+    {
+      "name": "peek",
+      "description": "Extracting document head metadata."
+    },
+    {
+      "name": "search",
+      "description": "Searching the web with Kagi."
+    },
+    {
+      "name": "healthz",
+      "description": "Liveness probe."
+    }
+  ]
+}

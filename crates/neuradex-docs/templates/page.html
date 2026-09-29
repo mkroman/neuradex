@@ -1,0 +1,74 @@
+<!doctype html>
+<!--
+  neuradex API documentation — generated page. Do not edit by hand: this page is
+  rendered from the live OpenAPI document by the neuradex-docs crate; edit its
+  sources instead (crates/neuradex-docs: templates/ and theme/).
+-->
+<html lang="en" data-docs="neuradex">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="API documentation for the {{ page.title }} service: fetch, peek, and search tools for LLM agents.">
+<title>{{ page.title }} · API documentation</title>
+<script>
+{{ theme_bootstrap|safe }}
+</script>
+<style>
+{{ style|safe }}
+</style>
+<noscript><style>
+  #filter, #filter-count, #theme-toggle, .tryit .actions { display: none; }
+</style></noscript>
+</head>
+<body>
+<a class="skip-link" href="#content">Skip to content</a>
+<div class="frame">
+
+  <header class="masthead">
+    <p class="masthead-kicker">API documentation</p>
+    <div class="masthead-top">
+      <h1 class="wordmark">{{ page.title }}</h1>
+      <div class="masthead-tools">
+        {% match page.version %}{% when Some with (version) %}<span class="version" id="spec-version">v{{ version }}</span>{% when None %}{% endmatch %}
+        <a class="spec-link" href="{{ page.spec_url }}">openapi.json</a>
+        <button id="theme-toggle" type="button" class="theme-toggle" aria-label="Switch theme">
+          <svg class="theme-icon" width="13" height="13" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.3"></circle>
+            <path d="M8 1.6 A6.4 6.4 0 0 1 8 14.4 Z" fill="currentColor"></path>
+          </svg>
+          <span class="theme-word">dark</span>
+        </button>
+      </div>
+    </div>
+    <p class="tagline" id="spec-description">{{ page.description_html|safe }}</p>
+  </header>
+
+  <hr class="layout-rule">
+
+  <div class="layout">
+
+    <aside class="sidebar">
+      {% include "partials/toc.html" %}
+    </aside>
+
+    <main id="content">
+      <p class="nojs-note">Static documentation — this page is generated from the live OpenAPI document. Enable JavaScript for the interactive request builder, endpoint filter, and theming.</p>
+      <p class="doc-intro">{{ page.endpoint_count }} endpoint{% if page.endpoint_count != 1 %}s{% endif %} · OpenAPI {{ page.spec_version }} · <a href="{{ page.spec_url }}">raw spec</a></p>
+      {% for endpoint in page.endpoints %}
+      {% include "partials/endpoint.html" %}
+      {% endfor %}
+      {% include "partials/appendix.html" %}
+    </main>
+  </div>
+
+  <footer class="colophon">
+    <span>{{ page.title }} {% match page.version %}{% when Some with (version) %}<span id="footer-version">v{{ version }}</span>{% when None %}{% endmatch %}</span>
+    <span>rendered from <a href="{{ page.spec_url }}">{{ page.spec_url }}</a></span>
+  </footer>
+</div>
+
+<script>
+{{ behavior|safe }}
+</script>
+</body>
+</html>

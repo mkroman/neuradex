@@ -15,7 +15,6 @@ use html5ever::tokenizer::{
     BufferQueue, EndTag, StartTag, Tag, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
 use serde::Serialize;
-use utoipa::ToSchema;
 
 /// The prefix of the OpenGraph meta properties.
 const OG_PREFIX: &str = "og:";
@@ -27,20 +26,21 @@ const TWITTER_PREFIX: &str = "twitter:";
 ///
 /// All meta tags are captured generically — keyed by their `property` or `name` attribute — so
 /// additional extractors can be layered on without extending the tokenizer.
-#[derive(Clone, Debug, Default, Serialize, ToSchema)]
-#[schema(examples(json!({
+#[derive(Clone, Debug, Default, Serialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "utoipa", schema(examples(json!({
     "title": "Maero",
-    "canonical": "https://maero.dk/",
+    "canonical": "https://example.com/",
     "description": "A small API service implementing tools for LLM agents.",
     "og": {"site_name": "Maero", "title": "Hello"},
     "twitter": {"card": "summary"},
     "other": {"viewport": "width=device-width"}
-})))]
+}))))]
 pub struct PageMetadata {
     /// The contents of the first `<title>` element.
     pub title: Option<String>,
     /// The `href` of the first `<link rel="canonical">` element.
-    #[schema(format = "uri")]
+    #[cfg_attr(feature = "utoipa", schema(format = "uri"))]
     pub canonical: Option<String>,
     /// The `content` of the first `<meta name="description">` tag.
     pub description: Option<String>,
@@ -441,11 +441,14 @@ mod tests {
     #[test]
     fn extracts_canonical_link() {
         let metadata = parse_metadata(
-            r#"<head><link rel="canonical" href="https://maero.dk/page">
+            r#"<head><link rel="canonical" href="https://example.com/page">
             <link rel="stylesheet" href="style.css"></head>"#,
         );
 
-        assert_eq!(metadata.canonical.as_deref(), Some("https://maero.dk/page"));
+        assert_eq!(
+            metadata.canonical.as_deref(),
+            Some("https://example.com/page")
+        );
     }
 
     #[test]

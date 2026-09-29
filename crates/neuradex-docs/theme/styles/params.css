@@ -1,0 +1,31 @@
+/* neuradex documentation-page theme — parameter table and annotations. */
+
+/* parameter table — hairline rules only */
+table.params { width: 100%; border-collapse: collapse; font-size: 15px; }
+.params th {
+  text-align: left; font-family: var(--font-mono); font-weight: 400;
+  font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-secondary); padding: 6px 16px 7px 0;
+  border-bottom: 1px solid var(--line-strong);
+}
+.params td { padding: 13px 16px 13px 0; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+.params tr:last-child td { border-bottom: none; }
+.param-name-wrap { display: flex; align-items: baseline; gap: 6px; }
+.param-name { font-family: var(--font-mono); font-size: 14px; color: var(--text-heading); white-space: nowrap; }
+.req { color: var(--negative); font-family: var(--font-mono); font-weight: 700; }
+.opt { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
+.param-kind { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); margin-top: 3px; }
+.param-desc { color: var(--text-body); }
+.ann-list { display: block; }
+.ann { display: inline-block; margin: 0 12px 5px 0; font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
+.ann-k {
+  color: var(--text-secondary); opacity: 0.85; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.07em; margin-right: 5px;
+}
+.ann-v { color: var(--text-body); overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .params thead { display: none; }
+  .params tr { display: block; padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
+  .params td { display: block; padding: 2px 0; border-bottom: none; }
+  .ann { white-space: normal; }
+}

@@ -1,0 +1,32 @@
+[package]
+name = "neuradex-docs"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The neuradex documentation page: askama templates, theme sources, and runtime CSS bundling from an OpenAPI document."
+
+[dependencies]
+askama = "0.16.1"
+lightningcss = { version = "1.0.0-alpha.72", default-features = false }
+serde_json = { workspace = true, features = ["preserve_order"] }
+tracing.workspace = true
+# Macro-free utoipa: only the OpenAPI object model (`utoipa::openapi::OpenApi`), no
+# proc-macro stack. Must move in lockstep with the root crate's utoipa version.
+utoipa = { workspace = true }
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+cargo = { level = "allow", priority = 1 }
+doc_markdown = { level = "allow", priority = 1 }
+cognitive_complexity = { level = "allow", priority = 1 }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+rust_2018_idioms = { level = "warn", priority = 1 }
+trivial_casts = { level = "warn", priority = 1 }
+trivial_numeric_casts = { level = "warn", priority = 1 }
+unused_import_braces = { level = "warn", priority = 1 }
+unused_qualifications = { level = "warn", priority = 1 }

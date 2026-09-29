@@ -3,6 +3,7 @@
 pub mod error;
 pub mod extract;
 pub mod fetch;
+#[cfg(feature = "utoipa")]
 pub mod openapi;
 pub mod peek;
 pub mod redirect;
@@ -12,13 +13,23 @@ pub mod stream;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "utoipa")]
+use axum::Extension;
 use axum::Json;
 use axum::Router;
+#[cfg(feature = "docs")]
+use axum::http::header;
 use axum::http::{Method, StatusCode, Uri};
+#[cfg(feature = "utoipa")]
+use axum::response::IntoResponse;
+use axum::routing::get;
 use secrecy::SecretString;
+#[cfg(all(feature = "docs", not(debug_assertions)))]
+use std::sync::OnceLock;
+#[cfg(feature = "utoipa")]
 use utoipa_axum::router::OpenApiRouter;
+#[cfg(feature = "utoipa")]
 use utoipa_axum::routes;
-use utoipa_swagger_ui::SwaggerUi;
 use wreq::header::{ACCEPT_ENCODING, HeaderMap, HeaderValue, USER_AGENT};
 use wreq::redirect::Policy;
 use wreq_util::Emulation;
@@ -129,6 +140,7 @@ fn default_headers(user_agent: &str) -> Result<HeaderMap, BuildError> {
 /// The paths are collected from the `#[utoipa::path]` handlers at build time through
 /// [`utoipa_axum`], so the router and the document cannot drift apart; the document's metadata
 /// (info, tags, schemas) comes from [`openapi::base`].
+#[cfg(feature = "utoipa")]
 fn api() -> (Router<Arc<AppState>>, utoipa::openapi::OpenApi) {
     OpenApiRouter::with_openapi(openapi::base())
         .routes(routes!(healthz))
@@ -138,30 +150,110 @@ fn api() -> (Router<Arc<AppState>>, utoipa::openapi::OpenApi) {
         .split_for_parts()
 }
 
-/// Builds the router for the whole service: the v1 API plus the OpenAPI document and Swagger UI.
+/// Builds the v1 API router for builds without `utoipa`.
+///
+/// Without the `utoipa` feature there is no OpenAPI document, so the routes are registered by
+/// hand. The router-level tests are the drift pin: they assert that both router shapes register
+/// the same four paths.
+#[cfg(not(feature = "utoipa"))]
+fn api() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/v1/peek", get(peek::peek))
+        .route("/v1/fetch", get(fetch::fetch))
+        .route("/v1/search", get(search::search))
+}
+
+/// Returns the OpenAPI document derived from the API routes.
+#[cfg(feature = "utoipa")]
+#[must_use]
+pub fn openapi_document() -> utoipa::openapi::OpenApi {
+    api().1
+}
+
+/// Builds the router for the whole service: the v1 API plus the documentation endpoints.
 ///
 /// Every error response — including the router-level `404` and `405` fallbacks — renders the
-/// `{"error": {type, message}}` envelope. The OpenAPI document is served as JSON at
-/// `/openapi.json` and as Swagger UI at `/swagger-ui`, both through the merged
-/// [`utoipa_swagger_ui::SwaggerUi`] router.
+/// `{"error": {type, message}}` envelope. With the `utoipa` feature the API operations' routes
+/// come from [`api`] together with the document served at `/openapi.json`; with the `docs`
+/// feature the page at `/docs` and the legacy `/swagger-ui` redirect are added. These
+/// infrastructure endpoints are hand-registered like the fallbacks — they are not
+/// OpenAPI-documented operations.
 pub fn router(state: AppState) -> Router {
+    #[cfg(feature = "utoipa")]
     let (router, openapi) = api();
+    #[cfg(not(feature = "utoipa"))]
+    let router = api();
+
+    #[cfg(feature = "utoipa")]
+    let router = router.route(
+        "/openapi.json",
+        get(serve_openapi).layer(Extension(openapi)),
+    );
+
+    #[cfg(feature = "docs")]
+    let router = router
+        .route("/docs", get(docs))
+        .route("/swagger-ui", get(swagger_ui_redirect))
+        .route("/swagger-ui/", get(swagger_ui_redirect));
 
     router
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .with_state(Arc::new(state))
-        .merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", openapi))
+}
+
+/// Renders the documentation page from the OpenAPI document.
+#[cfg(feature = "docs")]
+fn render_docs_page() -> String {
+    neuradex_docs::render(&openapi_document())
+}
+
+/// Serves the API documentation page at `GET /docs`.
+///
+/// Release builds render the page once and cache it; debug builds render per request, so
+/// template and theme edits show up on refresh during development.
+#[cfg(feature = "docs")]
+async fn docs() -> impl IntoResponse {
+    #[cfg(not(debug_assertions))]
+    static PAGE: OnceLock<String> = OnceLock::new();
+
+    #[cfg(not(debug_assertions))]
+    let body = PAGE.get_or_init(render_docs_page).clone();
+    #[cfg(debug_assertions)]
+    let body = render_docs_page();
+
+    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body)
+}
+
+/// Serves the OpenAPI document as JSON at `GET /openapi.json`.
+///
+/// The document is the one [`api`] derives from the routes, injected as an extension at router
+/// construction, so what is served cannot drift from the API operations.
+#[cfg(feature = "utoipa")]
+async fn serve_openapi(
+    Extension(document): Extension<utoipa::openapi::OpenApi>,
+) -> impl IntoResponse {
+    Json(document)
+}
+
+/// Redirects the legacy Swagger UI paths to [`docs`].
+#[cfg(feature = "docs")]
+async fn swagger_ui_redirect() -> impl IntoResponse {
+    (StatusCode::FOUND, [(header::LOCATION, "/docs")])
 }
 
 /// Handles `GET /healthz`.
-#[utoipa::path(
-    get,
-    path = "/healthz",
-    tag = "healthz",
-    summary = "Check the service health.",
-    description = "Returns `204 No Content` when the service is up. Used as the liveness probe.",
-    responses((status = 204, description = "The service is healthy."))
+#[cfg_attr(
+    feature = "utoipa",
+    utoipa::path(
+        get,
+        path = "/healthz",
+        tag = "healthz",
+        summary = "Check the service health.",
+        description = "Returns `204 No Content` when the service is up. Used as the liveness probe.",
+        responses((status = 204, description = "The service is healthy."))
+    )
 )]
 pub(crate) async fn healthz() -> StatusCode {
     StatusCode::NO_CONTENT
@@ -236,6 +328,7 @@ mod tests {
         assert_eq!(error["error"]["message"], message);
     }
 
+    #[cfg(feature = "utoipa")]
     #[tokio::test]
     async fn serves_the_openapi_document() {
         let response = send(router_for_test(), "GET", "/openapi.json").await;
@@ -252,11 +345,47 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "docs")]
     #[tokio::test]
-    async fn serves_the_swagger_ui() {
-        let response = send(router_for_test(), "GET", "/swagger-ui/").await;
+    async fn serves_the_documentation_page() {
+        let response = send(router_for_test(), "GET", "/docs").await;
 
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/html; charset=utf-8"),
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let page = String::from_utf8(body.to_vec()).expect("the page is utf-8");
+
+        assert!(
+            page.contains(r#"data-docs="neuradex""#),
+            "the page is missing the data-docs marker"
+        );
+    }
+
+    #[cfg(feature = "docs")]
+    #[tokio::test]
+    async fn redirects_the_legacy_swagger_ui_paths_to_the_docs() {
+        for path in ["/swagger-ui", "/swagger-ui/"] {
+            let response = send(router_for_test(), "GET", path).await;
+
+            assert_eq!(response.status(), StatusCode::FOUND, "for {path}");
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::LOCATION)
+                    .and_then(|value| value.to_str().ok()),
+                Some("/docs"),
+                "for {path}",
+            );
+        }
     }
 
     #[tokio::test]
@@ -338,15 +467,15 @@ mod tests {
                 "invalid url: relative URL without a base",
             ),
             (
-                "/v1/fetch?url=https://maero.dk&redirects=6",
+                "/v1/fetch?url=https://example.com&redirects=6",
                 "redirects must be between 0 and 5",
             ),
             (
-                "/v1/fetch?url=https://maero.dk&include=nope",
+                "/v1/fetch?url=https://example.com&include=nope",
                 "unknown include: nope",
             ),
             (
-                "/v1/peek?url=https://maero.dk&include=headers",
+                "/v1/peek?url=https://example.com&include=headers",
                 "unknown include: headers",
             ),
             (

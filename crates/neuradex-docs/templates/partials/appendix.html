@@ -1,0 +1,24 @@
+{%- if !page.schemas.is_empty() %}
+<article class="ep ep-appendix" id="appendix-schemas">
+  <div class="ep-inner">
+    <div class="ep-kicker">
+      <span class="ep-num">A</span>
+      <code class="ep-path">components/schemas</code>
+    </div>
+    <h2 class="ep-title">Schema appendix</h2>
+    <p class="prose">{{ page.appendix_intro_html|safe }}</p>
+    <h3 class="widget-label">
+      <span>Schemas</span>
+      <span class="widget-tools">
+        <button class="tool" type="button" data-tree-action="expand">expand all</button>
+        <button class="tool" type="button" data-tree-action="collapse">collapse all</button>
+      </span>
+    </h3>
+    <div class="schema-tree">
+      {%- for schema in page.schemas %}
+      <div class="schema-anchor" id="{{ schema.anchor_id }}">{{ schema.tree.render()?|safe }}</div>
+      {%- endfor %}
+    </div>
+  </div>
+</article>
+{%- endif %}

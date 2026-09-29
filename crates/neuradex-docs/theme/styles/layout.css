@@ -1,0 +1,96 @@
+/* neuradex documentation-page theme — frame, masthead, sidebar, and colophon. */
+
+/* -------------------------------------------------------------- masthead */
+.frame { max-width: 1180px; margin: 0 auto; padding: clamp(24px, 4vw, 52px) clamp(18px, 4vw, 48px) 0; }
+.masthead { padding-bottom: 26px; }
+.masthead-kicker {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--accent-dim); margin: 0 0 6px;
+}
+.masthead-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; flex-wrap: wrap; }
+.wordmark {
+  font-family: var(--font-display); font-weight: 400;
+  font-size: clamp(44px, 7vw, 64px); line-height: 1;
+  letter-spacing: -0.015em; color: var(--text-heading); margin: 0;
+}
+.masthead-tools { display: flex; align-items: center; gap: 16px; padding-bottom: 8px; }
+.version { font-family: var(--font-mono); font-size: 13px; color: var(--text-secondary); }
+.spec-link { font-family: var(--font-mono); font-size: 13px; }
+.theme-toggle {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em;
+  color: var(--text-secondary); background: transparent;
+  border: 1px solid var(--line-strong); border-radius: 2px;
+  padding: 6px 12px; min-height: 32px; cursor: pointer;
+}
+.theme-toggle:hover { color: var(--accent-dim); border-color: var(--accent-line); }
+.theme-icon { display: block; }
+.tagline { margin: 16px 0 0; max-width: 62ch; font-size: 16px; color: var(--text-body); }
+.layout-rule { border: 0; border-top: 1px solid var(--line-strong); margin: 0; position: relative; }
+.layout-rule::after { content: ""; position: absolute; left: 0; right: 0; top: 2px; border-top: 1px solid var(--line); }
+
+/* ---------------------------------------------------------------- layout */
+.layout {
+  display: grid; grid-template-columns: 232px minmax(0, 1fr);
+  gap: clamp(36px, 5vw, 84px); align-items: start;
+}
+@media (max-width: 1023.98px) {
+  .layout { grid-template-columns: 1fr; gap: 20px; }
+}
+
+/* --------------------------------------------------------------- sidebar */
+.sidebar { font-size: 14px; }
+@media (min-width: 1024px) {
+  .sidebar { position: sticky; top: 20px; max-height: calc(100vh - 40px); overflow-y: auto; padding-bottom: 12px; }
+}
+.filter-wrap { margin: 22px 0 4px; }
+#filter {
+  width: 100%; min-height: 34px;
+  font-family: var(--font-mono); font-size: 13px; color: var(--text-heading);
+  background: var(--page-bg); border: 1px solid var(--line-strong); border-radius: 2px;
+  padding: 7px 10px;
+}
+#filter::placeholder { color: var(--text-secondary); opacity: 0.85; }
+#filter:focus { border-color: var(--accent-dim); outline: none; }
+#filter-count { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); margin: 6px 0 0; min-height: 14px; display: block; }
+.toc-tag { margin-top: 20px; }
+.toc-tag[hidden] { display: none; }
+.toc-tag-label {
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--text-secondary); margin: 0 0 4px;
+}
+.toc ol, .toc ul { list-style: none; margin: 0; padding: 0; }
+.toc a {
+  display: flex; align-items: baseline; gap: 10px;
+  min-height: 32px; padding: 5px 8px 5px 10px; margin-left: -12px;
+  border-left: 2px solid transparent; border-radius: 0 2px 2px 0;
+  color: var(--text-secondary); text-decoration: none;
+}
+.toc a:hover { color: var(--text-heading); background: color-mix(in srgb, var(--text-heading) 4%, transparent); }
+.toc a.active { color: var(--text-heading); border-left-color: var(--accent-dim); }
+.toc-num { font-family: var(--font-mono); font-size: 11.5px; color: var(--accent-dim); min-width: 20px; flex: none; }
+.toc-label { font-size: 14.5px; line-height: 1.35; }
+.toc-schemas a { font-family: var(--font-mono); font-size: 12.5px; }
+.toc-schemas .toc-schema-name { color: inherit; }
+
+/* ------------------------------------------------------------------ main */
+#content { width: 100%; max-width: min(72ch, 92vw); }
+.doc-intro {
+  font-family: var(--font-mono); font-size: 12.5px; color: var(--text-secondary);
+  margin: 30px 0 0;
+}
+.doc-intro a { font-family: var(--font-mono); }
+
+/* notices (no-JS note) */
+.nojs-note {
+  font-size: 14px; color: var(--text-secondary); font-style: italic;
+  border-top: 1px solid var(--line); margin: 30px 0 0; padding-top: 14px;
+}
+
+/* footer */
+.colophon {
+  display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  border-top: 1px solid var(--line); margin-top: 8px; padding: 20px 0 44px;
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);
+}
+.colophon a { font-family: var(--font-mono); }

@@ -48,3 +48,12 @@ jobs:
         run: cargo clippy --all-targets --workspace -- -D warnings
       - name: Run tests
         run: cargo test --workspace
+      # The lean variants must keep working, not merely compiling: --no-default-features
+      # has no utoipa at all (plain hand-registered routes), and --features utoipa serves
+      # OpenAPI JSON without the documentation page. The unconditional router-envelope
+      # tests are the drift pin between the two router shapes, so `cargo test` runs them
+      # in the lean builds too (a plain `cargo check` would never compile test code).
+      - name: Test --no-default-features
+        run: cargo test --no-default-features
+      - name: Test --no-default-features --features utoipa
+        run: cargo test --no-default-features --features utoipa

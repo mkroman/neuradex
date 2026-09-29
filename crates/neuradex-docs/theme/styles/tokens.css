@@ -1,0 +1,64 @@
+/* neuradex documentation-page theme — design tokens verbatim from
+   support/design/api-docs-design.md. No external assets of any kind. */
+
+/* ---------------------------------------------------------------- tokens */
+:root {
+  /* design tokens — light (verbatim from support/design/api-docs-design.md) */
+  --page-bg: #f7f4ee;
+  --text-heading: #2c2824;
+  --text-body: #4f4a45;
+  --text-secondary: #6f6962;
+  --line: #d8d1c7;
+  --line-strong: #c8c0b5;
+  --code-bg: #ece6dd;
+  --link: #b14900;
+  --link-hover: #8f4400;
+  --accent-dim: #b45d00;
+  --positive: #28734b;
+  --negative: #ad4038;
+
+  /* soft variants, per the spec's color-mix technique */
+  --line-soft: color-mix(in srgb, var(--line) 65%, var(--page-bg));
+  --line-faint: color-mix(in srgb, var(--line) 40%, var(--page-bg));
+  --grid-line: color-mix(in srgb, var(--text-heading) 3%, transparent);
+  --accent-soft: color-mix(in srgb, var(--accent-dim) 10%, var(--page-bg));
+  --accent-line: color-mix(in srgb, var(--accent-dim) 45%, transparent);
+  --pos-soft: color-mix(in srgb, var(--positive) 10%, var(--page-bg));
+  --pos-line: color-mix(in srgb, var(--positive) 40%, transparent);
+  --neg-soft: color-mix(in srgb, var(--negative) 9%, var(--page-bg));
+  --neg-line: color-mix(in srgb, var(--negative) 40%, transparent);
+
+  /* system fallback stacks only — never an external asset */
+  --font-body: "TeX Gyre Pagella", Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  --font-display: "Crimson Text", Georgia, serif;
+  --font-mono: "Inconsolata", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  color-scheme: light;
+}
+[data-theme="dark"] {
+  /* design tokens — dark (verbatim) */
+  --page-bg: #0a0a0a;
+  --text-heading: #ebe7df;
+  --text-body: #ccc;
+  --text-secondary: #8f8a82;
+  --line: #2e2e2e;
+  --line-strong: #3a3731;
+  --code-bg: #171717;
+  --link: #ee9c40;
+  --link-hover: #ffc15a;
+  --accent-dim: #c47a28;
+  --positive: #75c493;
+  --negative: #e57870;
+
+  --line-soft: color-mix(in srgb, var(--line) 65%, var(--page-bg));
+  --line-faint: color-mix(in srgb, var(--line) 40%, var(--page-bg));
+  --grid-line: color-mix(in srgb, var(--text-heading) 3%, transparent);
+  --accent-soft: color-mix(in srgb, var(--accent-dim) 10%, var(--page-bg));
+  --accent-line: color-mix(in srgb, var(--accent-dim) 45%, transparent);
+  --pos-soft: color-mix(in srgb, var(--positive) 10%, var(--page-bg));
+  --pos-line: color-mix(in srgb, var(--positive) 40%, transparent);
+  --neg-soft: color-mix(in srgb, var(--negative) 9%, var(--page-bg));
+  --neg-line: color-mix(in srgb, var(--negative) 40%, transparent);
+
+  color-scheme: dark;
+}

@@ -1,0 +1,18 @@
+<section class="widget" aria-label="Documented responses">
+  <h3 class="widget-label">Responses</h3>
+  <ul class="responses">
+    {%- for response in endpoint.responses %}
+    <li>
+      <span class="status-pill small {% if response.ok %}status-ok{% else %}status-err{% endif %}">{{ response.code }}</span>
+      <div class="resp-desc">{{- response.description_html|safe -}}
+        {%- if !response.refs.is_empty() %}<span class="resp-ref">
+          {%- for schema_ref in response.refs -%}
+          <a href="#schema-{{ schema_ref }}">→ {{ schema_ref }}</a>
+          {%- endfor -%}
+        </span>
+        {%- endif -%}
+      </div>
+    </li>
+    {%- endfor %}
+  </ul>
+</section>

@@ -1,0 +1,17 @@
+<div class="prop-row">
+  <div class="prop-head">
+    <span class="schema-name">{{ row.name }}</span>
+    <span class="type-pill{% if row.type_is_ref %} ref{% endif %}">{{ row.type_label }}</span>
+    {%- if row.required %}<span class="req">*</span>{% endif %}
+  </div>
+  {%- if !row.description_html.is_empty() %}
+  <p class="prop-desc">{{ row.description_html|safe }}</p>
+  {%- endif %}
+  {%- if !row.anns.is_empty() %}
+  <span class="ann-list prop-anns">
+    {%- for ann in row.anns -%}
+    <span class="ann"><span class="ann-k">{{ ann.key }}</span> <span class="ann-v">{{ ann.value }}</span></span>
+    {%- endfor -%}
+  </span>
+  {%- endif %}
+</div>
