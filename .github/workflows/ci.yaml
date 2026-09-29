@@ -48,3 +48,10 @@ jobs:
         run: cargo clippy --all-targets --workspace -- -D warnings
       - name: Run tests
         run: cargo test --workspace
+      # The lean variants must keep compiling: --no-default-features has no utoipa at
+      # all (plain hand-registered routes), and --features utoipa serves OpenAPI JSON
+      # without the documentation page.
+      - name: Check --no-default-features
+        run: cargo check --no-default-features
+      - name: Check --no-default-features --features utoipa
+        run: cargo check --no-default-features --features utoipa

@@ -1,0 +1,20 @@
+/* neuradex documentation-page theme — widget shells and tools. */
+
+/* ---------------------------------------------------------------- widgets */
+.widget { margin-top: 34px; }
+.widget-label {
+  display: flex; align-items: center; gap: 12px;
+  font-family: var(--font-mono); font-weight: 400; font-size: 11px;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-secondary);
+  margin: 0 0 12px;
+}
+.widget-label::after { content: ""; flex: 1; border-top: 1px solid var(--line-soft); }
+.widget-tools { display: inline-flex; gap: 10px; }
+.widget-tools::after { content: none; }
+button.tool {
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text-secondary);
+  background: transparent; border: none; padding: 4px 2px; min-height: 32px; cursor: pointer;
+}
+button.tool:hover { color: var(--accent-dim); }
+.widget-empty { font-style: italic; color: var(--text-secondary); font-size: 15px; margin: 0; }

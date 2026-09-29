@@ -1,0 +1,13 @@
+      <article class="ep" id="{{ endpoint.id }}">
+        <div class="ep-inner">
+          <header class="ep-head">
+            <div class="ep-kicker"><span class="ep-num">{{ endpoint.num }}</span><span class="method-badge">{{ endpoint.method }}</span><code class="ep-path">{{ endpoint.path }}</code></div>
+            <h2 class="ep-title">{{ endpoint.title }}</h2>
+          </header>
+          {% if !endpoint.description_html.is_empty() %}<p class="prose">{{ endpoint.description_html|safe }}</p>{% endif %}
+          {% include "partials/params-table.html" %}
+          {% include "partials/tryit.html" %}
+          {% include "partials/responses.html" %}
+          {% include "partials/schema-widget.html" %}
+        </div>
+      </article>

@@ -1,0 +1,50 @@
+/* neuradex documentation-page theme — base elements. */
+
+/* ------------------------------------------------------------------ base */
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; }
+}
+body {
+  margin: 0;
+  background-color: var(--page-bg);
+  /* the reference design's subtle research grid: text-heading at ~3% alpha */
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 32px 32px;
+  color: var(--text-body);
+  font-family: var(--font-body);
+  font-size: 17px;
+  line-height: 1.68;
+}
+::selection { background: color-mix(in srgb, var(--accent-dim) 24%, transparent); }
+a {
+  color: var(--link);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--link) 65%, transparent);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+a:hover { color: var(--link-hover); text-decoration-color: currentColor; }
+code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--code-bg);
+  border: 1px solid var(--line-faint);
+  border-radius: 2px;
+  padding: 0.08em 0.32em;
+}
+:focus-visible { outline: 2px solid var(--accent-dim); outline-offset: 2px; }
+:focus:not(:focus-visible) { outline: none; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+
+.skip-link {
+  position: absolute; left: -9999px; top: 0;
+  background: var(--page-bg); color: var(--link);
+  padding: 10px 16px; border: 1px solid var(--accent-line); z-index: 10;
+}
+.skip-link:focus { left: 12px; top: 12px; }

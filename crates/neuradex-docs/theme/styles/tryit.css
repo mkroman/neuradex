@@ -1,0 +1,90 @@
+/* neuradex documentation-page theme — request builder and response viewer. */
+
+/* try-it builder */
+.tryit {
+  border: 1px solid var(--line); border-radius: 3px;
+  background: color-mix(in srgb, var(--code-bg) 42%, var(--page-bg));
+  padding: 18px 18px 20px;
+}
+.tryit .widget-label { margin-bottom: 14px; }
+.url-preview {
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.5;
+  color: var(--text-secondary); background: var(--code-bg);
+  border: 1px solid var(--line-faint); border-radius: 2px;
+  padding: 8px 10px; margin-bottom: 14px; overflow-wrap: anywhere;
+}
+.tryit-fields { margin-bottom: 4px; }
+.field { display: grid; grid-template-columns: 168px minmax(0, 1fr); gap: 4px 12px; align-items: center; margin-bottom: 10px; }
+.field-label { display: flex; align-items: baseline; gap: 6px; }
+.field input {
+  font-family: var(--font-mono); font-size: 13.5px; color: var(--text-heading);
+  min-height: 34px; width: 100%; padding: 7px 10px;
+  background: var(--page-bg); border: 1px solid var(--line-strong); border-radius: 2px;
+}
+.field input:focus { border-color: var(--accent-dim); outline: none; }
+.field-hint { grid-column: 2; margin: -2px 0 0; }
+.field-hint .ann { margin-bottom: 0; }
+@media (max-width: 640px) { .field { grid-template-columns: 1fr; } .field-hint { grid-column: 1; } }
+.actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+button.action {
+  font-family: var(--font-mono); font-size: 13px; letter-spacing: 0.03em;
+  min-height: 34px; padding: 7px 16px; cursor: pointer;
+  background: transparent; border-radius: 2px;
+}
+.action-primary { color: var(--accent-dim); border: 1px solid var(--accent-line); }
+.action-primary:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent-dim); }
+.action-primary:disabled { opacity: 0.6; cursor: default; }
+.action-secondary { color: var(--text-secondary); border: 1px solid var(--line-strong); }
+.action-secondary:hover { color: var(--text-heading); border-color: var(--text-secondary); }
+.action.flashed { color: var(--positive); border-color: var(--pos-line); }
+.dots { display: inline-flex; margin-left: 5px; }
+.dots span {
+  width: 3px; height: 3px; margin-left: 3px; border-radius: 50%;
+  background: currentColor; animation: dotpulse 1s ease-in-out infinite;
+}
+.dots span:nth-child(2) { animation-delay: 0.15s; }
+.dots span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes dotpulse { 0%, 60%, 100% { opacity: 0.2; } 30% { opacity: 1; } }
+
+/* response viewer */
+.result { margin-top: 18px; }
+.result-meta {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  font-family: var(--font-mono); font-size: 12.5px; color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+.status-pill {
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.03em;
+  padding: 3px 9px; border-radius: 2px; border: 1px solid transparent; white-space: nowrap;
+}
+.status-pill.small { font-size: 11.5px; }
+.status-ok { color: var(--positive); background: var(--pos-soft); border-color: var(--pos-line); }
+.status-err { color: var(--negative); background: var(--neg-soft); border-color: var(--neg-line); }
+.meta-bit.dim { font-style: italic; }
+pre.json-view {
+  margin: 0; background: var(--code-bg); border: 1px solid var(--line-faint); border-radius: 2px;
+  padding: 13px 15px; overflow: auto; max-height: 480px;
+  font-family: var(--font-mono); font-size: 12.75px; line-height: 1.55; color: var(--text-body);
+}
+pre.json-view.small { font-size: 12px; max-height: 320px; }
+pre.json-view.rawtext { white-space: pre-wrap; overflow-wrap: anywhere; }
+.j-key { color: var(--accent-dim); }
+.j-str { color: var(--positive); }
+.j-num { color: var(--link); }
+.j-bool { color: var(--text-secondary); }
+.error-friendly {
+  border-left: 2px solid var(--negative); background: var(--neg-soft);
+  border-radius: 0 2px 2px 0; padding: 10px 14px; margin-bottom: 12px;
+}
+.err-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.err-type-pill {
+  font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.04em;
+  color: var(--negative); background: var(--page-bg);
+  border: 1px solid var(--neg-line); border-radius: 2px; padding: 2px 8px;
+}
+.err-kind {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--text-secondary);
+}
+.err-msg { margin: 6px 0 0; font-size: 15px; }
+.network-error { color: var(--negative); font-size: 14.5px; margin: 0; }

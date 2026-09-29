@@ -1,0 +1,19 @@
+          <section class="widget" aria-label="Query parameters">
+            <h3 class="widget-label">Query parameters</h3>
+            {% if endpoint.params.is_empty() %}
+            <p class="widget-empty">No query parameters — the endpoint takes none.</p>
+            {% else %}
+            <table class="params">
+              <thead><tr><th scope="col">name</th><th scope="col">description</th><th scope="col">value</th></tr></thead>
+              <tbody>
+                {% for param in endpoint.params %}
+                <tr>
+                  <td><div class="param-name-wrap"><span class="param-name">{{ param.name }}</span>{% if param.required %}<span class="req">*</span>{% else %}<span class="opt">optional</span>{% endif %}</div></td>
+                  <td class="param-desc">{{ param.description_html|safe }}</td>
+                  <td>{% if !param.anns.is_empty() %}<span class="ann-list">{% for anno in param.anns %}<span class="ann"><span class="ann-k">{{ anno.key }}</span> <span class="ann-v">{{ anno.value }}</span></span>{% endfor %}</span>{% endif %}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            {% endif %}
+          </section>

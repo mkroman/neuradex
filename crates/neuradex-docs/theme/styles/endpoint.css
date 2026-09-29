@@ -1,0 +1,35 @@
+/* neuradex documentation-page theme — endpoint sections. */
+
+/* endpoint sections; the grid trick lets the instant filter collapse them
+   with a subtle animation instead of making them pop out of existence */
+.ep {
+  display: grid; grid-template-rows: 1fr; visibility: visible;
+  scroll-margin-top: 20px;
+  transition: grid-template-rows 0.35s ease, opacity 0.3s ease, visibility 0s linear 0s;
+}
+.ep > .ep-inner { min-height: 0; overflow: hidden; padding: 42px 0 54px; border-top: 1px solid var(--line); }
+.ep.filtered {
+  grid-template-rows: 0fr; opacity: 0; visibility: hidden;
+  transition: grid-template-rows 0.35s ease, opacity 0.3s ease, visibility 0s linear 0.35s;
+}
+.ep-head { margin-bottom: 4px; }
+.ep-kicker { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ep-num { font-family: var(--font-mono); font-size: 13px; color: var(--accent-dim); }
+.method-badge {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.09em;
+  color: var(--accent-dim); border: 1px solid var(--accent-line);
+  border-radius: 2px; padding: 2px 8px;
+}
+.ep-path { font-size: 15px; background: none; border: none; padding: 0; color: var(--text-heading); }
+.ep-title {
+  font-family: var(--font-display); font-weight: 400;
+  font-size: clamp(30px, 4vw, 38px); line-height: 1.15; letter-spacing: -0.01em;
+  color: var(--text-heading); margin: 12px 0 0;
+}
+.prose { margin: 14px 0 0; font-size: 16.5px; }
+.prose code, .param-desc code, .schema-desc code, .prop-desc code { font-size: 0.84em; }
+
+/* reveal-on-scroll (classes only added by JS, disabled under reduced motion) */
+.reveal { opacity: 0; transform: translateY(14px); }
+.reveal.shown { opacity: 1; transform: none; transition: opacity 0.5s ease, transform 0.5s ease; }
+@media (prefers-reduced-motion: reduce) { .reveal { opacity: 1; transform: none; } }

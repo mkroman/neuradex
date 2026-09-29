@@ -1,5 +1,12 @@
 # neuradex API documentation page — design spec
 
+> **Superseded in part (2026-09):** the runtime-fetch constraints (§3) and the single-file
+> constraints (§5) are superseded by the askama + runtime-CSS-bundling implementation in
+> `crates/neuradex-docs`: the page is rendered server-side from the OpenAPI document instead
+> of fetching `/openapi.json` at runtime, and the theme CSS is bundled at runtime by
+> lightningcss rather than kept inline in a single committed file. The design tokens (§1)
+> and layout (§2) still apply.
+
 The API documentation page served at `/docs` is restyled to read and feel like a
 warm, editorial, paper-textured research article with
 serif typography, hairline rules, burnt-orange accents, and richly interactive inline

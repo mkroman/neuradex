@@ -44,8 +44,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 COPY Cargo.toml Cargo.lock ./
 COPY src src
 COPY crates crates
-# The documentation page is embedded into the binary with include_str!.
-COPY assets assets
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo auditable build --release --locked --bin neuradex && \
