@@ -162,26 +162,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn truncates_results_to_the_limit() {
-        let results: Vec<SearchResult> = (0..5)
-            .map(|index| SearchResult {
-                title: format!("title {index}"),
-                url: format!("https://example.com/{index}"),
-                description: String::new(),
-            })
-            .collect();
-
-        let mut limited = results.clone();
-        limited.truncate(3);
-        assert_eq!(limited.len(), 3);
-        assert_eq!(limited.last().unwrap().url, "https://example.com/2");
-
-        let mut unlimited = results;
-        unlimited.truncate(usize::MAX);
-        assert_eq!(unlimited.len(), 5);
-    }
-
-    #[test]
     fn serializes_the_queue_wait_metric() {
         let metrics = SearchMetrics {
             queue_ms: 42,
