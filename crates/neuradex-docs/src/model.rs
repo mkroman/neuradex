@@ -635,7 +635,7 @@ mod tests {
         assert!(responses[0].ok);
         assert_eq!(responses[0].refs, vec!["Thing"]);
         assert!(!responses[1].ok);
-        assert!(responses[1].refs.is_empty());
+        assert_eq!(responses[1].refs, Vec::<String>::new());
         // The referenced schema lands in the appendix with its anchor id.
         assert_eq!(page.schemas_toc[0].href, "schema-Thing");
     }

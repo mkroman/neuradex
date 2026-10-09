@@ -530,7 +530,7 @@ mod tests {
 
         assert_eq!(decode_chunk(&mut pending, &bytes[..2]), "a");
         assert_eq!(decode_chunk(&mut pending, &bytes[2..]), "—b");
-        assert!(pending.is_empty());
+        assert_eq!(pending, Vec::<u8>::new());
     }
 
     #[test]
@@ -540,7 +540,7 @@ mod tests {
         assert_eq!(decode_chunk(&mut pending, &[0xFF, b'a']), "\u{fffd}a");
         assert_eq!(decode_chunk(&mut pending, b"b"), "b");
         assert_eq!(decode_chunk(&mut pending, "æ".as_bytes()), "æ");
-        assert!(pending.is_empty());
+        assert_eq!(pending, Vec::<u8>::new());
     }
 
     #[test]

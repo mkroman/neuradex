@@ -1,12 +1,14 @@
-//! Query parameter parsing shared by the API handlers.
+//! Request parsing shared by the API handlers.
 //!
-//! The wire types are the single source of truth for the query contracts: they deserialize the
-//! request (through [`ApiQuery`], a thin extractor over [`axum_extra::extract::Query`],
-//! which uses `serde_html_form`, so the `include` parameter may be repeated —
-//! `include=redirects&include=headers` — or comma-separated), document the OpenAPI parameters,
-//! and expose the validation each endpoint applies to its own query.
+//! The wire types are the single source of truth for the request contracts: they deserialize
+//! the request (queries through [`ApiQuery`], a thin extractor over
+//! [`axum_extra::extract::Query`], which uses `serde_html_form`, so the `include` parameter may
+//! be repeated — `include=redirects&include=headers` — or comma-separated; JSON bodies through
+//! [`ApiJson`], a thin extractor over [`axum::extract::Json`]), document the OpenAPI
+//! parameters, and expose the validation each endpoint applies to its own request.
 
-use axum::extract::FromRequestParts;
+use axum::Json;
+use axum::extract::{FromRequest, FromRequestParts, Request, rejection::JsonRejection};
 use axum::http::request::Parts;
 use axum_extra::extract::Query;
 use serde::Deserialize;
@@ -96,6 +98,41 @@ where
             })?;
 
         Ok(Self(query))
+    }
+}
+
+/// Extracts the JSON body of an endpoint into its wire type.
+///
+/// The body-side counterpart of [`ApiQuery`]: a thin wrapper over [`axum::extract::Json`] whose
+/// rejection is [`ApiError`], so a malformed body — a missing or non-parseable field, an
+/// unknown field, or a missing `Content-Type: application/json` header — renders the JSON
+/// error envelope instead of axum's plain-text rejection body. That rejection shape is all it
+/// guarantees: endpoint-specific validation is applied by the handlers on the extracted value,
+/// not here.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ApiJson<T>(pub(crate) T);
+
+impl<S, T> FromRequest<S> for ApiJson<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let Json(value) =
+            Json::<T>::from_request(req, state)
+                .await
+                .map_err(|error| match error {
+                    JsonRejection::MissingJsonContentType(_) => ApiError::unsupported_media_type(
+                        "expected the request body to be JSON (Content-Type: application/json)",
+                    ),
+                    rejection => {
+                        ApiError::invalid_param(format!("invalid request body: {rejection}"))
+                    }
+                })?;
+
+        Ok(Self(value))
     }
 }
 

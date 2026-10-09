@@ -9,7 +9,8 @@
 use utoipa::OpenApi;
 
 use crate::api::v1::{
-    error::ErrorBody, fetch::FetchResponse, peek::PeekResponse, search::SearchResponse,
+    error::ErrorBody, fetch::FetchResponse, openwebui_search::OpenWebUiSearchRequest,
+    openwebui_search::OpenWebUiSearchResult, peek::PeekResponse, search::SearchResponse,
     search::SearchResult,
 };
 use crate::metadata::PageMetadata;
@@ -21,8 +22,10 @@ use crate::metrics::{Metrics, RedirectHop, SearchMetrics};
     info(
         title = "neuradex",
         description = "A small API service implementing tools for LLM agents: fetching pages \
-                       (`/v1/fetch`, `/v1/peek`) and searching the web (`/v1/search`). Every \
-                       error response — including router-level 404 and 405 — is rendered as \
+                       (`/v1/fetch`, `/v1/peek`), searching the web (`/v1/search`), and a \
+                       search endpoint shaped for Open WebUI's `external` web search engine \
+                       (`/v1/openwebui_search`). Every error response — including \
+                       router-level 404 and 405 — is rendered as \
                        `{\"error\": {\"type\", \"message\"}}`; see the `ErrorBody` schema.",
     ),
     tags(
@@ -37,6 +40,8 @@ use crate::metrics::{Metrics, RedirectHop, SearchMetrics};
         PeekResponse,
         SearchResponse,
         SearchResult,
+        OpenWebUiSearchRequest,
+        OpenWebUiSearchResult,
         PageMetadata,
         Metrics,
         SearchMetrics,
@@ -57,11 +62,30 @@ mod tests {
         crate::api::v1::api().1
     }
 
+    /// Looks up the single operation documented for `path`, whatever its method.
+    fn operation<'d>(
+        document: &'d utoipa::openapi::OpenApi,
+        path: &str,
+    ) -> &'d utoipa::openapi::path::Operation {
+        let item = document.paths.paths.get(path).expect("a documented path");
+
+        item.get
+            .as_ref()
+            .or(item.post.as_ref())
+            .expect("an operation")
+    }
+
     #[test]
     fn documents_all_endpoints() {
         let document = document();
 
-        for path in ["/healthz", "/v1/fetch", "/v1/peek", "/v1/search"] {
+        for path in [
+            "/healthz",
+            "/v1/fetch",
+            "/v1/peek",
+            "/v1/search",
+            "/v1/openwebui_search",
+        ] {
             assert!(
                 document.paths.paths.contains_key(path),
                 "the document is missing {path}"
@@ -73,14 +97,13 @@ mod tests {
     fn documents_the_error_responses_on_every_endpoint() {
         let document = document();
 
-        for path in ["/v1/fetch", "/v1/peek", "/v1/search"] {
-            let responses = &document
-                .paths
-                .paths
-                .get(path)
-                .and_then(|item| item.get.as_ref())
-                .expect("a get operation")
-                .responses;
+        for path in [
+            "/v1/fetch",
+            "/v1/peek",
+            "/v1/search",
+            "/v1/openwebui_search",
+        ] {
+            let responses = &operation(&document, path).responses;
 
             for status in ["400", "415", "500", "502"] {
                 assert!(
@@ -100,14 +123,9 @@ mod tests {
             ("/v1/fetch", &["include", "redirects", "url"][..]),
             ("/v1/peek", &["include", "redirects", "url"][..]),
             ("/v1/search", &["limit", "query", "timeout"][..]),
+            ("/v1/openwebui_search", &[][..]),
         ] {
-            let operation = document
-                .paths
-                .paths
-                .get(path)
-                .and_then(|item| item.get.as_ref())
-                .expect("a get operation");
-            let rendered = serde_json::to_value(operation).expect("serializes");
+            let rendered = serde_json::to_value(operation(&document, path)).expect("serializes");
 
             let mut names: Vec<&str> = rendered["parameters"]
                 .as_array()
@@ -132,6 +150,8 @@ mod tests {
         for schema in [
             "ErrorBody",
             "FetchResponse",
+            "OpenWebUiSearchRequest",
+            "OpenWebUiSearchResult",
             "PeekResponse",
             "SearchResponse",
         ] {
@@ -151,16 +171,9 @@ mod tests {
             ("/v1/fetch", "fetch"),
             ("/v1/peek", "peek"),
             ("/v1/search", "search"),
+            ("/v1/openwebui_search", "search"),
         ] {
-            let tags = document
-                .paths
-                .paths
-                .get(path)
-                .and_then(|item| item.get.as_ref())
-                .expect("a get operation")
-                .tags
-                .clone()
-                .unwrap_or_default();
+            let tags = operation(&document, path).tags.clone().unwrap_or_default();
 
             assert_eq!(tags, [tag], "unexpected tags for {path}");
         }
@@ -177,13 +190,14 @@ mod tests {
     fn summarizes_the_operations() {
         let document = document();
 
-        for path in ["/healthz", "/v1/fetch", "/v1/peek", "/v1/search"] {
-            let operation = document
-                .paths
-                .paths
-                .get(path)
-                .and_then(|item| item.get.as_ref())
-                .expect("a get operation");
+        for path in [
+            "/healthz",
+            "/v1/fetch",
+            "/v1/peek",
+            "/v1/search",
+            "/v1/openwebui_search",
+        ] {
+            let operation = operation(&document, path);
 
             assert!(
                 operation
@@ -206,6 +220,43 @@ mod tests {
                 "the description for {path} leaks the doc-comment error section"
             );
         }
+    }
+
+    #[test]
+    fn documents_the_openwebui_search_contract() {
+        let document = document();
+        let rendered =
+            serde_json::to_value(operation(&document, "/v1/openwebui_search")).expect("serializes");
+
+        // The operation is a POST with a JSON request body.
+        assert_eq!(rendered["requestBody"]["required"], true);
+        let request_schema = &rendered["requestBody"]["content"]["application/json"]["schema"];
+        assert_eq!(
+            request_schema["$ref"],
+            "#/components/schemas/OpenWebUiSearchRequest"
+        );
+
+        // The 200 response is a bare array of results — the shape Open WebUI expects.
+        // The 200 response is a bare array of results — the shape Open WebUI expects.
+        let response_schema =
+            &rendered["responses"]["200"]["content"]["application/json"]["schema"];
+        assert_eq!(response_schema["type"], "array");
+        assert_eq!(
+            response_schema["items"]["$ref"],
+            "#/components/schemas/OpenWebUiSearchResult"
+        );
+
+        // The request schema: `query` is required, `count` defaults to 5.
+        let schemas = &document.components.as_ref().expect("components").schemas;
+        let request = serde_json::to_value(&schemas["OpenWebUiSearchRequest"]).expect("serializes");
+
+        assert_eq!(request["properties"]["query"]["type"], "string");
+        assert_eq!(
+            request["properties"]["count"]["type"],
+            serde_json::json!(["integer", "null"])
+        );
+        assert_eq!(request["properties"]["count"]["default"], 5);
+        assert_eq!(request["required"], serde_json::json!(["query"]));
     }
 
     #[test]
@@ -254,6 +305,8 @@ mod tests {
             "ErrorBody",
             "FetchResponse",
             "Metrics",
+            "OpenWebUiSearchRequest",
+            "OpenWebUiSearchResult",
             "PageMetadata",
             "PeekResponse",
             "RedirectHop",
