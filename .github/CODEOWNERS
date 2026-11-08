@@ -1,5 +1,5 @@
 # CI and dependency automation changes need the maintainer's review.
 /.github/        @mkroman
-/hack/ci/        @mkroman
+/hack/           @mkroman
 /Dockerfile      @mkroman
 /renovate.json   @mkroman

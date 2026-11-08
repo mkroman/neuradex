@@ -70,9 +70,9 @@ jobs:
           persist-credentials: false
       - name: Install shellcheck
         # $HOME/.local/bin is already on PATH on ubuntu-latest.
-        run: ./hack/ci/install-tools.sh "$HOME/.local/bin" shellcheck
+        run: ./hack/install-tools.sh "$HOME/.local/bin" shellcheck
       - name: Lint scripts
-        run: shellcheck hack/*.sh hack/ci/*.sh
+        run: shellcheck hack/*.sh
 
   # Stable check for branch protection: job names change with the matrix and the
   # reusable-workflow split, this one does not.

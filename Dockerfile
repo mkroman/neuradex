@@ -18,11 +18,10 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install cargo-chef and cargo-auditable from their checksummed GitHub releases
-# (prebuilt binaries — much faster in CI than compiling them). Versions and the
-# pinned manifest digests live in the script.
-COPY hack/install-cargo-tool.sh /usr/local/bin/install-cargo-tool
-RUN sh /usr/local/bin/install-cargo-tool cargo-chef /usr/local/bin && \
-    sh /usr/local/bin/install-cargo-tool cargo-auditable /usr/local/bin
+# (prebuilt binaries — much faster in CI than compiling them). Versions and
+# checksums live in hack/tools.txt.
+COPY hack/install-tools.sh hack/tools.txt /usr/local/lib/ci/
+RUN bash /usr/local/lib/ci/install-tools.sh /usr/local/bin cargo-chef cargo-auditable
 
 # Analyze project dependencies
 FROM chef AS planner

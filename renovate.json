@@ -4,5 +4,38 @@
     "config:recommended",
     "config:best-practices",
     ":disableRateLimiting"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update CI tool tags and checksums in hack/tools.txt",
+      "managerFilePatterns": [
+        "/^hack\\/tools\\.txt$/"
+      ],
+      "matchStrings": [
+        "\\[(?<tool>[a-z0-9-]+)\\]\\nrepo=(?<depName>[^\\n]+)\\nversion=(?<currentValue>[^\\n]+)\\nsha256=(?<currentDigest>[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "github-release-attachments",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Update the curl image used by the kind deployment smoke test",
+      "managerFilePatterns": [
+        "/^\\.github\\/workflows\\/deployment-test\\.yaml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*CURL_IMAGE: [^:\\s]+:(?<currentValue>\\S+)"
+      ]
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Group the pinned cargo tool updates in hack/tools.txt",
+      "matchDatasources": [
+        "github-release-attachments"
+      ],
+      "groupName": "cargo tools"
+    }
   ]
 }
