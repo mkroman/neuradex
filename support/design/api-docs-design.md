@@ -143,7 +143,7 @@ The page fetches the spec at runtime and renders it — nothing is hardcoded:
 | --- | --- |
 | `assets/api-docs.html` | front-end agent only |
 | `support/design/api-docs-design.md`, `support/design/openapi-fixture.json` | read-only reference |
-| Everything else (`src/`, `Cargo.*`, `hack/`, `AGENTS.md`, …) | Rust integration agent only |
+| Everything else (`crates/neuradex/src/`, `Cargo.*`, `hack/`, `AGENTS.md`, …) | Rust integration agent only |
 
 Routes after integration: `GET /docs` serves the page; `GET /swagger-ui` and
 `GET /swagger-ui/` redirect (302) to `/docs`; `GET /openapi.json` keeps serving the raw

@@ -1,6 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["crates/kagi", "crates/neuradex-docs"]
+# The glob matches directories, not manifests: every direct child of crates/
+# must be a package. Add a non-package directory under crates/ to `exclude`.
+members = ["crates/*"]
+# Root commands target the service package; pass --workspace to cover every member.
+default-members = ["crates/neuradex"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 htmlize = { version = "1.1.0", features = ["unescape"] }
@@ -25,57 +34,7 @@ url = "2.5.8"
 # macro-free. Re-check whether `macros` can be dropped again on version bumps.
 utoipa = { version = "6.0.0", default-features = false, features = ["macros"] }
 
-[package]
-name = "neuradex"
-version = "0.1.0"
-edition = "2024"
-description = "A small API service implementing tools for LLM agents."
-license = "MIT OR Apache-2.0"
-
-[dependencies]
-axum = { version = "0.8.9", features = ["json"] }
-axum-extra = { version = "0.12.6", default-features = false, features = ["query"] }
-clap = { version = "4.5", features = ["derive"] }
-futures = { version = "0.3.31", default-features = false, features = ["std"] }
-html5ever = "0.40.0"
-kagi = { path = "crates/kagi", default-features = false, features = ["rustls"] }
-neuradex-docs = { path = "crates/neuradex-docs", optional = true }
-secrecy.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-tokio = { workspace = true, features = ["signal", "net"] }
-tracing.workspace = true
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-url.workspace = true
-# The derive macros come from the workspace table (utoipa 6.0.0 cannot compile without
-# its `macros` feature); this entry only opts the root package into the dependency.
-utoipa = { workspace = true, optional = true }
-utoipa-axum = { version = "0.3.0", optional = true }
-wreq = { version = "0.16.1", default-features = false, features = [
-    "tokio-rt",
-    "webpki-roots",
-    "prefix-symbols",
-    "stream",
-    "gzip",
-    "brotli",
-    "deflate",
-    "zstd",
-] }
-wreq-util = "0.2.0"
-
-[features]
-default = ["docs"]
-# The documentation page at /docs; implies OpenAPI generation (the page renders from it).
-docs = ["utoipa", "dep:neuradex-docs"]
-# OpenAPI document generation and the /openapi.json endpoint.
-utoipa = ["dep:utoipa", "dep:utoipa-axum"]
-
-[dev-dependencies]
-serde_html_form = "0.4.0"
-tower = { version = "0.5.2", features = ["util"] }
-
-[lints.clippy]
+[workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"
 nursery = "warn"
@@ -83,7 +42,7 @@ cargo = { level = "allow", priority = 1 }
 doc_markdown = { level = "allow", priority = 1 }
 cognitive_complexity = { level = "allow", priority = 1 }
 
-[lints.rust]
+[workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
 rust_2018_idioms = { level = "warn", priority = 1 }
