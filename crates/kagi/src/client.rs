@@ -15,7 +15,27 @@ use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 use tokio::time::Instant;
 use tracing::{debug, error};
 
-use super::{ClientOptions, Error, ImageResult, SearchResult};
+use super::{ClientOptions, Error, ImageResult, RequestError, SearchResult};
+
+/// Wraps `error` in a [`RequestError`], whose URL keeps no credential from the query string:
+/// the login token is part of Kagi's query strings.
+///
+/// The failed request is logged once with its redacted URL and error type: the caller reports
+/// the short rendering, so this is the only line that names the request.
+fn request_error(error: reqwest::Error) -> RequestError {
+    let error = RequestError::from(error);
+
+    if let Some(url) = error.url() {
+        debug!(
+            url.full = %url,
+            error.type = error.error_type(),
+            exception.message = %error.full(),
+            "request failed"
+        );
+    }
+
+    error
+}
 
 /// The base duration of the exponential backoff between session fetch retries.
 const BACKOFF_BASE: Duration = Duration::from_millis(500);
@@ -441,7 +461,7 @@ impl Client {
             .timeout(self.timeout)
             .user_agent(self.user_agent.clone())
             .build()
-            .map_err(Error::BuildClient)?;
+            .map_err(|error| Error::BuildClient(request_error(error)))?;
 
         let slot = Arc::new(Slot {
             inner: Mutex::new(SlotInner {
@@ -566,10 +586,15 @@ impl Client {
         };
 
         debug!(%endpoint, "connecting to stream");
-        let res = req.send().await.map_err(Error::StreamRequest)?;
+        let res = req
+            .send()
+            .await
+            .map_err(|error| Error::StreamRequest(request_error(error)))?;
         let res = match res.error_for_status() {
             Ok(res) => res,
             Err(error) => {
+                let error = request_error(error);
+
                 // A rejected session is dropped: the next request re-establishes
                 // it, after the slot's backoff. Other statuses keep the session —
                 // they say nothing about the session itself.
@@ -580,7 +605,10 @@ impl Client {
                 return Err(Error::StreamStatus(error));
             }
         };
-        let body = res.text().await.map_err(Error::StreamRequestBody)?;
+        let body = res
+            .text()
+            .await
+            .map_err(|error| Error::StreamRequestBody(request_error(error)))?;
 
         Ok(body)
     }
@@ -638,7 +666,7 @@ async fn http_fetch_session(
     let res = document_request(http, token, language, token_url.as_str())
         .send()
         .await
-        .map_err(Error::RequestSession)?;
+        .map_err(|error| Error::RequestSession(request_error(error)))?;
     if !res.headers().contains_key(SET_COOKIE) {
         error!("the response does not include set-cookie headers!");
         return Err(Error::SessionCookies);
@@ -648,8 +676,11 @@ async fn http_fetch_session(
     let res = document_request(http, token, language, base_url.as_str())
         .send()
         .await
-        .map_err(Error::RequestNonce)?;
-    let body = res.text().await.map_err(Error::ReadNonce)?;
+        .map_err(|error| Error::RequestNonce(request_error(error)))?;
+    let body = res
+        .text()
+        .await
+        .map_err(|error| Error::ReadNonce(request_error(error)))?;
 
     extract_nonce(&body).ok_or(Error::Nonce)
 }

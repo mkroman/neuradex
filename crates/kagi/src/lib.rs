@@ -50,7 +50,7 @@ mod client;
 mod error;
 
 pub use client::Client;
-pub use error::Error;
+pub use error::{Error, RequestError};
 
 /// Kagi base URL.
 pub const BASE_URL: &str = "https://kagi.com";

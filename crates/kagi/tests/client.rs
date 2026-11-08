@@ -178,10 +178,12 @@ async fn a_rejected_session_is_reestablished() {
         .search(QUERY)
         .await
         .expect_err("the first search is rejected");
+    let redacted = format!("{}/socket/search", harness.server.base_url());
     assert_matches!(
         error,
         Error::StreamStatus(ref error)
             if error.status() == Some(reqwest::StatusCode::UNAUTHORIZED)
+                && error.url() == Some(redacted.as_str())
     );
 
     client
