@@ -51,7 +51,7 @@ jobs:
           toolchain: stable
       - name: Install cargo-deny
         # $HOME/.local/bin is already on PATH on ubuntu-latest.
-        run: ./hack/ci/install-tools.sh "$HOME/.local/bin" cargo-deny
+        run: ./hack/install-tools.sh "$HOME/.local/bin" cargo-deny
       - name: Check advisories
         # Mirrors the replaced cargo-deny-action invocation, including its
         # input defaults (--log-level warn, --manifest-path, --all-features).

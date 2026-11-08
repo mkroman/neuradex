@@ -12,7 +12,7 @@
 # third-party GitHub Actions, Go toolchain, or container images are involved.
 #
 # Usage:
-#   ./hack/ci/install-tools.sh [BIN_DIR] [TOOL...]
+#   ./hack/install-tools.sh [BIN_DIR] [TOOL...]
 #
 # BIN_DIR defaults to ~/.local/bin. With no TOOL arguments, every tool in the
 # manifest is installed. The script currently supports Linux x86_64.
