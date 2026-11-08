@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-ARG RUST_VERSION=1.98-bookworm
+ARG RUST_VERSION=1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c
 
 # Base layer with build tools. BoringSSL (wreq) needs cmake, and bindgen needs libclang.
 FROM rust:${RUST_VERSION} AS chef
