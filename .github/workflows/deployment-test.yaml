@@ -152,6 +152,7 @@ jobs:
             export PATH="$HOME/.local/bin:$PATH"
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           fi
+          # renovate: datasource=docker depName=kindest/node
           kind create cluster --name neuradex \
             --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5 \
             --wait 60s
