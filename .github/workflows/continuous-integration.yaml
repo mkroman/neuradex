@@ -69,9 +69,8 @@ jobs:
         with:
           persist-credentials: false
       - name: Install shellcheck
-        run: |
-          ./hack/ci/install-tools.sh "$HOME/.local/bin" shellcheck
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        # $HOME/.local/bin is already on PATH on ubuntu-latest.
+        run: ./hack/ci/install-tools.sh "$HOME/.local/bin" shellcheck
       - name: Lint scripts
         run: shellcheck hack/*.sh hack/ci/*.sh
 
