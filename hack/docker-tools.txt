@@ -1,0 +1,25 @@
+# Docker build tool manifest.
+#
+# Installed by install-tools.sh while building the image's chef layer. Kept
+# separate from tools.txt so bumping these cargo tools only invalidates the
+# Docker layer that installs them, not the CI tool cache.
+#
+# [tool] blocks and keys have the same semantics as tools.txt.
+#
+[cargo-auditable]
+repo=rust-secure-code/cargo-auditable
+version=v0.7.6
+sha256=4b5b009ad799409bdaf70210e2e4d0ff00e415a78621949a88fb81a63f60ff48
+tag=${version}
+asset=cargo-auditable-x86_64-unknown-linux-gnu.tar.xz
+binary=cargo-auditable-x86_64-unknown-linux-gnu/cargo-auditable
+archive=tar.xz
+
+[cargo-chef]
+repo=LukeMathWalker/cargo-chef
+version=v0.1.78
+sha256=70ef940ef90d04d122f0176fdb8d6c39069191b484a1eaa29b327370c2e1c3c0
+tag=${version}
+asset=cargo-chef-x86_64-unknown-linux-gnu.tar.xz
+binary=cargo-chef-x86_64-unknown-linux-gnu/cargo-chef
+archive=tar.xz

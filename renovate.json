@@ -20,6 +20,18 @@
     },
     {
       "customType": "regex",
+      "description": "Update Docker build tool tags and checksums in hack/docker-tools.txt",
+      "managerFilePatterns": [
+        "/^hack\\/docker-tools\\.txt$/"
+      ],
+      "matchStrings": [
+        "\\[(?<tool>[a-z0-9-]+)\\]\\nrepo=(?<depName>[^\\n]+)\\nversion=(?<currentValue>[^\\n]+)\\nsha256=(?<currentDigest>[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "github-release-attachments",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
       "description": "Update the curl image used by the kind deployment smoke test",
       "managerFilePatterns": [
         "/^\\.github\\/workflows\\/deployment-test\\.yaml$/"
@@ -31,11 +43,11 @@
   ],
   "packageRules": [
     {
-      "description": "Group the pinned cargo tool updates in hack/tools.txt",
+      "description": "Group the pinned CI tool updates in hack/tools.txt and hack/docker-tools.txt",
       "matchDatasources": [
         "github-release-attachments"
       ],
-      "groupName": "cargo tools"
+      "groupName": "pinned CI tools"
     }
   ]
 }

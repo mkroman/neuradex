@@ -4,6 +4,10 @@
 # sha256 contiguous: the Renovate manager in renovate.json matches that block
 # head. All other keys are installer details.
 #
+# The cargo tools baked into the Docker build (cargo-auditable, cargo-chef)
+# live in docker-tools.txt instead, so changing them does not invalidate the
+# CI tool layer.
+#
 #   [tool]
 #   repo=owner/repository
 #   version=v1.2.3
@@ -20,24 +24,6 @@
 # ${version} expands to the full tag. ${version_nov} expands to the tag with a
 # leading "v" removed, for release asset names that omit the prefix.
 #
-[cargo-auditable]
-repo=rust-secure-code/cargo-auditable
-version=v0.7.6
-sha256=4b5b009ad799409bdaf70210e2e4d0ff00e415a78621949a88fb81a63f60ff48
-tag=${version}
-asset=cargo-auditable-x86_64-unknown-linux-gnu.tar.xz
-binary=cargo-auditable-x86_64-unknown-linux-gnu/cargo-auditable
-archive=tar.xz
-
-[cargo-chef]
-repo=LukeMathWalker/cargo-chef
-version=v0.1.78
-sha256=70ef940ef90d04d122f0176fdb8d6c39069191b484a1eaa29b327370c2e1c3c0
-tag=${version}
-asset=cargo-chef-x86_64-unknown-linux-gnu.tar.xz
-binary=cargo-chef-x86_64-unknown-linux-gnu/cargo-chef
-archive=tar.xz
-
 [cargo-deny]
 repo=EmbarkStudios/cargo-deny
 version=0.20.2
@@ -55,3 +41,12 @@ tag=${version}
 asset=shellcheck-v${version_nov}.linux.x86_64.tar.xz
 binary=shellcheck-v${version_nov}/shellcheck
 archive=tar.xz
+
+[kind]
+repo=kubernetes-sigs/kind
+version=v0.33.0
+sha256=aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+tag=${version}
+asset=kind-linux-amd64
+binary=kind-linux-amd64
+archive=raw

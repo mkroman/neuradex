@@ -5,7 +5,8 @@
 # Tool metadata lives in tools.txt as readable [tool] blocks. Renovate
 # maintains every block's version and SHA-256 with the
 # github-release-attachments datasource, so adding a tool only requires a new
-# block.
+# block. Set TOOLS_FILE to use a different manifest (the Dockerfile uses
+# docker-tools.txt for the cargo tools it installs).
 #
 # Every download is verified with SHA-256 before extraction. Raw assets are
 # installed directly; archives use the binary path from the manifest. No
@@ -20,7 +21,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
-readonly TOOLS_FILE="${SCRIPT_DIR}/tools.txt"
+readonly TOOLS_FILE="${TOOLS_FILE:-${SCRIPT_DIR}/tools.txt}"
 
 BIN_DIR="${1:-${HOME}/.local/bin}"
 shift || true
@@ -66,7 +67,12 @@ download() {
   local url="$1"
   local output="$2"
 
-  curl --fail --silent --show-error --location --retry 3 \
+  curl --fail --silent --show-error --location \
+    --connect-timeout 10 \
+    --max-time 180 \
+    --retry 5 \
+    --retry-delay 1 \
+    --retry-all-errors \
     --output "${output}" "${url}"
 }
 
@@ -134,7 +140,7 @@ flush_section() {
   [[ -n "${REPO}" && -n "${VERSION}" && -n "${SHA256}" &&
     -n "${TAG_TEMPLATE}" && -n "${ASSET_TEMPLATE}" &&
     -n "${BINARY_TEMPLATE}" && -n "${ARCHIVE_FORMAT}" ]] ||
-    die "incomplete tools.txt block for ${SECTION}"
+    die "incomplete block for ${SECTION} in ${TOOLS_FILE}"
 
   [[ "${SHA256}" =~ ^[a-f0-9]{64}$ ]] ||
     die "invalid sha256 for ${SECTION}"
@@ -179,12 +185,12 @@ main() {
       continue
     fi
 
-    [[ "${line}" == *=* ]] || die "invalid tools.txt line: ${line}"
+    [[ "${line}" == *=* ]] || die "invalid line in ${TOOLS_FILE}: ${line}"
 
     key="${line%%=*}"
     value="${line#*=}"
 
-    [[ -n "${SECTION}" ]] || die "tools.txt key outside a block: ${key}"
+    [[ -n "${SECTION}" ]] || die "key outside a block in ${TOOLS_FILE}: ${key}"
 
     case "${key}" in
       repo)
@@ -209,7 +215,7 @@ main() {
         ARCHIVE_FORMAT="${value}"
         ;;
       *)
-        die "unknown tools.txt key: ${key}"
+        die "unknown key in ${TOOLS_FILE}: ${key}"
         ;;
     esac
   done <"${TOOLS_FILE}"

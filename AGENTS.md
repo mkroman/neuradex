@@ -36,6 +36,8 @@ Run, in order: `cargo fmt` → `cargo clippy --all-targets --workspace` (CI runs
 
 Do not create new branches or pull requests without being explicitly told to. Work in the current checkout and leave the changes there (committing on the current branch only when asked); finishing the verification pass is not a signal to ship — opening PRs, creating branches, and pushing are explicit-instruction actions.
 
+Don't use `sleep` to watch for PR checks, just use the `gh` CLI with `--wait`.
+
 ## Running locally
 
 - `cargo run` — no arguments start the server; `neuradex export-docs <output.html> [--spec <output.json>]` writes the documentation page (and with `--spec`, the OpenAPI document) to disk. The subcommand never builds `AppState`, so it needs no `KAGI_SESSION_TOKEN` and works from any build with the `docs` feature; in a build without it, the binary prints "this binary was built without the docs feature; rebuild with --features docs" and exits non-zero. Unknown arguments and typo'd subcommands are rejected by clap with the usage on stderr and exit code 2 — they never silently start the server.
@@ -73,13 +75,13 @@ Do not create new branches or pull requests without being explicitly told to. Wo
 
 ## Deployment
 
-- `Dockerfile` — cargo-chef + `cargo auditable build --release --locked` on `rust:1.98-bookworm`, runtime `gcr.io/distroless/cc-debian12:nonroot` (includes the CA bundle kagi's `rustls-platform-verifier` needs). `LISTEN_ADDR=0.0.0.0:8080` is set in the image. `hack/install-tools.sh` installs the cargo tools from checksummed release binaries (versions and checksums pinned in `hack/tools.txt`, Renovate-managed) instead of compiling them with `cargo install`.
+- `Dockerfile` — cargo-chef + `cargo auditable build --release --locked` on `rust:1.98-bookworm`, runtime `gcr.io/distroless/cc-debian12:nonroot` (includes the CA bundle kagi's `rustls-platform-verifier` needs). `LISTEN_ADDR=0.0.0.0:8080` is set in the image. `hack/install-tools.sh` installs the cargo tools from checksummed release binaries (versions and checksums pinned in `hack/docker-tools.txt`, Renovate-managed) instead of compiling them with `cargo install`.
 - `chart/neuradex/` — Helm chart; secure-by-default (`existingSecret` for `KAGI_SESSION_TOKEN` by default, NetworkPolicy on, probes on `/healthz`). `templates/secret.yaml` `fail`s at render time unless `existingSecret` **or** `kagiSessionToken` is set — bare `helm lint chart/neuradex`/`helm template` fails; use `--set kagiSessionToken=ci-dummy` (what CI does) or `--set existingSecret=<name>`.
-- `.github/workflows/deployment-test.yaml` — `helm lint`/template variants plus a kind job: builds the image from the local source, loads it into the cluster, installs the chart with a dummy token, and asserts `/healthz` (204), `/v1/fetch` (200), `/openapi.json` and `/docs` from an in-cluster curl pod.
+- `.github/workflows/deployment-test.yaml` — `helm lint`/template variants plus a kind job: builds the image from the local source (GHCR registry build cache on main, GHA cache as fallback), creates a pinned kind cluster + node image directly with `kind create cluster`, loads the image, installs the chart with a dummy token, and asserts `/healthz` (204), `/v1/fetch` (200), `/openapi.json` and `/docs` from an in-cluster curl pod. PRs that only touch `*.md` files or `docs/` skip the image/cluster steps but still report the required check as successful.
 
 ## CI
 
-`.github/workflows/continuous-integration.yaml` orchestrates the reusable `test.yaml` (feature matrix), `lint.yaml` (fmt + clippy) and `doc.yaml` (rustdoc) workflows; `ci-success` is the stable check for branch protection. `security.yaml` runs checksum-pinned `cargo-deny` advisories on push, PR and the weekly schedule. `zizmor.yaml` audits the workflows and fails on findings. CI tools are pinned in `hack/tools.txt`, installed into `$HOME/.local/bin` by `hack/install-tools.sh`, and kept current by Renovate.
+`.github/workflows/continuous-integration.yaml` orchestrates the reusable `test.yaml` (feature matrix), `lint.yaml` (fmt + clippy) and `doc.yaml` (rustdoc) workflows; `ci-success` is the stable check for branch protection. `security.yaml` runs checksum-pinned `cargo-deny` advisories on push, PR and the weekly schedule. `zizmor.yaml` audits the workflows and fails on findings. CI tools are pinned in `hack/tools.txt` (the cargo-chef/cargo-auditable binaries baked into the image are pinned separately in `hack/docker-tools.txt`), installed into `$HOME/.local/bin` by `hack/install-tools.sh`, and kept current by Renovate.
 
 ## OpenCode tooling
 
