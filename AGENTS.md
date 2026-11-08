@@ -81,7 +81,7 @@ Don't use `sleep` to watch for PR checks, just use the `gh` CLI with `--wait`.
 
 ## CI
 
-`.github/workflows/continuous-integration.yaml` orchestrates the reusable `test.yaml` (feature matrix), `lint.yaml` (fmt + clippy) and `doc.yaml` (rustdoc) workflows; `ci-success` is the stable check for branch protection. `security.yaml` runs checksum-pinned `cargo-deny` advisories on push, PR and the weekly schedule. `zizmor.yaml` audits the workflows and fails on findings. CI tools are pinned in `hack/tools.txt` (the cargo-chef/cargo-auditable binaries baked into the image are pinned separately in `hack/docker-tools.txt`), installed into `$HOME/.local/bin` by `hack/install-tools.sh`, and kept current by Renovate.
+`.github/workflows/continuous-integration.yaml` orchestrates the reusable `test.yaml` (feature matrix), `lint.yaml` (fmt + clippy) and `doc.yaml` (rustdoc) workflows; `ci-success` is the stable check for branch protection. `container-image.yaml` publishes `ghcr.io/mkroman/neuradex` on every push to `main` (and on manual dispatch) with `edge` and `sha` tags, signed build provenance and an SBOM. `security.yaml` runs checksum-pinned `cargo-deny` advisories on push, PR and the weekly schedule. `zizmor.yaml` audits the workflows and fails on findings. CI tools are pinned in `hack/tools.txt` (the cargo-chef/cargo-auditable binaries baked into the image are pinned separately in `hack/docker-tools.txt`), installed into `$HOME/.local/bin` by `hack/install-tools.sh`, and kept current by Renovate.
 
 ## OpenCode tooling
 
