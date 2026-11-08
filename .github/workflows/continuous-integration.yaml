@@ -34,19 +34,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Only the default leg writes the shared cache; the lean legs restore
+          # it read-only so concurrent writers cannot pin an incomplete entry.
           - name: default
             args: --workspace
             cache-key: ci-stable
+            save-cache: true
           - name: no default features
             args: --no-default-features
-            cache-key: ci-stable-lean
+            cache-key: ci-stable
+            save-cache: false
           - name: lean + utoipa
             args: --no-default-features --features utoipa
-            cache-key: ci-stable-lean-utoipa
+            cache-key: ci-stable
+            save-cache: false
     uses: $/.github/workflows/test.yaml
     with:
       test-args: ${{ matrix.args }}
       cache-key: ${{ matrix.cache-key }}
+      save-cache: ${{ matrix.save-cache }}
 
   doc:
     name: Rustdoc

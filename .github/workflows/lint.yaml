@@ -9,6 +9,8 @@ env:
   RUSTUP_MAX_RETRIES: 10
   RUST_BACKTRACE: short
   CARGO_PROFILE_TEST_DEBUG: 0
+  # Clippy checks the dev profile; drop its debug info to keep the cache small.
+  CARGO_PROFILE_DEV_DEBUG: 0
 
 permissions:
   contents: read
@@ -53,8 +55,10 @@ jobs:
       - name: Restore cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: ci-stable
-          save-if: false # Restore-only; the default-feature test job owns this key.
+          # Cache keys are immutable: clippy needs its own key so it never
+          # races the default test job to write the shared ci-stable entry.
+          shared-key: ci-stable-clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # The workspace enables `all`, `pedantic`, and `nursery` as warn, treated
       # as must-fix; -D warnings turns any lapse into a hard failure.
       - name: Run Clippy
