@@ -33,7 +33,7 @@ pub struct OpenWebUiSearchRequest {
     /// The user's search query string.
     #[cfg_attr(feature = "utoipa", schema(example = "rust programming"))]
     pub query: String,
-    /// The suggested maximum number of results; defaults to [`DEFAULT_COUNT`] when omitted.
+    /// The suggested maximum number of results; defaults to `DEFAULT_COUNT` when omitted.
     #[cfg_attr(feature = "utoipa", schema(default = 5, example = 5))]
     pub count: Option<usize>,
 }

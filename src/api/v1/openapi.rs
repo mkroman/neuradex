@@ -1,7 +1,7 @@
 //! The base OpenAPI document of the API.
 //!
 //! The paths are not listed here: they are derived from the `#[utoipa::path]` handlers at
-//! router-build time through [`utoipa_axum`] (see [`crate::api::v1::api`]), so the router and
+//! router-build time through [`utoipa_axum`] (see `crate::api::v1::api`), so the router and
 //! the document cannot drift apart. This module only carries the document's metadata — info,
 //! tags, and the explicitly registered schemas (`ErrorBody` must stay listed here because
 //! manual `IntoResponses` impls are invisible to utoipa's compile-time schema collection).
