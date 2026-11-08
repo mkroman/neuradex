@@ -93,7 +93,10 @@ const SCRIPTS: &[Source] = &[
 
 /// The pre-paint theme bootstrap — runs from `<head>`, never bundled with the other
 /// scripts.
-const BOOTSTRAP: &str = include_str!("../theme/bootstrap.js");
+const BOOTSTRAP: &[Source] = &[Source {
+    name: "bootstrap.js",
+    embedded: include_str!("../theme/bootstrap.js"),
+}];
 
 /// Reads every listed source from `base`, falling back to the embedded copy per file on
 /// I/O errors. Parameterized over the base directory for tests.
@@ -116,54 +119,30 @@ fn read_sources(base: &Path, list: &[Source]) -> Vec<String> {
         .collect()
 }
 
-/// The embedded copies of every listed source, in order.
-#[cfg(not(debug_assertions))]
-fn embedded_sources(list: &[Source]) -> Vec<&'static str> {
-    list.iter().map(|source| source.embedded).collect()
+/// Concatenates the sources in canonical order: re-read from disk per call in debug
+/// builds, the embedded copies in release.
+fn source_text(list: &[Source]) -> String {
+    #[cfg(debug_assertions)]
+    let sources = read_sources(theme_dir(), list);
+    #[cfg(not(debug_assertions))]
+    let sources: Vec<&str> = list.iter().map(|source| source.embedded).collect();
+
+    join(&sources)
 }
 
-/// Concatenates the stylesheet sources in canonical order: re-read from disk per call in
-/// debug builds, the embedded copies in release.
+/// Concatenates the stylesheet sources in canonical order.
 pub fn style_raw() -> String {
-    #[cfg(debug_assertions)]
-    let sources = read_sources(theme_dir(), STYLES);
-    #[cfg(not(debug_assertions))]
-    let sources = embedded_sources(STYLES);
-    join(&sources)
+    source_text(STYLES)
 }
 
-/// Concatenates the behavior scripts in canonical order: re-read from disk per call in
-/// debug builds, the embedded copies in release.
+/// Concatenates the behavior scripts in canonical order.
 pub fn behavior_raw() -> String {
-    #[cfg(debug_assertions)]
-    let sources = read_sources(theme_dir(), SCRIPTS);
-    #[cfg(not(debug_assertions))]
-    let sources = embedded_sources(SCRIPTS);
-    join(&sources)
+    source_text(SCRIPTS)
 }
 
-/// The pre-paint theme bootstrap: re-read from disk per call in debug builds, the
-/// embedded copy in release.
+/// The pre-paint theme bootstrap.
 pub fn bootstrap_raw() -> String {
-    #[cfg(debug_assertions)]
-    {
-        let base = theme_dir();
-        match std::fs::read_to_string(base.join("bootstrap.js")) {
-            Ok(text) => text,
-            Err(error) => {
-                tracing::warn!(
-                    file = "bootstrap.js",
-                    %error,
-                    "theme source unreadable from disk; using the embedded copy"
-                );
-                BOOTSTRAP.to_owned()
-            }
-        }
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        BOOTSTRAP.to_owned()
-    }
+    source_text(BOOTSTRAP)
 }
 
 /// The theme directory the debug builds re-read from.

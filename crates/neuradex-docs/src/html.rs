@@ -55,12 +55,6 @@ pub fn slug(path: &str) -> String {
     }
 }
 
-/// Strips a single trailing dot — used for table-of-contents labels.
-#[must_use]
-pub fn strip_dot(s: &str) -> &str {
-    s.strip_suffix('.').unwrap_or(s)
-}
-
 /// Returns the last path segment of a `$ref` pointer.
 pub fn ref_name(reference: &str) -> &str {
     reference
@@ -76,22 +70,6 @@ pub fn field<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
 /// Returns a string field of a JSON object.
 pub fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     field(value, key).and_then(Value::as_str)
-}
-
-/// Returns a boolean field of a JSON object, defaulting to `false`.
-pub fn bool_field(value: &Value, key: &str) -> bool {
-    field(value, key).and_then(Value::as_bool).unwrap_or(false)
-}
-
-/// Resolves a local `#/...` JSON pointer against `spec`.
-pub fn resolve_ref<'a>(spec: &'a Value, reference: &str) -> Option<&'a Value> {
-    let pointer = reference.strip_prefix('#')?;
-
-    if !pointer.starts_with('/') {
-        return None;
-    }
-
-    spec.pointer(pointer)
 }
 
 #[cfg(test)]
@@ -143,19 +121,12 @@ mod tests {
     }
 
     #[test]
-    fn strips_one_trailing_dot() {
-        assert_eq!(strip_dot("Fetch a page."), "Fetch a page");
-        assert_eq!(strip_dot("Fetch a page.."), "Fetch a page.");
-        assert_eq!(strip_dot("Fetch"), "Fetch");
-    }
-
-    #[test]
     fn resolves_json_pointer_escapes() {
         let spec = serde_json::json!({
             "components": {"schemas": {"a/b~c": "resolved"}}
         });
-        let resolved = resolve_ref(&spec, "#/components/schemas/a~1b~0c");
+        let resolved = spec.pointer("/components/schemas/a~1b~0c");
         assert_eq!(resolved.and_then(Value::as_str), Some("resolved"));
-        assert_eq!(resolve_ref(&spec, "#/components/schemas/missing"), None);
+        assert_eq!(spec.pointer("/components/schemas/missing"), None);
     }
 }

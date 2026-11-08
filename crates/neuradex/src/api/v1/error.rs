@@ -168,7 +168,8 @@ impl IntoResponse for ApiError {
         // generic replacement.
         let message = match self {
             Self::InvalidParam(message) | Self::UnsupportedMediaType(message) => message,
-            Self::Upstream(_) | Self::Internal(_) => generic_message(kind).to_owned(),
+            Self::Upstream(_) => "the upstream request failed".to_owned(),
+            Self::Internal(_) => "an internal error occurred".to_owned(),
         };
 
         let body = ErrorBody {
@@ -176,14 +177,6 @@ impl IntoResponse for ApiError {
         };
 
         (status, Json(body)).into_response()
-    }
-}
-
-/// Returns the generic, client-safe message rendered for a 5xx error class.
-fn generic_message(kind: &str) -> &'static str {
-    match kind {
-        "upstream_error" => "the upstream request failed",
-        _ => "an internal error occurred",
     }
 }
 

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use crate::html::{bool_field, field, prose, ref_name, slug, str_field, strip_dot};
+use crate::html::{field, prose, ref_name, slug, str_field};
 use crate::tree::{self, SchemaNode};
 
 /// The tags pinned to the front of the page, in order; other tags follow in document tag
@@ -222,10 +222,11 @@ pub fn page(spec: &Value) -> Page {
     let mut endpoints: Vec<Endpoint> = Vec::new();
     for (index, op) in ops.iter().enumerate() {
         let num = format!("{:02}", index + 1);
+        let title = op.summary.unwrap_or(op.path);
         let link = TocLink {
             href: op.id.clone(),
             num: num.clone(),
-            label: strip_dot(op.summary.unwrap_or(op.path)).to_owned(),
+            label: title.strip_suffix('.').unwrap_or(title).to_owned(),
         };
         let endpoint = endpoint(spec, op, &num);
         match toc_groups.last_mut().filter(|group| group.label == op.tag) {
@@ -417,7 +418,9 @@ fn param(p: &Value) -> Param {
 
     Param {
         name: str_field(p, "name").unwrap_or_default().to_owned(),
-        required: bool_field(p, "required"),
+        required: field(p, "required")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         description_html: prose(str_field(p, "description").unwrap_or_default()),
         anns,
         seed: seed(example, schema),

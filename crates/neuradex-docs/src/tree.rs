@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use askama::Template;
 
-use crate::html::{field, prose, push_escaped, ref_name, resolve_ref, str_field};
+use crate::html::{field, prose, push_escaped, ref_name, str_field};
 use crate::model::{Anno, common_anns};
 
 /// The maximum nesting depth expanded inline; deeper branches point at the schema appendix.
@@ -111,7 +111,13 @@ fn node(
 ) -> SchemaNode {
     let reference = str_field(schema, "$ref");
     let ref_target = reference.map(|r| ref_name(r).to_owned());
-    let target = reference.map_or(Some(schema), |r| resolve_ref(spec, r));
+    let target = reference.map_or(Some(schema), |reference| {
+        // Only local `#/...` references are resolved.
+        reference
+            .strip_prefix('#')
+            .filter(|pointer| pointer.starts_with('/'))
+            .and_then(|pointer| spec.pointer(pointer))
+    });
 
     let body = target.map_or_else(
         || SchemaBody::Unresolved(reference.unwrap_or(name).to_owned()),
@@ -321,15 +327,13 @@ fn schema_anns(schema: &Value) -> Vec<Anno> {
 fn example_values(schema: &Value) -> Vec<&Value> {
     match field(schema, "examples") {
         Some(Value::Array(items)) => items.iter().collect(),
-        Some(Value::Object(map)) => map.values().map(example_payload).collect(),
+        Some(Value::Object(map)) => map
+            .values()
+            .map(|example| field(example, "value").unwrap_or(example))
+            .collect(),
         Some(other) => vec![other],
         None => Vec::new(),
     }
-}
-
-/// The example payload of one entry of an object-valued `examples`.
-fn example_payload(example: &Value) -> &Value {
-    field(example, "value").unwrap_or(example)
 }
 
 /// Renders a JSON value as syntax-highlighted HTML, mirroring the behavior script's
