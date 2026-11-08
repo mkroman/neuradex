@@ -72,7 +72,7 @@ docs = ["utoipa", "dep:neuradex-docs"]
 utoipa = ["dep:utoipa", "dep:utoipa-axum"]
 
 [dev-dependencies]
-serde_html_form = "0.2.7"
+serde_html_form = "0.4.0"
 tower = { version = "0.5.2", features = ["util"] }
 
 [lints.clippy]
