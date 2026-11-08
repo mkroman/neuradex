@@ -8,11 +8,6 @@ on:
     branches:
       - main
 
-env:
-  CARGO_TERM_COLOR: always
-  CARGO_NET_RETRY: 10
-  RUSTUP_MAX_RETRIES: 10
-
 # Cancel superseded runs on the same ref to free runners and cache writers.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,9 +20,12 @@ jobs:
   chart:
     name: Chart Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: Checkout source
+      - name: Check out source
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Lint chart
         run: helm lint chart/neuradex --set kagiSessionToken=ci-dummy
       - name: Render chart variants
@@ -56,11 +54,15 @@ jobs:
     timeout-minutes: 30
     env:
       IMAGE: ghcr.io/mkroman/neuradex:ci
+      # renovate: datasource=docker depName=curlimages/curl
+      CURL_IMAGE: curlimages/curl:8.23.0
     permissions:
       contents: read
     steps:
-      - name: Checkout source
+      - name: Check out source
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build image from local source
@@ -69,9 +71,12 @@ jobs:
           context: .
           load: true
           tags: ${{ env.IMAGE }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=neuradex-kind
+          # Only main writes the shared cache, else PRs accumulate per-branch
+          # caches against the repository cache quota.
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=max,scope=neuradex-kind,ignore-error=true' || '' }}
       - name: Create kind cluster
+        id: kind
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           cluster_name: neuradex
@@ -90,19 +95,19 @@ jobs:
         run: kubectl wait --for=condition=available deployment/neuradex --timeout=120s
       - name: Run in-cluster smoke checks (hack/smoke-test.sh)
         run: |
-          kubectl run curl --quiet --restart=Never --image=curlimages/curl:8.18.0 --command -- sleep 300
-          kubectl wait --for=condition=Ready pod/curl --timeout=60s
+          kubectl run curl --quiet --restart=Never --image="$CURL_IMAGE" --command -- sleep 300
+          kubectl wait --for=condition=Ready pod/curl --timeout=120s
           kubectl exec -i curl -- sh -s http://neuradex < hack/smoke-test.sh
       - name: Clean up the curl pod
-        if: always()
+        if: always() && steps.kind.outcome == 'success'
         run: kubectl delete pod curl --ignore-not-found
       - name: Dump cluster state on failure
-        if: failure()
+        if: failure() && steps.kind.outcome == 'success'
         run: |
           kubectl get pods -o wide || true
           kubectl describe deployment/neuradex || true
           kubectl get events --sort-by=.lastTimestamp | tail -30 || true
           kubectl logs deployment/neuradex || true
       - name: Delete cluster
-        if: always()
-        run: kind delete cluster --name neuradex
+        if: always() && steps.kind.outcome == 'success'
+        run: kind delete cluster --name neuradex || true

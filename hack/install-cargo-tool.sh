@@ -53,14 +53,18 @@ base_url="https://github.com/${package_name}/releases/download/${version}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 
-curl -fsSLo "${tmp}/sha256.sum" "${base_url}/sha256.sum"
+curl -fsSLo "${tmp}/sha256.sum" \
+  --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 20 \
+  "${base_url}/sha256.sum"
 actual="$(sha256 "${tmp}/sha256.sum")"
 if [ "${actual}" != "${manifest_sha256}" ]; then
   echo "sha256.sum digest mismatch for ${package_name} ${version}: ${actual}" >&2
   exit 1
 fi
 
-curl -fsSLo "${tmp}/${asset}" "${base_url}/${asset}"
+curl -fsSLo "${tmp}/${asset}" \
+  --retry 3 --retry-delay 2 --retry-all-errors --connect-timeout 20 \
+  "${base_url}/${asset}"
 expected="$(awk -v asset="${asset}" '$2 == "*" asset || $2 == asset { print $1; exit }' "${tmp}/sha256.sum")"
 if [ -z "${expected}" ]; then
   echo "no checksum for ${asset} in ${package_name} ${version}" >&2

@@ -1,0 +1,69 @@
+name: Test
+
+on:
+  workflow_call:
+    inputs:
+      test-args:
+        description: "Arguments to pass on to cargo test"
+        default: "--workspace"
+        type: string
+      runner:
+        description: "The GitHub runner to use"
+        default: "ubuntu-latest"
+        type: string
+      toolchain:
+        description: "Rust toolchain to use. Defaults to `stable`."
+        default: "stable"
+        type: string
+      cache-key:
+        description: "Shared cache key"
+        default: "ci-stable"
+        type: string
+      cache-on-failure:
+        description: "Cache rust build artifacts despite failures"
+        default: true
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  RUST_BACKTRACE: short
+  # Test debug info dominates the cache; zeta drops it for the same reason.
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Rust ${{ inputs.toolchain }}
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ inputs.toolchain }}
+      - name: Install build dependencies
+        # wreq compiles BoringSSL; bindgen needs libclang.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake clang libclang-dev
+      - name: Restore cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: ${{ inputs.cache-key }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: ${{ inputs.cache-on-failure }}
+          cache-targets: true
+      - name: Run tests
+        env:
+          TEST_ARGS: ${{ inputs.test-args }}
+        run: |
+          read -r -a test_args <<< "${TEST_ARGS}" || true
+          cargo test "${test_args[@]}"
