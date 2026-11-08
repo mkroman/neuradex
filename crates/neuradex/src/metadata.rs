@@ -162,11 +162,9 @@ fn decode_chunk(pending: &mut Vec<u8>, chunk: &[u8]) -> String {
             Err(error) => {
                 let valid = error.valid_up_to();
 
-                if valid > 0 {
-                    // The prefix is valid UTF-8 by construction.
-                    if let Ok(prefix) = std::str::from_utf8(&pending[consumed..consumed + valid]) {
-                        text.push_str(prefix);
-                    }
+                // The prefix is valid UTF-8 by construction.
+                if let Ok(prefix) = std::str::from_utf8(&pending[consumed..consumed + valid]) {
+                    text.push_str(prefix);
                 }
 
                 match error.error_len() {

@@ -74,12 +74,7 @@ pub(crate) async fn read(response: wreq::Response, mode: Mode) -> Result<Streame
 
         while let Some(chunk) = stream.next().await {
             // Backpressure from a full channel awaits here instead of blocking a worker thread.
-            let sent = match chunk {
-                Ok(chunk) => sender.send(Ok(chunk)).await.is_ok(),
-                Err(error) => sender.send(Err(error)).await.is_ok(),
-            };
-
-            if !sent {
+            if sender.send(chunk).await.is_err() {
                 break;
             }
         }

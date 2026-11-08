@@ -41,10 +41,10 @@ const ACCEPT_EVENT_STREAM: HeaderValue = HeaderValue::from_static("text/event-st
 struct KagiMessage {
     /// The message tag (e.g., "search", "search.info", "meta").
     /// This is extracted from the wire prefix or the JSON body.
-    pub tag: String,
+    tag: String,
     /// The flexible payload. Using `Value` allows this struct to handle
     /// diverse message types (HTML strings, objects, or nulls) without breaking.
-    pub payload: Option<Value>,
+    payload: Option<Value>,
 }
 
 /// The structured search results payload of a `search_results_json` message.
@@ -310,25 +310,8 @@ impl Client {
     /// Returns an [`Error`] if the session could not be established or refreshed.
     async fn acquire(&self) -> Result<SessionLease, Error> {
         loop {
-            match self.try_check_out() {
-                Some(CheckOut::Ready(slot, session)) => {
-                    return Ok(self.lease(slot, Some(session)));
-                }
-                Some(CheckOut::Expired(slot, session)) => {
-                    let mut lease = self.lease(slot, Some(session));
-                    let session = self.refresh(&lease.slot).await?;
-                    lease.session = Some(session);
-
-                    return Ok(lease);
-                }
-                Some(CheckOut::Empty(slot)) => {
-                    let mut lease = self.lease(slot, None);
-                    let session = self.establish(&lease.slot).await?;
-                    lease.session = Some(session);
-
-                    return Ok(lease);
-                }
-                None => {}
+            if let Some(checkout) = self.try_check_out() {
+                return self.prepare(checkout).await;
             }
 
             // No parked session: grow the pool if there is room, one session at a time. While
@@ -369,6 +352,28 @@ impl Client {
             lease.session = Some(session);
 
             return Ok(lease);
+        }
+    }
+
+    /// Completes a check-out: uses a valid session as-is, refreshes an expired one, or
+    /// establishes a session on an empty slot.
+    async fn prepare(&self, checkout: CheckOut) -> Result<SessionLease, Error> {
+        match checkout {
+            CheckOut::Ready(slot, session) => Ok(self.lease(slot, Some(session))),
+            CheckOut::Expired(slot, session) => {
+                let mut lease = self.lease(slot, Some(session));
+                let session = self.refresh(&lease.slot).await?;
+                lease.session = Some(session);
+
+                Ok(lease)
+            }
+            CheckOut::Empty(slot) => {
+                let mut lease = self.lease(slot, None);
+                let session = self.establish(&lease.slot).await?;
+                lease.session = Some(session);
+
+                Ok(lease)
+            }
         }
     }
 
@@ -560,7 +565,7 @@ impl Client {
     ///
     /// Returns an [`Error`] if a session could not be established, the stream request could not
     /// be sent, or the response could not be read.
-    async fn stream(&self, endpoint: &str, query: &str) -> Result<String, Error> {
+    async fn stream_body(&self, endpoint: &str, query: &str) -> Result<String, Error> {
         let mut lease = self.acquire().await?;
         let nonce = lease.take_nonce();
 
@@ -601,7 +606,7 @@ impl Client {
     /// Returns an [`Error`] if a session could not be established, the stream request could not
     /// be sent, the response could not be read, or the response could not be parsed.
     pub async fn search(&self, query: &str) -> Result<Vec<SearchResult>, Error> {
-        let body = self.stream("search", query).await?;
+        let body = self.stream_body("search", query).await?;
 
         tokio::task::spawn_blocking(move || {
             let messages = parse_stream(&body);
@@ -619,7 +624,7 @@ impl Client {
     /// Returns an [`Error`] if a session could not be established, the stream request could not
     /// be sent, the response could not be read, or the response could not be parsed.
     pub async fn images(&self, query: &str) -> Result<Vec<ImageResult>, Error> {
-        let body = self.stream("images", query).await?;
+        let body = self.stream_body("images", query).await?;
 
         tokio::task::spawn_blocking(move || {
             let messages = parse_stream(&body);

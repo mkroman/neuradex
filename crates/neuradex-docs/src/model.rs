@@ -310,8 +310,8 @@ fn collect_ops(spec: &Value) -> Vec<Op<'_>> {
         let Some(item) = item.as_object() else {
             continue;
         };
-        for (method, method_label) in HTTP_METHODS {
-            let Some(op) = item.get(*method).filter(|op| op.is_object()) else {
+        for &(method, method_label) in HTTP_METHODS {
+            let Some(op) = item.get(method).filter(|op| op.is_object()) else {
                 continue;
             };
             let base = format!("ep-{}", slug(path));
