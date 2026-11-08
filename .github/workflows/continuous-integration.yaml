@@ -25,9 +25,9 @@ jobs:
 
   # The feature matrix from AGENTS.md: `default` is the full service, the lean
   # build has no utoipa at all, and `lean + utoipa` serves the OpenAPI JSON
-  # without the documentation page. The lean jobs select the service package
-  # explicitly: in a virtual workspace the flags would otherwise apply to every
-  # member as well.
+  # without the documentation page. The lean jobs name the service package
+  # explicitly; `default-members` already selects it, but naming it keeps the
+  # command correct if the default members change.
   test:
     name: Test (${{ matrix.name }})
     permissions:

@@ -1,5 +1,7 @@
 [workspace]
 resolver = "3"
+# The glob matches directories, not manifests: every direct child of crates/
+# must be a package. Add a non-package directory under crates/ to `exclude`.
 members = ["crates/*"]
 # Root commands target the service package; pass --workspace to cover every member.
 default-members = ["crates/neuradex"]
