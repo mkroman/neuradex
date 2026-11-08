@@ -464,9 +464,9 @@ mod tests {
         .await;
     }
 
-    /// Asserts that `response` is the JSON `invalid_param` envelope for a query that failed to
-    /// deserialize, without pinning the parser's exact message.
-    async fn assert_invalid_param(response: Response) {
+    /// Asserts that `response` is the JSON `invalid_param` envelope for a rejected query or
+    /// body, without pinning the parser's exact message.
+    async fn assert_invalid(response: Response, prefix: &str) {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
             response
@@ -486,7 +486,7 @@ mod tests {
         assert!(
             error["error"]["message"]
                 .as_str()
-                .is_some_and(|message| message.starts_with("invalid query parameters: ")),
+                .is_some_and(|message| message.starts_with(prefix)),
             "unexpected message: {error}"
         );
     }
@@ -502,7 +502,7 @@ mod tests {
         ] {
             let response = send(router_for_test(), "GET", path).await;
 
-            assert_invalid_param(response).await;
+            assert_invalid(response, "invalid query parameters: ").await;
         }
     }
 
@@ -539,33 +539,6 @@ mod tests {
         }
     }
 
-    /// Asserts that `response` is the JSON `invalid_param` envelope for a body that failed to
-    /// deserialize, without pinning the parser's exact message.
-    async fn assert_invalid_body(response: Response) {
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(
-            response
-                .headers()
-                .get("content-type")
-                .and_then(|value| value.to_str().ok()),
-            Some("application/json"),
-            "expected the JSON error envelope, not a plain-text rejection",
-        );
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body");
-        let error: Value = serde_json::from_slice(&body).expect("valid json");
-
-        assert_eq!(error["error"]["type"], "invalid_param");
-        assert!(
-            error["error"]["message"]
-                .as_str()
-                .is_some_and(|message| message.starts_with("invalid request body: ")),
-            "unexpected message: {error}"
-        );
-    }
-
     #[tokio::test]
     async fn rejects_get_requests_for_the_openwebui_search_endpoint() {
         let response = send(router_for_test(), "GET", "/v1/openwebui_search").await;
@@ -588,6 +561,8 @@ mod tests {
             r#"{"query": "rust", "count": 5, "nope": 1}"#,
             r#"{"count": 5}"#,
             r#"{"query": "rust", "count": "five"}"#,
+            r#"{"query": "rust", "count": -1}"#,
+            r#"{"query": "rust", "count": 1.5}"#,
         ] {
             let response = send_body(
                 router_for_test(),
@@ -598,7 +573,7 @@ mod tests {
             )
             .await;
 
-            assert_invalid_body(response).await;
+            assert_invalid(response, "invalid request body: ").await;
         }
     }
 

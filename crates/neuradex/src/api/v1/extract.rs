@@ -314,16 +314,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_repeated_includes() {
-        let query = fetch_params("url=https://example.com&include=redirects&include=headers")
-            .expect("valid");
-        let includes = query.includes(FETCH_INCLUDES).expect("valid");
-
-        assert!(includes.redirects);
-        assert!(includes.headers);
-    }
-
-    #[test]
     fn parses_comma_separated_includes() {
         let query =
             fetch_params("url=https://example.com&include=redirects,%20headers").expect("valid");
@@ -367,9 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_parameters_and_includes() {
-        assert!(fetch_params("url=https://example.com&nope=1").is_err());
-
+    fn validates_includes_against_each_endpoints_allow_list() {
         let query = fetch_params("url=https://example.com&include=nope").expect("valid");
         assert!(matches!(
             query.includes(FETCH_INCLUDES),

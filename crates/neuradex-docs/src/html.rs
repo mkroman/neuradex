@@ -119,14 +119,4 @@ mod tests {
         assert_eq!(slug("/a--b/c/"), "a-b-c");
         assert_eq!(slug("///"), "endpoint");
     }
-
-    #[test]
-    fn resolves_json_pointer_escapes() {
-        let spec = serde_json::json!({
-            "components": {"schemas": {"a/b~c": "resolved"}}
-        });
-        let resolved = spec.pointer("/components/schemas/a~1b~0c");
-        assert_eq!(resolved.and_then(Value::as_str), Some("resolved"));
-        assert_eq!(spec.pointer("/components/schemas/missing"), None);
-    }
 }

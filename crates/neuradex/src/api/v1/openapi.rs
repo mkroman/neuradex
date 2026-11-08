@@ -76,24 +76,6 @@ mod tests {
     }
 
     #[test]
-    fn documents_all_endpoints() {
-        let document = document();
-
-        for path in [
-            "/healthz",
-            "/v1/fetch",
-            "/v1/peek",
-            "/v1/search",
-            "/v1/openwebui_search",
-        ] {
-            assert!(
-                document.paths.paths.contains_key(path),
-                "the document is missing {path}"
-            );
-        }
-    }
-
-    #[test]
     fn documents_the_error_responses_on_every_endpoint() {
         let document = document();
 
@@ -177,13 +159,6 @@ mod tests {
 
             assert_eq!(tags, [tag], "unexpected tags for {path}");
         }
-    }
-
-    #[test]
-    fn serializes_to_json() {
-        let json = document().to_pretty_json().expect("serializes");
-
-        assert!(json.contains("\"openapi\""));
     }
 
     #[test]

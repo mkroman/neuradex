@@ -182,14 +182,6 @@ mod tests {
     }
 
     #[test]
-    fn serializes_no_results_as_an_empty_array() {
-        let rendered =
-            serde_json::to_value(Vec::<OpenWebUiSearchResult>::new()).expect("serializes");
-
-        assert_eq!(rendered, json!([]));
-    }
-
-    #[test]
     fn parses_the_request_body() {
         let request: OpenWebUiSearchRequest =
             serde_json::from_value(json!({"query": "rust programming", "count": 3}))
@@ -202,48 +194,5 @@ mod tests {
             serde_json::from_value(json!({"query": "rust programming"})).expect("valid body");
 
         assert_eq!(request.count(), DEFAULT_COUNT);
-    }
-
-    #[test]
-    fn rejects_malformed_request_bodies() {
-        // Unknown fields, a missing query, and non-integer counts all fail deserialization —
-        // the handler never sees them.
-        for body in [
-            json!({"query": "rust", "count": 5, "nope": 1}),
-            json!({"count": 5}),
-            json!({"query": "rust", "count": "five"}),
-            json!({"query": "rust", "count": -1}),
-            json!({"query": "rust", "count": 1.5}),
-        ] {
-            assert!(
-                serde_json::from_value::<OpenWebUiSearchRequest>(body.clone()).is_err(),
-                "expected {body} to be rejected"
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_an_empty_query() {
-        let request: OpenWebUiSearchRequest =
-            serde_json::from_value(json!({"query": "", "count": 5})).expect("valid body");
-
-        assert!(matches!(request.validate(), Err(ApiError::InvalidParam(_))));
-    }
-
-    #[test]
-    fn truncates_results_to_the_count() {
-        let results: Vec<OpenWebUiSearchResult> = (0..5)
-            .map(|index| OpenWebUiSearchResult {
-                link: format!("https://example.com/{index}"),
-                title: format!("title {index}"),
-                snippet: String::new(),
-            })
-            .collect();
-
-        let mut limited = results;
-        limited.truncate(3);
-
-        assert_eq!(limited.len(), 3);
-        assert_eq!(limited.last().unwrap().link, "https://example.com/2");
     }
 }

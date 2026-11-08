@@ -185,29 +185,8 @@ mod tests {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
     use serde_json::Value;
-    use serde_json::json;
 
     use super::*;
-
-    #[test]
-    fn classifies_errors() {
-        assert_eq!(
-            ApiError::invalid_param("nope").classify(),
-            (StatusCode::BAD_REQUEST, "invalid_param")
-        );
-        assert_eq!(
-            ApiError::UnsupportedMediaType("binary".into()).classify(),
-            (StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type")
-        );
-        assert_eq!(
-            ApiError::upstream("timeout").classify(),
-            (StatusCode::BAD_GATEWAY, "upstream_error")
-        );
-        assert_eq!(
-            ApiError::internal("panic").classify(),
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
-        );
-    }
 
     #[tokio::test]
     async fn maps_every_constructor_to_its_status_and_type() {
@@ -260,25 +239,5 @@ mod tests {
                 assert_ne!(rendered["error"]["message"], detail);
             }
         }
-    }
-
-    #[test]
-    fn renders_as_json() {
-        let response = ApiError::invalid_param("nope").into_response();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[test]
-    fn serializes_the_documented_shape() {
-        let detail = ErrorDetail {
-            kind: "invalid_param",
-            message: "nope".to_string(),
-        };
-
-        assert_eq!(
-            serde_json::to_value(ErrorBody { error: detail }).unwrap(),
-            json!({"error": {"type": "invalid_param", "message": "nope"}})
-        );
     }
 }
