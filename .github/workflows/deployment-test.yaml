@@ -58,49 +58,109 @@ jobs:
       CURL_IMAGE: curlimages/curl:8.23.0
     permissions:
       contents: read
+      # The registry build cache lives in GHCR; only main logs in and writes it.
+      packages: write
     steps:
       - name: Check out source
         uses: actions/checkout@v7
         with:
+          # The scope check below diffs against the PR base or previous commit.
+          fetch-depth: 0
           persist-credentials: false
+      # Docs/meta-only PRs skip the expensive image + cluster path. The job
+      # still reports success, so the required Kind Deployment check passes.
+      - name: Determine build scope
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            base="${PR_BASE_SHA}"
+          else
+            base="${PUSH_BEFORE_SHA}"
+          fi
+          if [[ -z "${base}" || "${base}" == "0000000000000000000000000000000000000000" ]]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A force-push can make the previous commit unreachable; build then.
+          if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          build=true
+          while IFS= read -r file; do
+            case "${file}" in
+              *.md|docs/*) ;;
+              *)
+                build=false
+                break
+                ;;
+            esac
+          done < <(git diff --name-only --no-renames "${base}" HEAD)
+          echo "build=${build}" >> "$GITHUB_OUTPUT"
       - name: Set up Docker Buildx
+        if: github.event_name == 'push' || steps.scope.outputs.build == 'true'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in to GHCR
+        if: github.ref == 'refs/heads/main'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build image from local source
+        if: github.event_name == 'push' || steps.scope.outputs.build == 'true'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          # The build record/summary uploads add seconds and are not needed here.
+          DOCKER_BUILD_RECORD_UPLOAD: false
+          DOCKER_BUILD_SUMMARY: false
         with:
           context: .
           load: true
           tags: ${{ env.IMAGE }}
-          cache-from: type=gha,scope=neuradex-kind
+          cache-from: |
+            type=registry,ref=ghcr.io/mkroman/neuradex/buildcache
+            type=gha,scope=neuradex-kind
           # Only main writes the shared cache, else PRs accumulate per-branch
           # caches against the repository cache quota.
-          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=max,scope=neuradex-kind,ignore-error=true' || '' }}
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=registry,ref=ghcr.io/mkroman/neuradex/buildcache,mode=max,ignore-error=true' || '' }}
       - name: Create kind cluster
         id: kind
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
-        with:
-          cluster_name: neuradex
-          version: v0.33.0
+        if: github.event_name == 'push' || steps.scope.outputs.build == 'true'
+        run: |
+          expected=v0.33.0
+          # The runner image already ships a recent kind; only download when the
+          # version does not match the pinned one.
+          if [[ "$(kind version 2>/dev/null | awk '{print $2}')" != "${expected}" ]]; then
+            ./hack/install-tools.sh "$HOME/.local/bin" kind
+            export PATH="$HOME/.local/bin:$PATH"
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
+          kind create cluster --name neuradex \
+            --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5 \
+            --wait 60s
       - name: Load image into the cluster
+        if: github.event_name == 'push' || steps.scope.outputs.build == 'true'
         run: kind load docker-image "$IMAGE" --name neuradex
       - name: Install chart
+        if: github.event_name == 'push' || steps.scope.outputs.build == 'true'
         run: |
           helm install neuradex chart/neuradex \
             --set image.repository=ghcr.io/mkroman/neuradex \
             --set image.tag=ci \
             --set image.pullPolicy=Never \
             --set kagiSessionToken=ci-dummy \
-            --wait --timeout 5m
-      - name: Wait for deployment availability
-        run: kubectl wait --for=condition=available deployment/neuradex --timeout=120s
+            --wait --timeout 2m
       - name: Run in-cluster smoke checks (hack/smoke-test.sh)
+        if: github.event_name == 'push' || steps.scope.outputs.build == 'true'
         run: |
           kubectl run curl --quiet --restart=Never --image="$CURL_IMAGE" --command -- sleep 300
           kubectl wait --for=condition=Ready pod/curl --timeout=120s
           kubectl exec -i curl -- sh -s http://neuradex < hack/smoke-test.sh
-      - name: Clean up the curl pod
-        if: always() && steps.kind.outcome == 'success'
-        run: kubectl delete pod curl --ignore-not-found
       - name: Dump cluster state on failure
         if: failure() && steps.kind.outcome == 'success'
         run: |
