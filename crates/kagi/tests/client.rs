@@ -134,6 +134,33 @@ async fn an_expired_session_is_refreshed() {
 }
 
 #[tokio::test]
+async fn concurrent_searches_refresh_an_expired_session_once() {
+    let harness = KagiHarness::start();
+    let client = harness.client_with(1, Duration::from_millis(200));
+    let session = harness.mock_session();
+    let nonce = harness.mock_nonce();
+    let stream =
+        harness.mock_search_stream_reusable("search_stream_sse.bin", Duration::from_millis(10));
+
+    client
+        .search(QUERY)
+        .await
+        .expect("the first search succeeds");
+    tokio::time::sleep(Duration::from_millis(220)).await;
+
+    let (a, b) = tokio::join!(client.search(QUERY), client.search(QUERY));
+
+    a.expect("the first concurrent search succeeds");
+    b.expect("the second concurrent search succeeds");
+
+    // Both requests race on the one expired session: it is refreshed once and the
+    // other request reuses the result.
+    session.assert_calls(2);
+    nonce.assert_calls(2);
+    stream.assert_calls(3);
+}
+
+#[tokio::test]
 async fn a_rejected_session_is_reestablished() {
     let harness = KagiHarness::start();
     let client = harness.client_with(1, Duration::from_secs(60));
@@ -278,6 +305,55 @@ async fn an_inrush_grows_the_pool_to_its_capacity() {
     session.assert_calls(2);
     nonce.assert_calls(2);
     stream.assert_calls(4);
+}
+
+#[tokio::test]
+async fn session_fetches_are_serialized() {
+    let harness = KagiHarness::start();
+    let client = Arc::new(harness.client_with(2, Duration::from_secs(60)));
+    let session = harness.mock_session();
+    let nonce = harness.mock_nonce_delayed(Duration::from_millis(200));
+    let stream = harness.mock_search_stream_reusable("search_stream_sse.bin", Duration::ZERO);
+
+    let first = tokio::spawn({
+        let client = Arc::clone(&client);
+
+        async move { client.search(QUERY).await }
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while session.calls() == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the first session fetch starts");
+
+    let second = tokio::spawn({
+        let client = Arc::clone(&client);
+
+        async move { client.search(QUERY).await }
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        session.calls(),
+        1,
+        "a second request waits for the in-flight creation"
+    );
+
+    first
+        .await
+        .expect("the first task does not panic")
+        .expect("the first search succeeds");
+    second
+        .await
+        .expect("the second task does not panic")
+        .expect("the second search succeeds");
+
+    session.assert_calls(2);
+    nonce.assert_calls(2);
+    stream.assert_calls(2);
 }
 
 #[tokio::test]

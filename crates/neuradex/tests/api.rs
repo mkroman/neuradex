@@ -198,10 +198,16 @@ async fn fetch_stops_when_the_redirect_budget_is_exhausted() {
 async fn fetch_maps_connection_failures_to_the_error_envelope() {
     let app = TestApp::start();
 
-    // Reserve a loopback port, then release it so the connection is refused.
+    // Accept and immediately close the connection so the fetch fails without racing another
+    // process for a released port.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
     let address = listener.local_addr().expect("the bound address");
-    drop(listener);
+
+    std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            drop(stream);
+        }
+    });
 
     let response = app.get(&format!("/v1/fetch?url=http://{address}/")).await;
     let body = assert_error(response, StatusCode::BAD_GATEWAY, "upstream_error").await;
@@ -338,7 +344,7 @@ async fn search_times_out_and_returns_the_error_envelope() {
         std::time::Duration::from_secs(5),
     );
 
-    let response = app.get("/v1/search?query=hello%20world&timeout=1").await;
+    let response = app.get("/v1/search?query=hello%20world&timeout=2").await;
     let body = assert_error(response, StatusCode::BAD_GATEWAY, "upstream_error").await;
 
     assert_eq!(body["error"]["message"], "the upstream request failed");

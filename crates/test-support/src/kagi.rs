@@ -100,20 +100,38 @@ impl KagiHarness {
     /// Panics if the landing-page fixture cannot be read.
     #[must_use]
     pub fn mock_nonce(&self) -> Mock<'_> {
-        self.mock_nonce_body(
+        self.mock_nonce_delayed(Duration::ZERO)
+    }
+
+    /// Mocks the landing-page request, delaying its response by `delay`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the landing-page fixture cannot be read.
+    #[must_use]
+    pub fn mock_nonce_delayed(&self, delay: Duration) -> Mock<'_> {
+        self.mock_nonce_body_delayed(
             &std::fs::read_to_string(fixture("landing.html")).expect("the fixture is readable"),
+            delay,
         )
     }
 
     /// Mocks the landing page with an arbitrary body.
     #[must_use]
     pub fn mock_nonce_body(&self, body: &str) -> Mock<'_> {
+        self.mock_nonce_body_delayed(body, Duration::ZERO)
+    }
+
+    /// Mocks the landing page with an arbitrary body, delaying its response by `delay`.
+    #[must_use]
+    pub fn mock_nonce_body_delayed(&self, body: &str, delay: Duration) -> Mock<'_> {
         self.server.mock(|when, then| {
             when.method("GET")
                 .path("/")
                 .header("x-kagi-authorization", TOKEN);
             then.status(200)
                 .header("content-type", "text/html; charset=utf-8")
+                .delay(delay)
                 .body(body);
         })
     }

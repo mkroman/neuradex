@@ -233,13 +233,12 @@ impl Client {
     /// # Errors
     ///
     /// Returns [`Error::InvalidHeader`] if a configured header value is invalid, or
-    /// [`Error::InvalidBaseUrl`] if [`ClientOptions::base_url`] is not a valid URL.
+    /// [`Error::InvalidBaseUrl`] if [`ClientOptions::base_url`] is not a usable HTTP(S) URL.
     pub fn with_token_and_options(
         token: impl Into<SecretString>,
         options: &ClientOptions,
     ) -> Result<Client, Error> {
-        let base_url = reqwest::Url::parse(&options.base_url)
-            .map_err(|error| Error::InvalidBaseUrl(error.to_string()))?;
+        let base_url = parse_base_url(&options.base_url)?;
 
         Ok(Client {
             token: Arc::new(token.into()),
@@ -554,10 +553,10 @@ impl Client {
 
         let url = url_with_query(
             &self.base_url,
-            &format!("/socket/{endpoint}"),
+            &format!("socket/{endpoint}"),
             &[("q", query)],
         );
-        let referer = url_with_query(&self.base_url, &format!("/{endpoint}"), &[("q", query)]);
+        let referer = url_with_query(&self.base_url, endpoint, &[("q", query)]);
         let req = stream_request(lease.http(), &self.token, &self.language, url)
             .header(REFERER, referer.as_str());
         let req = if let Some(nonce) = nonce {
@@ -633,7 +632,7 @@ async fn http_fetch_session(
     token: &SecretString,
     language: &HeaderValue,
 ) -> Result<String, Error> {
-    let token_url = url_with_query(base_url, "/search", &[("token", token.expose_secret())]);
+    let token_url = url_with_query(base_url, "search", &[("token", token.expose_secret())]);
     debug!("requesting session cookies");
 
     let res = document_request(http, token, language, token_url.as_str())
@@ -712,16 +711,51 @@ fn invalidates_session(status: StatusCode) -> bool {
     matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
 }
 
-/// Builds a URL under `base` with the given query parameters, percent-encoding as needed.
+/// Parses and normalizes the configured base URL.
+///
+/// The base must be an HTTP(S) URL without a query or fragment. A path prefix is preserved
+/// and treated as a directory: a trailing slash is appended so relative request paths join
+/// beneath it.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidBaseUrl`] if `raw` is not a usable HTTP(S) base URL.
+fn parse_base_url(raw: &str) -> Result<reqwest::Url, Error> {
+    let mut base =
+        reqwest::Url::parse(raw).map_err(|error| Error::InvalidBaseUrl(error.to_string()))?;
+
+    if !matches!(base.scheme(), "http" | "https") || base.cannot_be_a_base() {
+        return Err(Error::InvalidBaseUrl(format!(
+            "expected an http or https URL, got {raw:?}"
+        )));
+    }
+
+    if base.query().is_some() || base.fragment().is_some() {
+        return Err(Error::InvalidBaseUrl(format!(
+            "expected a base URL without a query or fragment, got {raw:?}"
+        )));
+    }
+
+    if !base.path().ends_with('/') {
+        let path = format!("{}/", base.path());
+        base.set_path(&path);
+    }
+
+    Ok(base)
+}
+
+/// Builds a URL beneath `base` with the given query parameters, percent-encoding as needed.
+///
+/// `path` is relative to the base's path; callers pass request paths without a leading slash.
 ///
 /// # Panics
 ///
-/// Panics if `base` cannot be joined with `path`; `base` is an HTTP(S) URL validated by
-/// [`Client::with_token_and_options`], so this cannot happen.
+/// Panics if a static request path cannot be joined to the normalized base URL; the paths are
+/// compile-time constants, so this cannot happen.
 fn url_with_query(base: &reqwest::Url, path: &str, params: &[(&str, &str)]) -> reqwest::Url {
     let mut url = base
         .join(path)
-        .expect("the validated base url joins request paths");
+        .expect("the normalized base url joins request paths");
 
     url.query_pairs_mut().extend_pairs(params);
 
@@ -1156,6 +1190,76 @@ mod tests {
         assert_matches!(
             Client::with_token_and_options("token", &options).err(),
             Some(Error::InvalidBaseUrl(_))
+        );
+    }
+
+    #[test]
+    fn rejects_unusable_base_urls() {
+        for raw in [
+            "localhost:8080",
+            "mailto:someone@example.com",
+            "file:///tmp/neuradex",
+            "https://example.com/kagi?token=secret",
+            "https://example.com/kagi#fragment",
+        ] {
+            let options = ClientOptions {
+                base_url: raw.to_string(),
+                ..ClientOptions::default()
+            };
+
+            assert_matches!(
+                Client::with_token_and_options("token", &options).err(),
+                Some(Error::InvalidBaseUrl(_)),
+                "expected {raw} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_https_and_preserves_a_base_path_prefix() {
+        let options = ClientOptions {
+            base_url: "https://example.com/kagi".to_string(),
+            ..ClientOptions::default()
+        };
+        let client = Client::with_token_and_options("token", &options).expect("valid options");
+
+        assert_eq!(client.base_url.as_str(), "https://example.com/kagi/");
+        assert_eq!(
+            url_with_query(&client.base_url, "search", &[("token", "secret")]).as_str(),
+            "https://example.com/kagi/search?token=secret"
+        );
+        assert_eq!(
+            url_with_query(&client.base_url, "socket/search", &[("q", "hello world")]).as_str(),
+            "https://example.com/kagi/socket/search?q=hello+world"
+        );
+    }
+
+    #[test]
+    fn check_ins_do_not_accumulate_permits_beyond_capacity() {
+        let slot = Arc::new(Slot {
+            inner: Mutex::new(SlotInner {
+                session: None,
+                busy: false,
+                failures: 0,
+                next_retry: None,
+            }),
+            http: reqwest::Client::new(),
+        });
+        let check_in = Arc::new(Semaphore::new(0));
+
+        for _ in 0..10 {
+            drop(SessionLease {
+                slot: Arc::clone(&slot),
+                session: None,
+                check_in: Arc::clone(&check_in),
+                max_sessions: 2,
+            });
+        }
+
+        assert_eq!(
+            check_in.available_permits(),
+            2,
+            "stale check-in permits are capped at the pool capacity"
         );
     }
 }

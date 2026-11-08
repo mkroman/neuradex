@@ -74,7 +74,9 @@ pub struct ClientOptions {
     /// The base URL of the Kagi service.
     ///
     /// Defaults to [`BASE_URL`]. Overriding it is useful for testing against a local mock
-    /// server or for pointing the client at a compatible deployment.
+    /// server or for pointing the client at a compatible deployment. The URL must use `http`
+    /// or `https` and must not carry a query or fragment; a path prefix is preserved and
+    /// treated as a directory.
     pub base_url: String,
     /// The duration before an HTTP request times out.
     pub timeout: Duration,
