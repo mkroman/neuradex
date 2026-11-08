@@ -33,7 +33,6 @@ zstd = ["reqwest/zstd"]
 
 [dependencies]
 htmlize.workspace = true
-regex.workspace = true
 reqwest = { workspace = true, features = ["cookies"] }
 scraper.workspace = true
 secrecy.workspace = true

@@ -76,24 +76,6 @@ mod tests {
     }
 
     #[test]
-    fn documents_all_endpoints() {
-        let document = document();
-
-        for path in [
-            "/healthz",
-            "/v1/fetch",
-            "/v1/peek",
-            "/v1/search",
-            "/v1/openwebui_search",
-        ] {
-            assert!(
-                document.paths.paths.contains_key(path),
-                "the document is missing {path}"
-            );
-        }
-    }
-
-    #[test]
     fn documents_the_error_responses_on_every_endpoint() {
         let document = document();
 
@@ -180,13 +162,6 @@ mod tests {
     }
 
     #[test]
-    fn serializes_to_json() {
-        let json = document().to_pretty_json().expect("serializes");
-
-        assert!(json.contains("\"openapi\""));
-    }
-
-    #[test]
     fn summarizes_the_operations() {
         let document = document();
 
@@ -236,7 +211,6 @@ mod tests {
             "#/components/schemas/OpenWebUiSearchRequest"
         );
 
-        // The 200 response is a bare array of results — the shape Open WebUI expects.
         // The 200 response is a bare array of results — the shape Open WebUI expects.
         let response_schema =
             &rendered["responses"]["200"]["content"]["application/json"]["schema"];

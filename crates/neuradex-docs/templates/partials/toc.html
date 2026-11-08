@@ -18,12 +18,12 @@
     </ol>
   </div>
   {%- endfor %}
-  {%- if !page.schemas_toc.is_empty() %}
+  {%- if !page.schemas.is_empty() %}
   <div class="toc-tag toc-tag-schemas">
     <div class="toc-tag-label">schemas</div>
     <ul class="toc-schemas">
-      {%- for schema in page.schemas_toc %}
-      <li><a href="#{{ schema.href }}"><span class="toc-schema-name">{{ schema.name }}</span></a></li>
+      {%- for schema in page.schemas %}
+      <li><a href="#{{ schema.anchor_id }}"><span class="toc-schema-name">{{ schema.name }}</span></a></li>
       {%- endfor %}
     </ul>
   </div>

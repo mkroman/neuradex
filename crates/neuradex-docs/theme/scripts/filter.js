@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  const { $ } = window.docsUI;
+  const { $, tocLink } = window.docsUI;
   const doc = document;
 
   const filterInput = $('#filter');
@@ -12,7 +12,7 @@
   const filterTargets = [];
 
   doc.querySelectorAll('#content .ep').forEach(sec => {
-    const a = $('#toc a[href="#' + sec.id + '"]');
+    const a = tocLink(sec.id);
     filterTargets.push({
       /* The schema appendix is filterable like any section, but it is not an
          endpoint: counting it would make the filter say "5 of 5 endpoints"
@@ -24,7 +24,7 @@
     });
   });
   doc.querySelectorAll('#content .schema-anchor').forEach(anchor => {
-    const a = $('#toc a[href="#' + anchor.id + '"]');
+    const a = tocLink(anchor.id);
     filterTargets.push({
       endpoint: false,
       section: anchor,

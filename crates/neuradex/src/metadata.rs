@@ -7,7 +7,7 @@
 //! Response bodies are decoded as UTF-8; byte sequences that are not valid UTF-8 — including
 //! entire pages served in another encoding, e.g. ISO-8859-1 — are decoded lossily.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
 use html5ever::tendril::StrTendril;
@@ -26,7 +26,7 @@ const TWITTER_PREFIX: &str = "twitter:";
 ///
 /// All meta tags are captured generically — keyed by their `property` or `name` attribute — so
 /// additional extractors can be layered on without extending the tokenizer.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[cfg_attr(feature = "utoipa", schema(examples(json!({
     "title": "Maero",
@@ -50,20 +50,6 @@ pub struct PageMetadata {
     pub twitter: BTreeMap<String, String>,
     /// All other named or proprietary meta tags, keyed by their property or name.
     pub other: BTreeMap<String, String>,
-}
-
-impl PageMetadata {
-    /// Returns the OpenGraph value for `key` (without the `og:` prefix), if present.
-    #[must_use]
-    pub fn og_value(&self, key: &str) -> Option<&str> {
-        self.og.get(key).map(String::as_str)
-    }
-
-    /// Whether any OpenGraph metadata was captured.
-    #[must_use]
-    pub fn has_open_graph(&self) -> bool {
-        !self.og.is_empty()
-    }
 }
 
 /// A streaming parser that captures the metadata of a document head.
@@ -102,9 +88,25 @@ impl HeadParser {
             return;
         }
 
+        // The common case: a self-contained, valid UTF-8 chunk needs neither decoding nor
+        // carry-over, so it can go straight to the tokenizer.
+        if self.pending.is_empty()
+            && let Ok(text) = std::str::from_utf8(chunk)
+        {
+            if !text.is_empty() {
+                self.queue.push_back(StrTendril::from_slice(text));
+                let _ = self.tokenizer.feed(&self.queue);
+            }
+
+            return;
+        }
+
         let text = decode_chunk(&mut self.pending, chunk);
-        self.queue.push_back(StrTendril::from_slice(&text));
-        let _ = self.tokenizer.feed(&self.queue);
+
+        if !text.is_empty() {
+            self.queue.push_back(StrTendril::from_slice(&text));
+            let _ = self.tokenizer.feed(&self.queue);
+        }
     }
 
     /// Flushes any bytes carried over from the previous chunk through the parser.
@@ -116,14 +118,21 @@ impl HeadParser {
         if !self.pending.is_empty() {
             let pending = std::mem::take(&mut self.pending);
             let text = String::from_utf8_lossy(&pending);
-            self.queue.push_back(StrTendril::from_slice(&text));
-            let _ = self.tokenizer.feed(&self.queue);
+
+            if !text.is_empty() {
+                self.queue.push_back(StrTendril::from_slice(&text));
+                let _ = self.tokenizer.feed(&self.queue);
+            }
         }
+
+        // Signal the end of the input so the tokenizer flushes its state and the sink can commit
+        // a title that was still open when the input ended.
+        self.tokenizer.end();
     }
 
     /// Whether the head section has ended and parsing can stop.
     #[must_use]
-    pub fn is_done(&self) -> bool {
+    pub const fn is_done(&self) -> bool {
         self.tokenizer.sink.is_done()
     }
 
@@ -141,42 +150,40 @@ impl HeadParser {
 #[must_use]
 fn decode_chunk(pending: &mut Vec<u8>, chunk: &[u8]) -> String {
     pending.extend_from_slice(chunk);
-    let mut text = String::new();
+    let mut text = String::with_capacity(pending.len());
+    let mut consumed = 0;
 
-    loop {
-        match std::str::from_utf8(pending) {
+    while consumed < pending.len() {
+        match std::str::from_utf8(&pending[consumed..]) {
             Ok(valid) => {
                 text.push_str(valid);
-                pending.clear();
-
-                break;
+                consumed = pending.len();
             }
             Err(error) => {
                 let valid = error.valid_up_to();
 
-                if valid > 0 {
-                    // The prefix is valid UTF-8 by construction.
-                    if let Ok(prefix) = std::str::from_utf8(&pending[..valid]) {
-                        text.push_str(prefix);
-                    }
+                // The prefix is valid UTF-8 by construction.
+                if let Ok(prefix) = std::str::from_utf8(&pending[consumed..consumed + valid]) {
+                    text.push_str(prefix);
                 }
 
                 match error.error_len() {
                     // An incomplete sequence at the end of the chunk is carried over as-is.
                     None => {
-                        pending.drain(..valid);
+                        consumed += valid;
 
                         break;
                     }
                     Some(invalid_len) => {
                         text.push('\u{fffd}');
-                        pending.drain(..valid + invalid_len);
+                        consumed += valid + invalid_len;
                     }
                 }
             }
         }
     }
 
+    pending.drain(..consumed);
     text
 }
 
@@ -190,7 +197,7 @@ struct HeadSink {
     /// The buffer for the contents of the current `<title>` element, when inside one.
     title: RefCell<Option<String>>,
     /// Whether the head section has ended and tokenization can stop.
-    done: RefCell<bool>,
+    done: Cell<bool>,
 }
 
 impl HeadSink {
@@ -199,18 +206,27 @@ impl HeadSink {
         Self {
             metadata: RefCell::new(PageMetadata::default()),
             title: RefCell::new(None),
-            done: RefCell::new(false),
+            done: Cell::new(false),
         }
     }
 
     /// Whether the head section has ended and tokenization can stop.
-    fn is_done(&self) -> bool {
-        *self.done.borrow()
+    const fn is_done(&self) -> bool {
+        self.done.get()
     }
 
     /// Returns the metadata captured so far.
     fn into_metadata(self) -> PageMetadata {
         self.metadata.into_inner()
+    }
+
+    /// Commits the title collected so far, if any.
+    fn flush_title(&self) {
+        if let Some(title) = self.title.borrow_mut().take()
+            && !title.is_empty()
+        {
+            self.metadata.borrow_mut().title = Some(title);
+        }
     }
 
     /// Processes a start tag.
@@ -226,9 +242,7 @@ impl HeadSink {
             }
             "meta" => self.capture_meta(tag),
             "link" => self.capture_link(tag),
-            "body" => {
-                self.done.replace(true);
-            }
+            "body" => self.done.set(true),
             _ => {}
         }
     }
@@ -236,74 +250,97 @@ impl HeadSink {
     /// Processes an end tag.
     fn end_tag(&self, tag: &Tag) {
         match &*tag.name {
-            "title" => {
-                if let Some(title) = self.title.borrow_mut().take()
-                    && !title.is_empty()
-                {
-                    self.metadata.borrow_mut().title = Some(title);
-                }
-            }
-            "head" => {
-                self.done.replace(true);
-            }
+            "title" => self.flush_title(),
+            "head" => self.done.set(true),
             _ => {}
         }
     }
 
     /// Captures the `content` of a meta tag under its property or name.
     fn capture_meta(&self, tag: &Tag) {
-        let Some(key) = tag_attr(tag, "property").or_else(|| tag_attr(tag, "name")) else {
-            return;
-        };
+        let mut property = None;
+        let mut name = None;
+        let mut content = None;
 
-        let Some(content) = tag_attr(tag, "content").map(str::trim) else {
-            return;
-        };
-
-        if content.is_empty() {
-            return;
+        for attribute in &tag.attrs {
+            match &*attribute.name.local {
+                "property" => {
+                    property.get_or_insert(&*attribute.value);
+                }
+                "name" => {
+                    name.get_or_insert(&*attribute.value);
+                }
+                "content" => {
+                    content.get_or_insert(&*attribute.value);
+                }
+                _ => {}
+            }
         }
+
+        let Some(key) = property.or(name) else {
+            return;
+        };
+
+        let Some(content) = content.map(str::trim).filter(|content| !content.is_empty()) else {
+            return;
+        };
 
         let mut metadata = self.metadata.borrow_mut();
 
         if let Some(key) = key.strip_prefix(OG_PREFIX) {
             metadata
                 .og
-                .entry(key.to_string())
-                .or_insert_with(|| content.to_string());
+                .entry(key.to_owned())
+                .or_insert_with(|| content.to_owned());
         } else if let Some(key) = key.strip_prefix(TWITTER_PREFIX) {
             metadata
                 .twitter
-                .entry(key.to_string())
-                .or_insert_with(|| content.to_string());
+                .entry(key.to_owned())
+                .or_insert_with(|| content.to_owned());
         } else {
             metadata
                 .other
-                .entry(key.to_string())
-                .or_insert_with(|| content.to_string());
+                .entry(key.to_owned())
+                .or_insert_with(|| content.to_owned());
 
             if key == "description" {
                 metadata
                     .description
-                    .get_or_insert_with(|| content.to_string());
+                    .get_or_insert_with(|| content.to_owned());
             }
         }
     }
 
     /// Captures the `href` of the first `<link rel="canonical">` element.
     fn capture_link(&self, tag: &Tag) {
-        let Some(rel) = tag_attr(tag, "rel").map(str::trim) else {
+        let mut rel = None;
+        let mut href = None;
+
+        for attribute in &tag.attrs {
+            match &*attribute.name.local {
+                "rel" => {
+                    rel.get_or_insert(&*attribute.value);
+                }
+                "href" => {
+                    href.get_or_insert(&*attribute.value);
+                }
+                _ => {}
+            }
+        }
+
+        let Some(rel) = rel.map(str::trim) else {
             return;
         };
 
-        if rel.eq_ignore_ascii_case("canonical")
-            && let Some(href) = tag_attr(tag, "href").map(str::trim)
-            && !href.is_empty()
-        {
+        let Some(href) = href.map(str::trim).filter(|href| !href.is_empty()) else {
+            return;
+        };
+
+        if rel.eq_ignore_ascii_case("canonical") {
             self.metadata
                 .borrow_mut()
                 .canonical
-                .get_or_insert_with(|| href.to_string());
+                .get_or_insert_with(|| href.to_owned());
         }
     }
 }
@@ -331,15 +368,10 @@ impl TokenSink for HeadSink {
 
         TokenSinkResult::Continue
     }
-}
 
-/// Returns the value of the named attribute of a tag.
-#[must_use]
-fn tag_attr<'a>(tag: &'a Tag, name: &str) -> Option<&'a str> {
-    tag.attrs
-        .iter()
-        .find(|attribute| &*attribute.name.local == name)
-        .map(|attribute| &*attribute.value)
+    fn end(&self) {
+        self.flush_title();
+    }
 }
 
 #[cfg(test)]
@@ -375,6 +407,24 @@ mod tests {
     }
 
     #[test]
+    fn captures_a_title_that_is_still_open_at_end_of_input() {
+        let metadata = parse_metadata("<html><head><title>Hello");
+
+        assert_eq!(metadata.title.as_deref(), Some("Hello"));
+    }
+
+    #[test]
+    fn captures_a_title_split_across_chunks_at_end_of_input() {
+        let mut parser = HeadParser::new();
+
+        parser.feed(b"<html><head><title>Hel");
+        parser.feed(b"lo");
+        parser.finish();
+
+        assert_eq!(parser.into_metadata().title.as_deref(), Some("Hello"));
+    }
+
+    #[test]
     fn extracts_open_graph_metadata() {
         let metadata = parse_metadata(
             r#"<head><meta property="og:site_name" content="Maero">
@@ -383,10 +433,16 @@ mod tests {
             <title>Ignored</title></head>"#,
         );
 
-        assert_eq!(metadata.og_value("site_name"), Some("Maero"));
-        assert_eq!(metadata.og_value("title"), Some("Hello"));
-        assert_eq!(metadata.og_value("description"), Some("A description"));
-        assert!(metadata.has_open_graph());
+        assert_eq!(
+            metadata.og.get("site_name").map(String::as_str),
+            Some("Maero")
+        );
+        assert_eq!(metadata.og.get("title").map(String::as_str), Some("Hello"));
+        assert_eq!(
+            metadata.og.get("description").map(String::as_str),
+            Some("A description")
+        );
+        assert!(!metadata.og.is_empty());
         assert_eq!(metadata.title.as_deref(), Some("Ignored"));
     }
 
@@ -395,7 +451,10 @@ mod tests {
         let metadata =
             parse_metadata(r#"<head><meta name="og:description" content="A description"></head>"#);
 
-        assert_eq!(metadata.og_value("description"), Some("A description"));
+        assert_eq!(
+            metadata.og.get("description").map(String::as_str),
+            Some("A description")
+        );
     }
 
     #[test]
@@ -458,7 +517,7 @@ mod tests {
             <meta property="og:title" content="Second"></head>"#,
         );
 
-        assert_eq!(metadata.og_value("title"), Some("First"));
+        assert_eq!(metadata.og.get("title").map(String::as_str), Some("First"));
     }
 
     #[test]
@@ -477,7 +536,10 @@ mod tests {
         );
 
         assert_eq!(metadata.title.as_deref(), Some("Fish & Chips"));
-        assert_eq!(metadata.og_value("description"), Some("a \"quoted\" word"));
+        assert_eq!(
+            metadata.og.get("description").map(String::as_str),
+            Some("a \"quoted\" word")
+        );
     }
 
     #[test]
@@ -516,7 +578,7 @@ mod tests {
 
             assert_eq!(metadata.title.as_deref(), Some("Fish & Chips"));
             assert_eq!(
-                metadata.og_value("description"),
+                metadata.og.get("description").map(String::as_str),
                 Some("A description"),
                 "chunk size {chunk_size}"
             );
@@ -540,6 +602,18 @@ mod tests {
         assert_eq!(decode_chunk(&mut pending, &[0xFF, b'a']), "\u{fffd}a");
         assert_eq!(decode_chunk(&mut pending, b"b"), "b");
         assert_eq!(decode_chunk(&mut pending, "æ".as_bytes()), "æ");
+        assert_eq!(pending, Vec::<u8>::new());
+    }
+
+    #[test]
+    fn replaces_long_invalid_runs() {
+        let mut pending = Vec::new();
+        let bytes = vec![0xFF; 64 * 1024];
+
+        let text = decode_chunk(&mut pending, &bytes);
+
+        assert_eq!(text.chars().count(), bytes.len());
+        assert!(text.chars().all(|character| character == '\u{fffd}'));
         assert_eq!(pending, Vec::<u8>::new());
     }
 

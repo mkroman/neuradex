@@ -6,15 +6,12 @@
 //! disk on every call so local edits show up on browser refresh without recompiling,
 //! falling back to the embedded copies when a file cannot be read.
 
-#[cfg(debug_assertions)]
-use std::path::Path;
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 /// One theme source file: its path under `theme/` and its embedded copy.
 struct Source {
-    /// The path under the theme directory, e.g. `styles/tokens.css`. Only the debug disk
-    /// loader reads it.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    /// The path under the theme directory, e.g. `styles/tokens.css`.
     name: &'static str,
     /// The content embedded at compile time.
     embedded: &'static str,
@@ -92,11 +89,13 @@ const SCRIPTS: &[Source] = &[
 
 /// The pre-paint theme bootstrap — runs from `<head>`, never bundled with the other
 /// scripts.
-const BOOTSTRAP: &str = include_str!("../theme/bootstrap.js");
+const BOOTSTRAP: &[Source] = &[Source {
+    name: "bootstrap.js",
+    embedded: include_str!("../theme/bootstrap.js"),
+}];
 
 /// Reads every listed source from `base`, falling back to the embedded copy per file on
 /// I/O errors. Parameterized over the base directory for tests.
-#[cfg(debug_assertions)]
 fn read_sources(base: &Path, list: &[Source]) -> Vec<String> {
     list.iter()
         .map(
@@ -115,101 +114,64 @@ fn read_sources(base: &Path, list: &[Source]) -> Vec<String> {
         .collect()
 }
 
-/// The embedded copies of every listed source, in order.
-#[cfg(not(debug_assertions))]
-fn embedded_sources(list: &[Source]) -> Vec<&'static str> {
-    list.iter().map(|source| source.embedded).collect()
+/// Concatenates the sources in canonical order: re-read from disk per call in debug
+/// builds, the embedded copies in release.
+fn source_text(list: &[Source]) -> String {
+    if crate::RELOAD_SOURCES {
+        join(&read_sources(theme_dir(), list))
+    } else {
+        let sources: Vec<&str> = list.iter().map(|source| source.embedded).collect();
+
+        join(&sources)
+    }
 }
 
-/// Concatenates the stylesheet sources in canonical order: re-read from disk per call in
-/// debug builds, the embedded copies in release.
+/// Concatenates the stylesheet sources in canonical order.
 pub fn style_raw() -> String {
-    #[cfg(debug_assertions)]
-    let sources = read_sources(theme_dir(), STYLES);
-    #[cfg(not(debug_assertions))]
-    let sources = embedded_sources(STYLES);
-    join(&sources)
+    source_text(STYLES)
 }
 
-/// Concatenates the behavior scripts in canonical order: re-read from disk per call in
-/// debug builds, the embedded copies in release.
+/// Concatenates the behavior scripts in canonical order.
 pub fn behavior_raw() -> String {
-    #[cfg(debug_assertions)]
-    let sources = read_sources(theme_dir(), SCRIPTS);
-    #[cfg(not(debug_assertions))]
-    let sources = embedded_sources(SCRIPTS);
-    join(&sources)
+    source_text(SCRIPTS)
 }
 
-/// The pre-paint theme bootstrap: re-read from disk per call in debug builds, the
-/// embedded copy in release.
+/// The pre-paint theme bootstrap.
 pub fn bootstrap_raw() -> String {
-    #[cfg(debug_assertions)]
-    {
-        let base = theme_dir();
-        match std::fs::read_to_string(base.join("bootstrap.js")) {
-            Ok(text) => text,
-            Err(error) => {
-                tracing::warn!(
-                    file = "bootstrap.js",
-                    %error,
-                    "theme source unreadable from disk; using the embedded copy"
-                );
-                BOOTSTRAP.to_owned()
-            }
-        }
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        BOOTSTRAP.to_owned()
-    }
-}
-
-/// The stylesheet sources as one string, cached at first call — for the public accessor,
-/// whose `&'static str` signature cannot honor per-call disk reads.
-pub fn style() -> &'static str {
-    static STYLE: OnceLock<String> = OnceLock::new();
-    STYLE.get_or_init(style_raw)
-}
-
-/// The behavior scripts as one string, cached at first call — for the public accessor,
-/// whose `&'static str` signature cannot honor per-call disk reads.
-pub fn behavior() -> &'static str {
-    static BEHAVIOR: OnceLock<String> = OnceLock::new();
-    BEHAVIOR.get_or_init(behavior_raw)
-}
-
-/// The pre-paint theme bootstrap, cached at first call — for the public accessor, whose
-/// `&'static str` signature cannot honor per-call disk reads.
-pub fn bootstrap() -> &'static str {
-    static BOOTSTRAP_TEXT: OnceLock<String> = OnceLock::new();
-    BOOTSTRAP_TEXT.get_or_init(bootstrap_raw)
+    source_text(BOOTSTRAP)
 }
 
 /// The theme directory the debug builds re-read from.
-#[cfg(debug_assertions)]
 fn theme_dir() -> &'static Path {
-    static DIR: OnceLock<&'static Path> = OnceLock::new();
-    DIR.get_or_init(|| {
-        Box::leak(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("theme")
-                .into_boxed_path(),
-        )
-    })
+    static DIR: LazyLock<PathBuf> =
+        LazyLock::new(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("theme"));
+
+    DIR.as_path()
 }
 
 /// Joins sources with a separating newline.
 fn join<T: AsRef<str>>(sources: &[T]) -> String {
-    sources
+    let Some((first, rest)) = sources.split_first() else {
+        return String::new();
+    };
+
+    let capacity = sources
         .iter()
-        .map(AsRef::as_ref)
-        .collect::<Vec<_>>()
-        .join("\n")
+        .map(|source| source.as_ref().len())
+        .sum::<usize>()
+        + rest.len();
+    let mut out = String::with_capacity(capacity);
+    out.push_str(first.as_ref());
+
+    for source in rest {
+        out.push('\n');
+        out.push_str(source.as_ref());
+    }
+
+    out
 }
 
 #[cfg(test)]
-#[cfg(debug_assertions)]
 mod tests {
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -217,7 +179,7 @@ mod tests {
     use super::*;
 
     /// A fresh throwaway directory per test, so fixtures never collide.
-    fn temp_dir(tag: &str) -> std::path::PathBuf {
+    fn temp_dir(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())

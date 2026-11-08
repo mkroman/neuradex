@@ -8,6 +8,7 @@ description = "The neuradex documentation page: askama templates, theme sources,
 
 [dependencies]
 askama = "0.16.1"
+htmlize.workspace = true
 lightningcss = { version = "1.0.0-alpha.72", default-features = false }
 serde_json = { workspace = true, features = ["preserve_order"] }
 tracing.workspace = true

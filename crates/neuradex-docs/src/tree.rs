@@ -7,12 +7,13 @@
 //! children) are interpolated with `|safe`. The markup and class names are the ones
 //! the theme's stylesheet and behavior script expect.
 
+use htmlize::escape_all_quotes;
 use serde_json::Value;
 
 use askama::Template;
 
-use crate::html::{esc, field, prose, ref_name, resolve_ref, str_field};
-use crate::model::Anno;
+use crate::html::{field, prose, push_escaped, ref_name, str_field};
+use crate::model::{Anno, common_anns};
 
 /// The maximum nesting depth expanded inline; deeper branches point at the schema appendix.
 const MAX_DEPTH: usize = 4;
@@ -110,7 +111,13 @@ fn node(
 ) -> SchemaNode {
     let reference = str_field(schema, "$ref");
     let ref_target = reference.map(|r| ref_name(r).to_owned());
-    let target = reference.map_or(Some(schema), |r| resolve_ref(spec, r));
+    let target = reference.map_or(Some(schema), |reference| {
+        // Only local `#/...` references are resolved.
+        reference
+            .strip_prefix('#')
+            .filter(|pointer| pointer.starts_with('/'))
+            .and_then(|pointer| spec.pointer(pointer))
+    });
 
     let body = target.map_or_else(
         || SchemaBody::Unresolved(reference.unwrap_or(name).to_owned()),
@@ -167,11 +174,22 @@ fn resolved_body(
         .map(|names| names.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
 
+    let properties = field(target, "properties").and_then(Value::as_object);
+    let items = (str_field(target, "type") == Some("array"))
+        .then(|| field(target, "items"))
+        .flatten();
+
+    // The recursion-guard key is the `$ref` target when the node has one, its name otherwise.
+    let needs_key =
+        properties.is_some_and(|properties| properties.values().any(is_branch)) || items.is_some();
+    if needs_key {
+        stack.push(ref_target.unwrap_or(name).to_owned());
+    }
+
     let mut props = Vec::new();
-    if let Some(properties) = field(target, "properties").and_then(Value::as_object) {
+    if let Some(properties) = properties {
         for (property_name, property) in properties {
             if is_branch(property) {
-                stack.push(stack_key(ref_target, name));
                 props.push(SchemaEntry::Node(node(
                     spec,
                     property_name,
@@ -181,7 +199,6 @@ fn resolved_body(
                     false,
                     required_names.contains(&property_name.as_str()),
                 )));
-                stack.pop();
             } else {
                 props.push(SchemaEntry::Row(property_row(
                     property_name,
@@ -192,16 +209,12 @@ fn resolved_body(
         }
     }
 
-    let items = if str_field(target, "type") == Some("array") {
-        field(target, "items").map(|items| {
-            stack.push(stack_key(ref_target, name));
-            let child = node(spec, "items[]", items, depth + 1, stack, false, false);
-            stack.pop();
-            Box::new(child)
-        })
-    } else {
-        None
-    };
+    let items =
+        items.map(|items| Box::new(node(spec, "items[]", items, depth + 1, stack, false, false)));
+
+    if needs_key {
+        stack.pop();
+    }
 
     let examples = example_values(target);
     let examples_label = if examples.len() > 1 {
@@ -222,12 +235,6 @@ fn resolved_body(
         examples_label: examples_label.to_owned(),
         examples,
     }
-}
-
-/// The recursion-guard key a node contributes to the stack: its `$ref` target when it has
-/// one, its name otherwise.
-fn stack_key(ref_target: Option<&str>, name: &str) -> String {
-    ref_target.unwrap_or(name).to_owned()
 }
 
 /// Builds a flat (non-expandable) property row.
@@ -289,42 +296,26 @@ fn is_branch(schema: &Value) -> bool {
 /// `pattern`, and `enum`, in that order.
 fn schema_anns(schema: &Value) -> Vec<Anno> {
     let mut anns = Vec::new();
-    let mut push = |key: &str, value: String| {
-        anns.push(Anno {
-            key: key.to_owned(),
-            value,
-        });
-    };
-    if let Some(format) = str_field(schema, "format") {
-        push("format", format.to_owned());
-    }
-    if let Some(default) = field(schema, "default") {
-        push("default", default.to_string());
-    }
-    if let Some(minimum) = field(schema, "minimum") {
-        push("min", minimum.to_string());
-    }
-    if let Some(maximum) = field(schema, "maximum") {
-        push("max", maximum.to_string());
-    }
+    common_anns(&mut anns, schema);
+
     if let Some(min_length) = field(schema, "minLength") {
-        push("min length", min_length.to_string());
+        anns.push(Anno::new("min length", min_length.to_string()));
     }
     if let Some(max_length) = field(schema, "maxLength") {
-        push("max length", max_length.to_string());
+        anns.push(Anno::new("max length", max_length.to_string()));
     }
     if let Some(pattern) = str_field(schema, "pattern") {
-        push("pattern", pattern.to_owned());
+        anns.push(Anno::new("pattern", pattern.to_owned()));
     }
     if let Some(Value::Array(values)) = field(schema, "enum") {
-        push(
+        anns.push(Anno::new(
             "enum",
             values
                 .iter()
                 .map(Value::to_string)
                 .collect::<Vec<_>>()
                 .join(" | "),
-        );
+        ));
     }
     anns
 }
@@ -336,22 +327,20 @@ fn schema_anns(schema: &Value) -> Vec<Anno> {
 fn example_values(schema: &Value) -> Vec<&Value> {
     match field(schema, "examples") {
         Some(Value::Array(items)) => items.iter().collect(),
-        Some(Value::Object(map)) => map.values().map(example_payload).collect(),
+        Some(Value::Object(map)) => map
+            .values()
+            .map(|example| field(example, "value").unwrap_or(example))
+            .collect(),
         Some(other) => vec![other],
         None => Vec::new(),
     }
-}
-
-/// The example payload of one entry of an object-valued `examples`.
-fn example_payload(example: &Value) -> &Value {
-    field(example, "value").unwrap_or(example)
 }
 
 /// Renders a JSON value as syntax-highlighted HTML, mirroring the behavior script's
 /// runtime highlighter (keys, strings, numbers, booleans/null).
 fn highlight_json(value: &Value, cap: usize) -> String {
     let Ok(text) = serde_json::to_string_pretty(value) else {
-        return esc(&value.to_string());
+        return escape_all_quotes(value.to_string()).into_owned();
     };
     highlight_text(&text, cap)
 }
@@ -392,11 +381,11 @@ fn highlight_text(text: &str, cap: usize) -> String {
                     k += 1;
                 }
                 if k < bytes.len() && bytes[k] == b':' {
-                    out.push_str(&esc(&slice[last..i]));
+                    push_escaped(&mut out, &slice[last..i]);
                     out.push_str("<span class=\"j-key\">");
-                    out.push_str(&esc(&slice[i..j]));
+                    push_escaped(&mut out, &slice[i..j]);
                     out.push_str("</span>");
-                    out.push_str(&esc(&slice[j..=k]));
+                    push_escaped(&mut out, &slice[j..=k]);
                     i = k + 1;
                     last = i;
                     continue;
@@ -420,16 +409,16 @@ fn highlight_text(text: &str, cap: usize) -> String {
                 continue;
             }
         };
-        out.push_str(&esc(&slice[last..i]));
+        push_escaped(&mut out, &slice[last..i]);
         out.push_str("<span class=\"");
         out.push_str(class);
         out.push_str("\">");
-        out.push_str(&esc(&slice[i..end]));
+        push_escaped(&mut out, &slice[i..end]);
         out.push_str("</span>");
         i = end;
         last = i;
     }
-    out.push_str(&esc(&slice[last..]));
+    push_escaped(&mut out, &slice[last..]);
     if truncated {
         out.push_str("\n… truncated for display");
     }

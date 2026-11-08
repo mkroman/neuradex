@@ -10,10 +10,16 @@
 //!
 //! Nothing in this crate panics on its own; see [`render`] for the one exception.
 
-#[cfg(not(debug_assertions))]
-use std::sync::OnceLock;
+use std::borrow::Cow;
+use std::sync::LazyLock;
 
 use askama::Template;
+
+/// Whether theme sources are re-read from disk and the docs page is re-rendered per request.
+///
+/// This is the single place the debug/release behavior difference is defined; the dead branch
+/// is removed by the optimizer in release builds.
+pub const RELOAD_SOURCES: bool = cfg!(debug_assertions);
 
 mod assets;
 mod bundle;
@@ -42,10 +48,11 @@ mod tree;
 pub fn render(document: &utoipa::openapi::OpenApi) -> String {
     let spec = serde_json::to_value(document).expect("the OpenAPI document serializes to JSON");
     let page = model::page(&spec);
+    let style = page_style();
 
     let template = PageTemplate {
         page: &page,
-        style: &page_style(),
+        style: &style,
         behavior: &assets::behavior_raw(),
         theme_bootstrap: &assets::bootstrap_raw(),
     };
@@ -54,51 +61,16 @@ pub fn render(document: &utoipa::openapi::OpenApi) -> String {
         .expect("the documentation-page template renders")
 }
 
-/// The bundled stylesheet for the page: re-bundled per call in debug builds, bundled once
-/// in release builds.
-fn page_style() -> String {
-    #[cfg(debug_assertions)]
-    {
-        bundle::bundle(&assets::style_raw())
+/// The bundled stylesheet for the page: re-bundled per call in debug builds, borrowed from a
+/// process-wide cache in release builds.
+fn page_style() -> Cow<'static, str> {
+    if RELOAD_SOURCES {
+        Cow::Owned(bundle::bundle(&assets::style_raw()))
+    } else {
+        static BUNDLED: LazyLock<String> = LazyLock::new(|| bundle::bundle(&assets::style_raw()));
+
+        Cow::Borrowed(BUNDLED.as_str())
     }
-    #[cfg(not(debug_assertions))]
-    {
-        static BUNDLED: OnceLock<String> = OnceLock::new();
-        BUNDLED
-            .get_or_init(|| bundle::bundle(&assets::style_raw()))
-            .clone()
-    }
-}
-
-/// The theme's stylesheets, concatenated in canonical order.
-///
-/// These are the raw authored sources, for consumers that only want the theming. The
-/// value is cached at first call: unlike [`render`], these accessors cannot honor
-/// per-call disk reads in debug builds.
-#[must_use]
-pub fn style() -> &'static str {
-    assets::style()
-}
-
-/// The theme's behavior scripts, concatenated in canonical order (the
-/// namespace-creating `helpers.js` first).
-///
-/// These are the raw authored sources, for consumers that only want the theming. The
-/// value is cached at first call: unlike [`render`], these accessors cannot honor
-/// per-call disk reads in debug builds.
-#[must_use]
-pub fn behavior_script() -> &'static str {
-    assets::behavior()
-}
-
-/// The pre-paint theme bootstrap (`theme/bootstrap.js`); must run from `<head>`, before
-/// first paint.
-///
-/// The value is cached at first call: unlike [`render`], these accessors cannot honor
-/// per-call disk reads in debug builds.
-#[must_use]
-pub fn theme_bootstrap() -> &'static str {
-    assets::bootstrap()
 }
 
 /// The askama root template; see `templates/page.html`. The partials it includes share

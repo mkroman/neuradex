@@ -1,12 +1,11 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, LazyLock, Mutex},
     time::Duration,
 };
 
 use htmlize::unescape;
-use regex::Regex;
 use reqwest::StatusCode;
 use reqwest::header::{
     ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, HeaderValue, PRAGMA, REFERER, SET_COOKIE,
@@ -42,10 +41,10 @@ const ACCEPT_EVENT_STREAM: HeaderValue = HeaderValue::from_static("text/event-st
 struct KagiMessage {
     /// The message tag (e.g., "search", "search.info", "meta").
     /// This is extracted from the wire prefix or the JSON body.
-    pub tag: String,
+    tag: String,
     /// The flexible payload. Using `Value` allows this struct to handle
     /// diverse message types (HTML strings, objects, or nulls) without breaking.
-    pub payload: Option<Value>,
+    payload: Option<Value>,
 }
 
 /// The structured search results payload of a `search_results_json` message.
@@ -64,7 +63,6 @@ struct JsonSearchResult {
     snippet: String,
 }
 
-#[derive(Clone, Debug)]
 struct Session {
     /// The nonce used for the first stream request of the session.
     nonce: Option<String>,
@@ -121,32 +119,15 @@ impl SlotInner {
     }
 }
 
-/// What kind of slot a check-out is looking for, in preference order: a parked session that is
-/// still valid, one that has expired, or an empty slot to establish a session on.
-#[derive(Clone, Copy)]
-enum SlotKind {
+/// The outcome of checking a slot out of the pool: a parked session (valid or expired) or an
+/// empty slot that must establish one.
+enum CheckOut {
     /// A parked session that is still valid.
-    Valid,
+    Ready(Arc<Slot>, Session),
     /// A parked session that has expired and needs a refresh.
-    Expired,
+    Expired(Arc<Slot>, Session),
     /// A slot without a session, waiting to be established.
-    Empty,
-}
-
-impl SlotKind {
-    fn matches(self, inner: &SlotInner, session_duration: Duration) -> bool {
-        match self {
-            SlotKind::Valid => inner
-                .session
-                .as_ref()
-                .is_some_and(|session| session.is_valid(session_duration)),
-            SlotKind::Expired => inner
-                .session
-                .as_ref()
-                .is_some_and(|session| !session.is_valid(session_duration)),
-            SlotKind::Empty => inner.session.is_none(),
-        }
-    }
+    Empty(Arc<Slot>),
 }
 
 /// A checked-out session slot, restored to the pool on drop.
@@ -160,6 +141,8 @@ struct SessionLease {
     session: Option<Session>,
     /// Signals requests waiting for a session to be checked back in; one permit per check-in.
     check_in: Arc<Semaphore>,
+    /// The pool capacity; bounds the accumulated check-in permits.
+    max_sessions: usize,
 }
 
 impl SessionLease {
@@ -190,8 +173,11 @@ impl Drop for SessionLease {
         }
 
         // One permit per check-in: permits accumulate when no request is waiting yet, so a
-        // burst of check-ins is never collapsed into a single wakeup.
-        self.check_in.add_permits(1);
+        // burst of check-ins is never collapsed into a single wakeup. At most `max_sessions`
+        // slots can be checked in concurrently, so more permits would only be stale.
+        if self.check_in.available_permits() < self.max_sessions {
+            self.check_in.add_permits(1);
+        }
     }
 }
 
@@ -324,43 +310,28 @@ impl Client {
     /// Returns an [`Error`] if the session could not be established or refreshed.
     async fn acquire(&self) -> Result<SessionLease, Error> {
         loop {
-            // An idle, valid session is used without any fetch.
-            if let Some((slot, Some(session))) = self.try_check_out(SlotKind::Valid) {
-                return Ok(self.lease(slot, Some(session)));
+            if let Some(checkout) = self.try_check_out() {
+                return self.prepare(checkout).await;
             }
 
-            // An idle, expired session is refreshed in place. Refreshes of distinct sessions
-            // are independent and are not serialized by the creation gate.
-            if let Some((slot, expired)) = self.try_check_out(SlotKind::Expired) {
-                let mut lease = self.lease(slot, expired);
-                let session = self.refresh(&lease.slot).await?;
-                lease.session = Some(session);
+            // No parked session: grow the pool if there is room, one session at a time. While
+            // queued on the creation gate, a session may have been checked back in or another
+            // request may have grown the pool — re-scan before adding a slot.
+            let slot = if self.slot_count() < self.max_sessions {
+                let gate = self.creation.lock().await;
 
-                return Ok(lease);
-            }
-
-            // No parked session: establish one, either on an idle empty slot or, if the pool
-            // has room, on a new slot. Both hold the creation gate across the fetch, so that
-            // sessions are created one at a time. While queued on the gate, a session may
-            // have been checked back in — re-scan before growing the pool.
-            let slot = match self.try_check_out(SlotKind::Empty) {
-                Some((slot, _ /* none parked */)) => Some(slot),
-                None if self.slot_count() < self.max_sessions => {
-                    // Growing the pool needs the gate; while queued, a session may have
-                    // been checked back in — re-scan before adding a slot.
-                    let gate = self.creation.lock().await;
-
-                    if self.has_idle() || self.slot_count() >= self.max_sessions {
-                        drop(gate);
-                        continue;
-                    }
-
-                    let slot = self.add_slot()?;
+                let (idle, count) = self.pool_state();
+                if idle || count >= self.max_sessions {
                     drop(gate);
-
-                    Some(slot)
+                    continue;
                 }
-                None => None,
+
+                let slot = self.add_slot()?;
+                drop(gate);
+
+                Some(slot)
+            } else {
+                None
             };
 
             let Some(slot) = slot else {
@@ -369,8 +340,7 @@ impl Client {
                 // the re-scan below decides progress and the next check-in produces the next
                 // wakeup.
                 self.check_in
-                    .clone()
-                    .acquire_owned()
+                    .acquire()
                     .await
                     .expect("the semaphore is never closed")
                     .forget();
@@ -385,41 +355,98 @@ impl Client {
         }
     }
 
+    /// Completes a check-out: uses a valid session as-is, refreshes an expired one, or
+    /// establishes a session on an empty slot.
+    async fn prepare(&self, checkout: CheckOut) -> Result<SessionLease, Error> {
+        match checkout {
+            CheckOut::Ready(slot, session) => Ok(self.lease(slot, Some(session))),
+            CheckOut::Expired(slot, session) => {
+                let mut lease = self.lease(slot, Some(session));
+                let session = self.refresh(&lease.slot).await?;
+                lease.session = Some(session);
+
+                Ok(lease)
+            }
+            CheckOut::Empty(slot) => {
+                let mut lease = self.lease(slot, None);
+                let session = self.establish(&lease.slot).await?;
+                lease.session = Some(session);
+
+                Ok(lease)
+            }
+        }
+    }
+
     /// Wraps a checked-out slot and session into a lease.
     fn lease(&self, slot: Arc<Slot>, session: Option<Session>) -> SessionLease {
         SessionLease {
             slot,
             session,
             check_in: Arc::clone(&self.check_in),
+            max_sessions: self.max_sessions,
         }
     }
 
-    /// Checks out the first parked slot matching `kind`, returning it with its session.
-    fn try_check_out(&self, kind: SlotKind) -> Option<(Arc<Slot>, Option<Session>)> {
+    /// Checks out the best parked slot in a single pass: a valid session, then an expired one,
+    /// then an empty slot.
+    // The pool guard must stay held through the candidate check-out below: dropping it after
+    // the scan would let another request take the slot we picked.
+    #[allow(clippy::significant_drop_tightening)]
+    fn try_check_out(&self) -> Option<CheckOut> {
         let slots = self.slots.lock().unwrap();
+        let mut expired = None;
+        let mut empty = None;
 
-        slots.iter().find_map(|slot| {
+        for slot in slots.iter() {
             let mut inner = slot.inner.lock().unwrap();
 
-            if inner.busy || !kind.matches(&inner, self.session_duration) {
-                return None;
+            if inner.busy {
+                continue;
             }
 
-            let session = inner.check_out();
+            if inner
+                .session
+                .as_ref()
+                .is_some_and(|session| session.is_valid(self.session_duration))
+            {
+                let session = inner.check_out().expect("a valid session was parked");
+                drop(inner);
+
+                return Some(CheckOut::Ready(Arc::clone(slot), session));
+            }
+
+            if inner.session.is_some() {
+                if expired.is_none() {
+                    expired = Some(Arc::clone(slot));
+                }
+            } else if empty.is_none() {
+                empty = Some(Arc::clone(slot));
+            }
+        }
+
+        if let Some(slot) = expired {
+            let mut inner = slot.inner.lock().unwrap();
+            let session = inner.check_out().expect("an expired session was parked");
             drop(inner);
 
-            Some((Arc::clone(slot), session))
-        })
+            return Some(CheckOut::Expired(slot, session));
+        }
+
+        if let Some(slot) = empty {
+            slot.inner.lock().unwrap().check_out();
+
+            return Some(CheckOut::Empty(slot));
+        }
+
+        None
     }
 
-    /// Returns whether any slot is parked, of any kind.
-    fn has_idle(&self) -> bool {
+    /// Returns whether any slot is parked and the number of slots in the pool.
+    fn pool_state(&self) -> (bool, usize) {
         let slots = self.slots.lock().unwrap();
+        let idle = slots.iter().any(|slot| !slot.inner.lock().unwrap().busy);
 
-        slots.iter().any(|slot| {
-            let inner = slot.inner.lock().unwrap();
-            !inner.busy
-        })
+        (idle, slots.len())
     }
 
     /// Returns the number of slots in the pool.
@@ -529,7 +556,7 @@ impl Client {
     }
 
     /// Connects to one of the socket stream endpoints (`search` or `images`) and returns the
-    /// messages parsed from the response.
+    /// raw response body.
     ///
     /// The session is checked out for the duration of the stream request and returned
     /// afterwards — or immediately, if the caller's future is dropped mid-request.
@@ -538,7 +565,7 @@ impl Client {
     ///
     /// Returns an [`Error`] if a session could not be established, the stream request could not
     /// be sent, or the response could not be read.
-    async fn stream(&self, endpoint: &str, query: &str) -> Result<Vec<KagiMessage>, Error> {
+    async fn stream_body(&self, endpoint: &str, query: &str) -> Result<String, Error> {
         let mut lease = self.acquire().await?;
         let nonce = lease.take_nonce();
 
@@ -569,7 +596,7 @@ impl Client {
         };
         let body = res.text().await.map_err(Error::StreamRequestBody)?;
 
-        Ok(parse_stream(&body))
+        Ok(body)
     }
 
     /// Searches Kagi with the given query and returns the parsed search results.
@@ -577,11 +604,17 @@ impl Client {
     /// # Errors
     ///
     /// Returns an [`Error`] if a session could not be established, the stream request could not
-    /// be sent, or the response could not be read.
+    /// be sent, the response could not be read, or the response could not be parsed.
     pub async fn search(&self, query: &str) -> Result<Vec<SearchResult>, Error> {
-        let messages = self.stream("search", query).await?;
+        let body = self.stream_body("search", query).await?;
 
-        Ok(parse_search_result_messages(&messages))
+        tokio::task::spawn_blocking(move || {
+            let messages = parse_stream(&body);
+
+            parse_search_result_messages(&messages)
+        })
+        .await
+        .map_err(Error::ParseTask)
     }
 
     /// Searches Kagi images with the given query and returns the parsed image results.
@@ -589,11 +622,17 @@ impl Client {
     /// # Errors
     ///
     /// Returns an [`Error`] if a session could not be established, the stream request could not
-    /// be sent, or the response could not be read.
+    /// be sent, the response could not be read, or the response could not be parsed.
     pub async fn images(&self, query: &str) -> Result<Vec<ImageResult>, Error> {
-        let messages = self.stream("images", query).await?;
+        let body = self.stream_body("images", query).await?;
 
-        Ok(parse_image_result_messages(&messages))
+        tokio::task::spawn_blocking(move || {
+            let messages = parse_stream(&body);
+
+            parse_image_result_messages(&messages)
+        })
+        .await
+        .map_err(Error::ParseTask)
     }
 }
 
@@ -674,9 +713,7 @@ fn stream_request(
 fn backoff_after_failures(failures: u32) -> Duration {
     let exponent = failures.saturating_sub(1).min(16);
 
-    BACKOFF_BASE
-        .checked_mul(1 << exponent)
-        .map_or(BACKOFF_MAX, |backoff| backoff.min(BACKOFF_MAX))
+    BACKOFF_BASE.saturating_mul(1 << exponent).min(BACKOFF_MAX)
 }
 
 /// Returns whether the stream response status invalidates the session: the
@@ -699,18 +736,29 @@ fn url_with_query(path: &str, params: &[(&str, &str)]) -> reqwest::Url {
 
 // Extracts the `window.sse_nonce` value from the raw HTML content.
 fn extract_nonce(html: &str) -> Option<String> {
-    nonce_regex()
-        .captures(html)
-        .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
-}
+    const MARKER: &str = "window.sse_nonce";
 
-/// Returns the regex matching the `window.sse_nonce` value in the page's HTML, compiled once.
-fn nonce_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
+    let mut rest = html;
 
-    RE.get_or_init(|| {
-        Regex::new(r#"window\.sse_nonce\s*=\s*"([^"]+)""#).expect("the nonce pattern is valid")
-    })
+    while let Some(index) = rest.find(MARKER) {
+        rest = &rest[index + MARKER.len()..];
+
+        let Some(after) = rest.trim_start().strip_prefix('=') else {
+            continue;
+        };
+        let Some(after) = after.trim_start().strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = after.find('"') else {
+            continue;
+        };
+
+        if end > 0 {
+            return Some(after[..end].to_owned());
+        }
+    }
+
+    None
 }
 
 /// Parses a raw stream response body into a vector of `KagiMessage`s, detecting whether the
@@ -748,8 +796,7 @@ fn parse_sse_stream(raw_body: &str) -> Vec<KagiMessage> {
 /// 4. Ensures the `tag` field is populated.
 fn parse_kagi_stream(raw_body: &str) -> Vec<KagiMessage> {
     raw_body
-        .split("\0\n")
-        .filter(|chunk| !chunk.is_empty())
+        .split_terminator("\0\n")
         .filter_map(|chunk| {
             // Split wire format: "tag:json_data"
             let (wire_tag, json_str) = chunk.split_once(':')?;
@@ -785,25 +832,22 @@ fn parse_search_result_messages(messages: &[KagiMessage]) -> Vec<SearchResult> {
                 .map(|item| SearchResult {
                     title: item.title,
                     url: item.url,
-                    description: unescape(&item.snippet).into_owned(),
+                    description: unescape(item.snippet).into_owned(),
                 })
                 .collect();
         }
     }
 
     // Fall back to parsing the HTML fragments of `search` messages.
-    let mut result: Vec<SearchResult> = vec![];
-    let search_msgs = messages.iter().filter(|x| x.tag == "search");
+    let mut result: Vec<SearchResult> = Vec::new();
 
-    for msg in search_msgs {
+    for msg in messages.iter().filter(|message| message.tag == "search") {
         if let Some(content) = msg
             .payload
             .as_ref()
-            .and_then(|p| p.get("content").and_then(|v| v.as_str()))
+            .and_then(|payload| payload.get("content").and_then(Value::as_str))
         {
-            let mut results = parse_search_results_html(content);
-
-            result.append(&mut results);
+            result.extend(parse_search_results_html(content));
         }
     }
 
@@ -842,16 +886,12 @@ impl Selectors {
     }
 }
 
-/// Returns the pre-compiled result selectors.
-fn selectors() -> &'static Selectors {
-    static SELECTORS: OnceLock<Selectors> = OnceLock::new();
-
-    SELECTORS.get_or_init(Selectors::new)
-}
+/// The pre-compiled result selectors, initialized on first use.
+static SELECTORS: LazyLock<Selectors> = LazyLock::new(Selectors::new);
 
 fn parse_search_results_html(html: &str) -> Vec<SearchResult> {
     let fragment = Html::parse_fragment(html);
-    let selectors = selectors();
+    let selectors = &SELECTORS;
 
     let search_results = fragment.select(&selectors.search_result);
 
@@ -893,7 +933,7 @@ fn parse_image_result_messages(messages: &[KagiMessage]) -> Vec<ImageResult> {
 
 fn parse_image_results_html(html: &str) -> Vec<ImageResult> {
     let fragment = Html::parse_fragment(html);
-    let selectors = selectors();
+    let selectors = &SELECTORS;
 
     let mut results = Vec::new();
 
@@ -938,21 +978,27 @@ fn parse_image_results_html(html: &str) -> Vec<ImageResult> {
     results
 }
 
-fn extract_topmost_text(elem: &'_ ElementRef<'_>) -> String {
-    let extracted_text: String = elem
-        .children()
-        .filter_map(|node| match node.value() {
-            Node::Text(text_node) => {
-                let text = text_node.trim();
+fn extract_topmost_text(elem: &ElementRef<'_>) -> String {
+    let mut extracted = String::new();
 
-                if text.is_empty() { None } else { Some(text) }
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
+    for node in elem.children() {
+        let Node::Text(text_node) = node.value() else {
+            continue;
+        };
+        let text = text_node.trim();
 
-    extracted_text
+        if text.is_empty() {
+            continue;
+        }
+
+        if !extracted.is_empty() {
+            extracted.push(' ');
+        }
+
+        extracted.push_str(text);
+    }
+
+    extracted
 }
 
 #[cfg(test)]
@@ -1103,6 +1149,25 @@ mod tests {
         // The session from the first request is still valid, so no further fetches happen.
         assert_eq!(mock.calls(), 1);
         assert_eq!(client.slot_count(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check_ins_do_not_accumulate_permits_beyond_capacity() {
+        let mock = MockFetch::new(0, Some(Duration::from_millis(1)));
+        let client = client_with("token", 2, Duration::from_secs(60), Arc::clone(&mock));
+
+        for _ in 0..10 {
+            exercise(&client, Duration::from_millis(1))
+                .await
+                .expect("search succeeds");
+        }
+
+        assert_eq!(mock.calls(), 1, "the session is reused throughout");
+        assert_eq!(
+            client.check_in.available_permits(),
+            2,
+            "stale check-in permits are capped at the pool capacity"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1333,6 +1398,20 @@ mod tests {
         let result = extract_nonce(&html).expect("could not extract nonce");
 
         assert_eq!(result, "0123456789abcdef0123456789abcdef");
+    }
+
+    #[test]
+    fn extracts_nonce_with_surrounding_whitespace() {
+        assert_eq!(
+            extract_nonce("window.sse_nonce =\n\t\"abc\""),
+            Some("abc".to_owned())
+        );
+        assert_eq!(extract_nonce("window.sse_nonce = \"\""), None);
+        // A malformed marker does not hide a later valid one.
+        assert_eq!(
+            extract_nonce("window.sse_nonce_nope = \"x\"; window.sse_nonce = \"y\""),
+            Some("y".to_owned())
+        );
     }
 
     #[test]

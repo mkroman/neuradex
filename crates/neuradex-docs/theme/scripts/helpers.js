@@ -13,17 +13,22 @@
 
   const $ = (docsUI.$ = (sel, root) => (root || doc).querySelector(sel));
 
+  /* Find the TOC entry targeting `id` by comparing hrefs rather than building a
+     selector, so ids never need CSS escaping. */
+  const tocLink = (docsUI.tocLink = function (id) {
+    const links = doc.querySelectorAll('#toc a[href^="#"]');
+    const target = '#' + id;
+    for (const link of links) {
+      if (link.getAttribute('href') === target) return link;
+    }
+    return null;
+  });
+
   const el = (docsUI.el = function (tag, cls, text) {
     const node = doc.createElement(tag);
     if (cls) node.className = cls;
     if (text !== undefined && text !== null) node.textContent = text;
     return node;
-  });
-
-  const esc = (docsUI.esc = function (s) {
-    return String(s).replace(/[&<>"']/g, c => (
-      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-    ));
   });
 
   /* Error prose: backticks become inline <code>, everything stays text nodes. */
@@ -54,29 +59,6 @@
 
   /* ------------------------------------------------ JSON display (runtime responses) */
 
-  const highlightJsonText = (docsUI.highlightJsonText = function (text) {
-    const RE = /("(?:[^"\\]|\\.)*")(\s*:)?|\b(?:true|false)\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
-    let out = '';
-    let last = 0;
-    let m;
-    while ((m = RE.exec(text))) {
-      out += esc(text.slice(last, m.index));
-      if (m[1] !== undefined) {
-        out += m[2] !== undefined
-          ? '<span class="j-key">' + esc(m[1]) + '</span>' + esc(m[2])
-          : '<span class="j-str">' + esc(m[1]) + '</span>';
-      } else if (m[0] === 'true' || m[0] === 'false' || m[0] === 'null') {
-        out += '<span class="j-bool">' + m[0] + '</span>';
-      } else {
-        out += '<span class="j-num">' + m[0] + '</span>';
-      }
-      last = RE.lastIndex;
-      if (m.index === RE.lastIndex) RE.lastIndex++; /* zero-length safety */
-    }
-    out += esc(text.slice(last));
-    return out;
-  });
-
   const highlightCode = (docsUI.highlightCode = function (value, cap) {
     let text;
     try { text = JSON.stringify(value, null, 2); } catch (e) { text = String(value); }
@@ -84,7 +66,27 @@
     let truncated = false;
     if (cap && text.length > cap) { text = text.slice(0, cap); truncated = true; }
     const code = doc.createElement('code');
-    code.innerHTML = highlightJsonText(text);
+    const RE = /("(?:[^"\\]|\\.)*")(\s*:)?|\b(?:true|false)\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
+    let last = 0;
+    let m;
+    while ((m = RE.exec(text))) {
+      if (m.index > last) code.appendChild(doc.createTextNode(text.slice(last, m.index)));
+      if (m[1] !== undefined) {
+        if (m[2] !== undefined) {
+          code.appendChild(el('span', 'j-key', m[1]));
+          code.appendChild(doc.createTextNode(m[2]));
+        } else {
+          code.appendChild(el('span', 'j-str', m[1]));
+        }
+      } else if (m[0] === 'true' || m[0] === 'false' || m[0] === 'null') {
+        code.appendChild(el('span', 'j-bool', m[0]));
+      } else {
+        code.appendChild(el('span', 'j-num', m[0]));
+      }
+      last = RE.lastIndex;
+      if (m.index === RE.lastIndex) RE.lastIndex++; /* zero-length safety */
+    }
+    if (last < text.length) code.appendChild(doc.createTextNode(text.slice(last)));
     if (truncated) code.appendChild(doc.createTextNode('\n… truncated for display'));
     return code;
   });

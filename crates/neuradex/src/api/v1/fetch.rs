@@ -104,23 +104,25 @@ pub(crate) async fn fetch(
     let url = params.url()?;
     let redirects = params.redirects()?;
     let includes = params.includes(FETCH_INCLUDES)?;
+    let requested = url.to_string();
 
     let started = Instant::now();
-    let (response, fetched) = redirect::fetch(&state.client, url.clone(), redirects).await?;
+    let (response, fetched) =
+        redirect::fetch(&state.client, url, redirects, includes.redirects).await?;
 
-    stream::ensure_text_content(&response)?;
+    stream::ensure_text_content(fetched.info.content_type.as_deref())?;
 
     let response_headers = includes
         .headers
         .then(|| stream::headers_to_json(response.headers()));
 
     let read = stream::read(response, stream::Mode::Full(FETCH_MAX_BYTES)).await?;
-    let body = String::from_utf8_lossy(read.body.as_deref().unwrap_or_default()).into_owned();
-    let metrics =
-        fetched.into_metrics(read.bytes_read, read.truncated, includes.redirects, started);
+    let body = String::from_utf8(read.body.expect("full mode collects the body"))
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
+    let metrics = fetched.into_metrics(read.bytes_read, read.truncated, started);
 
     Ok(Json(FetchResponse {
-        url: url.to_string(),
+        url: requested,
         metadata: read.metadata,
         body,
         truncated: read.truncated,

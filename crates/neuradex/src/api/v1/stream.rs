@@ -7,12 +7,12 @@
 
 use std::collections::{BTreeMap, btree_map::Entry};
 
+use axum::body::Bytes;
 use futures::StreamExt;
 use tokio::sync::mpsc;
-use wreq::header::{CONTENT_TYPE, HeaderMap};
+use wreq::header::HeaderMap;
 
 use crate::api::v1::error::ApiError;
-use crate::api::v1::redirect::media_type;
 use crate::metadata::{HeadParser, PageMetadata};
 
 /// The maximum size of a response consumed while extracting document head metadata.
@@ -67,19 +67,14 @@ pub(crate) async fn read(response: wreq::Response, mode: Mode) -> Result<Streame
         Mode::Full(max_bytes) => (true, max_bytes),
     };
 
-    let (sender, mut receiver) = mpsc::channel::<Result<Vec<u8>, wreq::Error>>(4);
+    let (sender, mut receiver) = mpsc::channel::<Result<Bytes, wreq::Error>>(4);
 
     let reader = tokio::spawn(async move {
         let mut stream = response.bytes_stream();
 
         while let Some(chunk) = stream.next().await {
             // Backpressure from a full channel awaits here instead of blocking a worker thread.
-            let sent = match chunk {
-                Ok(chunk) => sender.send(Ok(chunk.to_vec())).await.is_ok(),
-                Err(error) => sender.send(Err(error)).await.is_ok(),
-            };
-
-            if !sent {
+            if sender.send(chunk).await.is_err() {
                 break;
             }
         }
@@ -107,7 +102,7 @@ pub(crate) async fn read(response: wreq::Response, mode: Mode) -> Result<Streame
 ///
 /// Returns an error when a chunk failed to read from the upstream response.
 fn consume(
-    chunks: impl Iterator<Item = Result<Vec<u8>, wreq::Error>>,
+    chunks: impl Iterator<Item = Result<Bytes, wreq::Error>>,
     collect_body: bool,
     max_bytes: u64,
 ) -> Result<Streamed, ApiError> {
@@ -178,24 +173,19 @@ fn is_text_media_type(media: &str) -> bool {
 
 /// Rejects responses whose content type is binary, before their body is read.
 ///
-/// Responses without a content type are allowed: too many servers omit the header for the
-/// response to be discarded.
+/// `content_type` is the parameter-free, lowercased media type captured from the final response.
+/// Responses without one are allowed: too many servers omit the header for the response to be
+/// discarded.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError::UnsupportedMediaType`] for binary content types.
-pub(crate) fn ensure_text_content(response: &wreq::Response) -> Result<(), ApiError> {
-    let Some(content_type) = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-    else {
+pub(crate) fn ensure_text_content(content_type: Option<&str>) -> Result<(), ApiError> {
+    let Some(media) = content_type else {
         return Ok(());
     };
 
-    let media = media_type(content_type);
-
-    if media.is_empty() || is_text_media_type(&media) {
+    if media.is_empty() || is_text_media_type(media) {
         return Ok(());
     }
 
@@ -210,7 +200,7 @@ pub(crate) fn headers_to_json(headers: &HeaderMap) -> BTreeMap<String, String> {
     let mut map: BTreeMap<String, String> = BTreeMap::new();
 
     for (name, value) in headers {
-        let name = name.as_str().to_ascii_lowercase();
+        let name = name.as_str().to_owned();
         let value = String::from_utf8_lossy(value.as_bytes()).into_owned();
 
         match map.entry(name) {
@@ -250,6 +240,17 @@ mod tests {
     }
 
     #[test]
+    fn rejects_binary_content_types() {
+        assert!(ensure_text_content(Some("text/html")).is_ok());
+        assert!(ensure_text_content(None).is_ok());
+        assert!(ensure_text_content(Some("")).is_ok());
+        assert!(matches!(
+            ensure_text_content(Some("image/png")),
+            Err(ApiError::UnsupportedMediaType(_))
+        ));
+    }
+
+    #[test]
     fn joins_repeated_header_values() {
         let mut headers = HeaderMap::new();
         headers.insert("set-cookie", "a=1".parse().unwrap());
@@ -265,15 +266,19 @@ mod tests {
     #[test]
     fn reports_body_truncation_only_past_the_cap() {
         // A body that exactly fits the cap is complete, not truncated.
-        let read = consume(std::iter::once(Ok(vec![b'x'; 8])), true, 8).expect("reads");
+        let read = consume(std::iter::once(Ok(vec![b'x'; 8].into())), true, 8).expect("reads");
 
         assert_eq!(read.bytes_read, 8);
         assert_eq!(read.body.as_deref().map(<[u8]>::len), Some(8));
         assert!(!read.truncated);
 
         // Data after the cap proves the body was cut short; the overflowing chunk is discarded.
-        let read =
-            consume([Ok(vec![b'x'; 8]), Ok(vec![b'y'; 4])].into_iter(), true, 8).expect("reads");
+        let read = consume(
+            [Ok(vec![b'x'; 8].into()), Ok(vec![b'y'; 4].into())].into_iter(),
+            true,
+            8,
+        )
+        .expect("reads");
 
         assert_eq!(read.bytes_read, 8);
         assert_eq!(read.body.as_deref().map(<[u8]>::len), Some(8));
@@ -286,7 +291,7 @@ mod tests {
 
         // A head that exactly fits the cap parses completely.
         let read = consume(
-            std::iter::once(Ok(html.to_vec())),
+            std::iter::once(Ok(html.to_vec().into())),
             false,
             u64::try_from(html.len()).expect("fits"),
         )
@@ -298,7 +303,7 @@ mod tests {
         // More bytes after the cap prove the head was cut short; the overflowing chunk is
         // discarded.
         let read = consume(
-            [Ok(vec![b'<'; 16]), Ok(vec![b'x'; 8])].into_iter(),
+            [Ok(vec![b'<'; 16].into()), Ok(vec![b'x'; 8].into())].into_iter(),
             false,
             16,
         )
@@ -312,8 +317,8 @@ mod tests {
     fn stops_reading_when_the_head_parses() {
         let read = consume(
             [
-                Ok(b"<html><head><title>Hello</title></head>".to_vec()),
-                Ok(vec![b'x'; 8]),
+                Ok(b"<html><head><title>Hello</title></head>".to_vec().into()),
+                Ok(vec![b'x'; 8].into()),
             ]
             .into_iter(),
             true,

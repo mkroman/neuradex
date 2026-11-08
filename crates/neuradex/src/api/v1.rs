@@ -18,7 +18,9 @@ use std::time::Duration;
 use axum::Extension;
 use axum::Json;
 use axum::Router;
-#[cfg(feature = "docs")]
+#[cfg(feature = "utoipa")]
+use axum::body::Bytes;
+#[cfg(any(feature = "docs", feature = "utoipa"))]
 use axum::http::header;
 use axum::http::{Method, StatusCode, Uri};
 #[cfg(feature = "utoipa")]
@@ -27,8 +29,8 @@ use axum::routing::get;
 #[cfg(not(feature = "utoipa"))]
 use axum::routing::post;
 use secrecy::SecretString;
-#[cfg(all(feature = "docs", not(debug_assertions)))]
-use std::sync::OnceLock;
+#[cfg(feature = "docs")]
+use std::sync::LazyLock;
 #[cfg(feature = "utoipa")]
 use utoipa_axum::router::OpenApiRouter;
 #[cfg(feature = "utoipa")]
@@ -74,7 +76,7 @@ pub struct AppState {
     pub kagi_client: kagi::Client,
     /// Gates the number of searches in flight; each search acquires a permit, extra requests
     /// wait here until a slot frees up.
-    pub search_gate: Arc<tokio::sync::Semaphore>,
+    pub search_gate: tokio::sync::Semaphore,
     /// The default request headers sent with every fetch, kept for reporting.
     pub default_headers: HeaderMap,
 }
@@ -113,7 +115,7 @@ impl AppState {
         Ok(Self {
             client,
             kagi_client,
-            search_gate: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SEARCHES)),
+            search_gate: tokio::sync::Semaphore::new(MAX_CONCURRENT_SEARCHES),
             default_headers,
         })
     }
@@ -130,10 +132,7 @@ fn default_headers(user_agent: &str) -> Result<HeaderMap, BuildError> {
         ACCEPT_ENCODING,
         HeaderValue::from_static("gzip, deflate, br, zstd"),
     );
-    headers.insert(
-        USER_AGENT,
-        HeaderValue::from_str(user_agent).map_err(BuildError::from)?,
-    );
+    headers.insert(USER_AGENT, HeaderValue::from_str(user_agent)?);
 
     Ok(headers)
 }
@@ -187,6 +186,11 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
 /// feature the page at `/docs` and the legacy `/swagger-ui` redirect are added. These
 /// infrastructure endpoints are hand-registered like the fallbacks — they are not
 /// OpenAPI-documented operations.
+///
+/// # Panics
+///
+/// Panics if the OpenAPI document cannot be serialized to JSON, which cannot happen for a
+/// document derived by `utoipa`.
 pub fn router(state: AppState) -> Router {
     #[cfg(feature = "utoipa")]
     let (router, openapi) = api();
@@ -194,10 +198,17 @@ pub fn router(state: AppState) -> Router {
     let router = api();
 
     #[cfg(feature = "utoipa")]
-    let router = router.route(
-        "/openapi.json",
-        get(serve_openapi).layer(Extension(openapi)),
-    );
+    let router = {
+        // Serialize once at startup: the document is static, and the extension clone per request
+        // is then just a refcount bump instead of a deep clone plus serialization.
+        let document =
+            serde_json::to_vec(&openapi).expect("the OpenAPI document is always serializable");
+
+        router.route(
+            "/openapi.json",
+            get(serve_openapi).layer(Extension(Bytes::from(document))),
+        )
+    };
 
     #[cfg(feature = "docs")]
     let router = router
@@ -223,26 +234,24 @@ fn render_docs_page() -> String {
 /// template and theme edits show up on refresh during development.
 #[cfg(feature = "docs")]
 async fn docs() -> impl IntoResponse {
-    #[cfg(not(debug_assertions))]
-    static PAGE: OnceLock<String> = OnceLock::new();
+    static PAGE: LazyLock<String> = LazyLock::new(render_docs_page);
 
-    #[cfg(not(debug_assertions))]
-    let body = PAGE.get_or_init(render_docs_page).clone();
-    #[cfg(debug_assertions)]
-    let body = render_docs_page();
+    let body = if neuradex_docs::RELOAD_SOURCES {
+        axum::body::Body::from(render_docs_page())
+    } else {
+        axum::body::Body::from(Bytes::from_static(PAGE.as_bytes()))
+    };
 
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body)
 }
 
 /// Serves the OpenAPI document as JSON at `GET /openapi.json`.
 ///
-/// The document is the one [`api`] derives from the routes, injected as an extension at router
-/// construction, so what is served cannot drift from the API operations.
+/// The document is the one [`api`] derives from the routes, serialized once when the router is
+/// built and injected as an extension, so what is served cannot drift from the API operations.
 #[cfg(feature = "utoipa")]
-async fn serve_openapi(
-    Extension(document): Extension<utoipa::openapi::OpenApi>,
-) -> impl IntoResponse {
-    Json(document)
+async fn serve_openapi(Extension(document): Extension<Bytes>) -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "application/json")], document)
 }
 
 /// Redirects the legacy Swagger UI paths to [`docs`].
@@ -455,9 +464,9 @@ mod tests {
         .await;
     }
 
-    /// Asserts that `response` is the JSON `invalid_param` envelope for a query that failed to
-    /// deserialize, without pinning the parser's exact message.
-    async fn assert_invalid_param(response: Response) {
+    /// Asserts that `response` is the JSON `invalid_param` envelope for a rejected query or
+    /// body, without pinning the parser's exact message.
+    async fn assert_invalid(response: Response, prefix: &str) {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
             response
@@ -477,7 +486,7 @@ mod tests {
         assert!(
             error["error"]["message"]
                 .as_str()
-                .is_some_and(|message| message.starts_with("invalid query parameters: ")),
+                .is_some_and(|message| message.starts_with(prefix)),
             "unexpected message: {error}"
         );
     }
@@ -493,7 +502,7 @@ mod tests {
         ] {
             let response = send(router_for_test(), "GET", path).await;
 
-            assert_invalid_param(response).await;
+            assert_invalid(response, "invalid query parameters: ").await;
         }
     }
 
@@ -530,33 +539,6 @@ mod tests {
         }
     }
 
-    /// Asserts that `response` is the JSON `invalid_param` envelope for a body that failed to
-    /// deserialize, without pinning the parser's exact message.
-    async fn assert_invalid_body(response: Response) {
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(
-            response
-                .headers()
-                .get("content-type")
-                .and_then(|value| value.to_str().ok()),
-            Some("application/json"),
-            "expected the JSON error envelope, not a plain-text rejection",
-        );
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body");
-        let error: Value = serde_json::from_slice(&body).expect("valid json");
-
-        assert_eq!(error["error"]["type"], "invalid_param");
-        assert!(
-            error["error"]["message"]
-                .as_str()
-                .is_some_and(|message| message.starts_with("invalid request body: ")),
-            "unexpected message: {error}"
-        );
-    }
-
     #[tokio::test]
     async fn rejects_get_requests_for_the_openwebui_search_endpoint() {
         let response = send(router_for_test(), "GET", "/v1/openwebui_search").await;
@@ -579,6 +561,8 @@ mod tests {
             r#"{"query": "rust", "count": 5, "nope": 1}"#,
             r#"{"count": 5}"#,
             r#"{"query": "rust", "count": "five"}"#,
+            r#"{"query": "rust", "count": -1}"#,
+            r#"{"query": "rust", "count": 1.5}"#,
         ] {
             let response = send_body(
                 router_for_test(),
@@ -589,7 +573,7 @@ mod tests {
             )
             .await;
 
-            assert_invalid_body(response).await;
+            assert_invalid(response, "invalid request body: ").await;
         }
     }
 

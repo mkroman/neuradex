@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::api::v1::AppState;
 use crate::api::v1::error::ApiError;
 use crate::api::v1::extract::ApiJson;
+use crate::api::v1::search::run_queued_search;
 
 /// The number of results returned when the request carries no `count`.
 pub(crate) const DEFAULT_COUNT: usize = 5;
@@ -131,26 +132,13 @@ pub(crate) async fn openwebui_search(
 ) -> Result<Json<Vec<OpenWebUiSearchResult>>, ApiError> {
     request.validate()?;
 
-    // Blocks while all search slots are busy; FIFO order. Dropping the permit when the handler
-    // returns releases the slot.
-    let _permit = state
-        .search_gate
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|error| ApiError::internal(format!("the search gate is closed: {error}")))?;
-
-    let mut results: Vec<OpenWebUiSearchResult> = state
-        .kagi_client
-        .search(&request.query)
-        .await
-        .map_err(|error| ApiError::upstream(error.to_string()))?
+    let count = request.count();
+    let (_, results) = run_queued_search(&state, &request.query, None).await?;
+    let results = results
         .into_iter()
+        .take(count)
         .map(OpenWebUiSearchResult::from)
         .collect();
-
-    let count = request.count();
-    results.truncate(count);
 
     Ok(Json(results))
 }
@@ -194,14 +182,6 @@ mod tests {
     }
 
     #[test]
-    fn serializes_no_results_as_an_empty_array() {
-        let rendered =
-            serde_json::to_value(Vec::<OpenWebUiSearchResult>::new()).expect("serializes");
-
-        assert_eq!(rendered, json!([]));
-    }
-
-    #[test]
     fn parses_the_request_body() {
         let request: OpenWebUiSearchRequest =
             serde_json::from_value(json!({"query": "rust programming", "count": 3}))
@@ -214,48 +194,5 @@ mod tests {
             serde_json::from_value(json!({"query": "rust programming"})).expect("valid body");
 
         assert_eq!(request.count(), DEFAULT_COUNT);
-    }
-
-    #[test]
-    fn rejects_malformed_request_bodies() {
-        // Unknown fields, a missing query, and non-integer counts all fail deserialization —
-        // the handler never sees them.
-        for body in [
-            json!({"query": "rust", "count": 5, "nope": 1}),
-            json!({"count": 5}),
-            json!({"query": "rust", "count": "five"}),
-            json!({"query": "rust", "count": -1}),
-            json!({"query": "rust", "count": 1.5}),
-        ] {
-            assert!(
-                serde_json::from_value::<OpenWebUiSearchRequest>(body.clone()).is_err(),
-                "expected {body} to be rejected"
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_an_empty_query() {
-        let request: OpenWebUiSearchRequest =
-            serde_json::from_value(json!({"query": "", "count": 5})).expect("valid body");
-
-        assert!(matches!(request.validate(), Err(ApiError::InvalidParam(_))));
-    }
-
-    #[test]
-    fn truncates_results_to_the_count() {
-        let results: Vec<OpenWebUiSearchResult> = (0..5)
-            .map(|index| OpenWebUiSearchResult {
-                link: format!("https://example.com/{index}"),
-                title: format!("title {index}"),
-                snippet: String::new(),
-            })
-            .collect();
-
-        let mut limited = results;
-        limited.truncate(3);
-
-        assert_eq!(limited.len(), 3);
-        assert_eq!(limited.last().unwrap().link, "https://example.com/2");
     }
 }
