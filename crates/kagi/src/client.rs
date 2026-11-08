@@ -1032,18 +1032,10 @@ fn extract_topmost_text(elem: &ElementRef<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
-    use std::path::PathBuf;
+
+    use test_support::kagi::read_fixture;
 
     use super::*;
-
-    fn read_fixture(name: &str) -> String {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(name);
-
-        String::from_utf8(std::fs::read(path).expect("could not read fixture"))
-            .expect("fixture is not valid UTF-8")
-    }
 
     #[test]
     fn parses_the_legacy_stream_format() {

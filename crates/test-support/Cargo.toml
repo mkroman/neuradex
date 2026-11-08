@@ -15,7 +15,6 @@ app = [
     "client",
     "dep:axum",
     "dep:neuradex",
-    "dep:secrecy",
     "dep:serde_json",
     "dep:tower",
 ]
@@ -25,7 +24,6 @@ axum = { workspace = true, optional = true }
 httpmock = { workspace = true, optional = true }
 kagi = { path = "../kagi", default-features = false, features = ["rustls"], optional = true }
 neuradex = { path = "../neuradex", default-features = false, optional = true }
-secrecy = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
 

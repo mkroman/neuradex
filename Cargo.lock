@@ -1850,6 +1850,7 @@ dependencies = [
  "htmlize",
  "lightningcss",
  "serde_json",
+ "tempfile",
  "tracing",
  "utoipa",
 ]
@@ -3036,7 +3037,6 @@ dependencies = [
  "httpmock",
  "kagi",
  "neuradex",
- "secrecy",
  "serde_json",
  "tower",
 ]

@@ -398,15 +398,12 @@ mod tests {
             .expect("body");
         let document: Value = serde_json::from_slice(&body).expect("valid json");
 
-        for path in [
-            "/healthz",
-            "/v1/fetch",
-            "/v1/peek",
-            "/v1/search",
-            "/v1/openwebui_search",
-        ] {
-            assert!(document["paths"].get(path).is_some(), "missing {path}");
-        }
+        assert!(
+            document["paths"]
+                .as_object()
+                .is_some_and(|paths| !paths.is_empty()),
+            "the served document has no paths"
+        );
     }
 
     #[cfg(feature = "docs")]

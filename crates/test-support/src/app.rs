@@ -4,22 +4,20 @@
 //! sends requests through the real extraction and handler stack. Every instance owns an
 //! isolated [`httpmock::MockServer`], so tests can run in parallel.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
-use axum::http::Request;
+use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use httpmock::{Mock, MockServer};
-use kagi::Client;
-use kagi::ClientOptions;
+use kagi::DEFAULT_MAX_SESSIONS;
 use neuradex::api::v1;
 use neuradex::api::v1::AppState;
-use secrecy::SecretString;
 use serde_json::Value;
 
-use crate::kagi as support;
-use crate::kagi::{SESSION_COOKIE, TOKEN};
+use crate::kagi::KagiHarness;
 
 /// The user agent reported by the test application.
 pub const USER_AGENT_VALUE: &str = "neuradex-test";
@@ -27,7 +25,9 @@ pub const USER_AGENT_VALUE: &str = "neuradex-test";
 /// A running application wired to a local mock HTTP server.
 pub struct TestApp {
     /// The mock server backing both page fetches and Kagi requests.
-    pub server: MockServer,
+    pub server: Arc<MockServer>,
+    /// The Kagi mock API shared with the client-level harness.
+    kagi: KagiHarness,
     router: Router,
 }
 
@@ -39,7 +39,7 @@ impl TestApp {
     /// Panics if the test HTTP or Kagi client fails to build.
     #[must_use]
     pub fn start() -> Self {
-        Self::with_kagi_sessions(2)
+        Self::with_kagi_sessions(DEFAULT_MAX_SESSIONS)
     }
 
     /// Starts an application whose Kagi client may establish up to `max_sessions` sessions.
@@ -49,18 +49,9 @@ impl TestApp {
     /// Panics if the test HTTP or Kagi client fails to build.
     #[must_use]
     pub fn with_kagi_sessions(max_sessions: usize) -> Self {
-        let server = MockServer::start();
-
-        let kagi_client = Client::with_token_and_options(
-            SecretString::from(TOKEN),
-            &ClientOptions {
-                base_url: server.base_url(),
-                max_sessions,
-                timeout: Duration::from_secs(5),
-                ..ClientOptions::default()
-            },
-        )
-        .expect("the test Kagi client builds");
+        let server = Arc::new(MockServer::start());
+        let kagi = KagiHarness::with_server(Arc::clone(&server));
+        let kagi_client = kagi.client_with(max_sessions, Duration::from_secs(60));
 
         let state = AppState::try_new_with_kagi_client(
             USER_AGENT_VALUE,
@@ -71,6 +62,7 @@ impl TestApp {
 
         Self {
             server,
+            kagi,
             router: v1::router(state),
         }
     }
@@ -137,32 +129,44 @@ impl TestApp {
         serde_json::from_slice(&body).expect("the response body is JSON")
     }
 
+    /// Asserts that `response` is the JSON error envelope of `kind` and returns the body.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the status, content type, error type, or message does not match.
+    pub async fn assert_error(response: Response, status: StatusCode, kind: &str) -> Value {
+        assert_eq!(response.status(), status);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json"),
+        );
+
+        let body = Self::json(response).await;
+
+        assert_eq!(body["error"]["type"], kind);
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .is_some_and(|message| !message.is_empty()),
+            "the error message is empty: {body}"
+        );
+
+        body
+    }
+
     /// Mocks the Kagi token request that establishes a session.
     #[must_use]
     pub fn mock_kagi_session(&self) -> Mock<'_> {
-        self.server.mock(|when, then| {
-            when.method("GET")
-                .path("/search")
-                .query_param("token", TOKEN)
-                .header("x-kagi-authorization", TOKEN);
-            then.status(200).header(
-                "set-cookie",
-                format!("kagi_session={SESSION_COOKIE}; Path=/; HttpOnly"),
-            );
-        })
+        self.kagi.mock_session()
     }
 
     /// Mocks the Kagi landing page that supplies the session nonce.
     #[must_use]
     pub fn mock_kagi_nonce(&self) -> Mock<'_> {
-        self.server.mock(|when, then| {
-            when.method("GET")
-                .path("/")
-                .header("x-kagi-authorization", TOKEN);
-            then.status(200)
-                .header("content-type", "text/html; charset=utf-8")
-                .body_from_file(support::fixture("landing.html"));
-        })
+        self.kagi.mock_nonce()
     }
 
     /// Mocks a Kagi search stream. The mock accepts both the first request (with a nonce)
@@ -180,17 +184,7 @@ impl TestApp {
         fixture_name: &str,
         delay: Duration,
     ) -> Mock<'_> {
-        let query = query.to_owned();
-
-        self.server.mock(move |when, then| {
-            when.method("GET")
-                .path("/socket/search")
-                .query_param("q", query)
-                .header("x-kagi-authorization", TOKEN);
-            then.status(200)
-                .header("content-type", "text/event-stream")
-                .delay(delay)
-                .body_from_file(support::fixture(fixture_name));
-        })
+        self.kagi
+            .mock_search_stream_reusable_for(query, fixture_name, delay)
     }
 }

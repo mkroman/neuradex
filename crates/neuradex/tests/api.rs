@@ -5,33 +5,8 @@
 //! pipeline, and JSON serialization.
 
 use axum::http::StatusCode;
-use axum::response::Response;
-use serde_json::{Value, json};
+use serde_json::json;
 use test_support::app::{TestApp, USER_AGENT_VALUE};
-
-/// Asserts that `response` renders the JSON error envelope of `kind`.
-async fn assert_error(response: Response, status: StatusCode, kind: &str) -> Value {
-    assert_eq!(response.status(), status);
-    assert_eq!(
-        response
-            .headers()
-            .get("content-type")
-            .and_then(|value| value.to_str().ok()),
-        Some("application/json"),
-    );
-
-    let body = TestApp::json(response).await;
-
-    assert_eq!(body["error"]["type"], kind);
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .is_some_and(|message| !message.is_empty()),
-        "the error message is empty: {body}"
-    );
-
-    body
-}
 
 #[tokio::test]
 async fn fetch_returns_metadata_body_and_metrics() {
@@ -210,7 +185,7 @@ async fn fetch_maps_connection_failures_to_the_error_envelope() {
     });
 
     let response = app.get(&format!("/v1/fetch?url=http://{address}/")).await;
-    let body = assert_error(response, StatusCode::BAD_GATEWAY, "upstream_error").await;
+    let body = TestApp::assert_error(response, StatusCode::BAD_GATEWAY, "upstream_error").await;
 
     assert_eq!(body["error"]["message"], "the upstream request failed");
 }
@@ -230,7 +205,7 @@ async fn fetch_and_peek_reject_binary_content() {
             .get(&format!("/v1/{endpoint}?url={}", app.url("/image")))
             .await;
 
-        let body = assert_error(
+        let body = TestApp::assert_error(
             response,
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "unsupported_media_type",
@@ -345,7 +320,7 @@ async fn search_times_out_and_returns_the_error_envelope() {
     );
 
     let response = app.get("/v1/search?query=hello%20world&timeout=2").await;
-    let body = assert_error(response, StatusCode::BAD_GATEWAY, "upstream_error").await;
+    let body = TestApp::assert_error(response, StatusCode::BAD_GATEWAY, "upstream_error").await;
 
     assert_eq!(body["error"]["message"], "the upstream request failed");
 
@@ -365,7 +340,7 @@ async fn search_maps_upstream_failures_to_the_error_envelope() {
     });
 
     let response = app.get("/v1/search?query=hello%20world").await;
-    let body = assert_error(response, StatusCode::BAD_GATEWAY, "upstream_error").await;
+    let body = TestApp::assert_error(response, StatusCode::BAD_GATEWAY, "upstream_error").await;
 
     assert_eq!(body["error"]["message"], "the upstream request failed");
 
@@ -426,7 +401,7 @@ async fn openwebui_search_rejects_an_empty_query() {
         .post_json("/v1/openwebui_search", &json!({"query": ""}))
         .await;
 
-    let body = assert_error(response, StatusCode::BAD_REQUEST, "invalid_param").await;
+    let body = TestApp::assert_error(response, StatusCode::BAD_REQUEST, "invalid_param").await;
 
     assert_eq!(body["error"]["message"], "the query is empty");
 }

@@ -174,23 +174,8 @@ fn join<T: AsRef<str>>(sources: &[T]) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-
-    /// A fresh throwaway directory per test, so fixtures never collide.
-    fn temp_dir(tag: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
-        let dir = std::env::temp_dir().join(format!(
-            "neuradex-docs-test-{}-{tag}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).expect("the fixture directory is created");
-        dir
-    }
 
     fn source(list: &[Source], name: &str) -> &'static str {
         list.iter()
@@ -201,51 +186,51 @@ mod tests {
 
     #[test]
     fn reads_files_from_disk_per_call() {
-        let dir = temp_dir("disk");
-        fs::create_dir_all(dir.join("styles")).expect("styles dir");
-        fs::write(dir.join("styles/tokens.css"), ":root { --page-bg: #000; }")
-            .expect("fixture write");
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        fs::create_dir_all(dir.path().join("styles")).expect("styles dir");
+        fs::write(
+            dir.path().join("styles/tokens.css"),
+            ":root { --page-bg: #000; }",
+        )
+        .expect("fixture write");
         // `base.css` is deliberately missing: the loader must fall back to the embedded
         // copy for it, and to the embedded copy for everything it never saw.
-        let read = read_sources(&dir, &STYLES[..2]);
+        let read = read_sources(dir.path(), &STYLES[..2]);
 
         assert_eq!(read[0], ":root { --page-bg: #000; }");
         assert_eq!(read[1], source(STYLES, "styles/base.css"));
-        fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn reads_edits_between_calls() {
-        let dir = temp_dir("fresh");
-        fs::create_dir_all(dir.join("styles")).expect("styles dir");
-        let path = dir.join("styles/tokens.css");
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        fs::create_dir_all(dir.path().join("styles")).expect("styles dir");
+        let path = dir.path().join("styles/tokens.css");
         fs::write(&path, "/* first */").expect("fixture write");
         assert_eq!(
-            read_sources(&dir, &STYLES[..1])[0],
+            read_sources(dir.path(), &STYLES[..1])[0],
             "/* first */",
             "the first call sees the file"
         );
         fs::write(&path, "/* second */").expect("fixture write");
         assert_eq!(
-            read_sources(&dir, &STYLES[..1])[0],
+            read_sources(dir.path(), &STYLES[..1])[0],
             "/* second */",
             "the next call sees the edit — no caching in between"
         );
-        fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn joins_in_canonical_order() {
-        let dir = temp_dir("order");
-        fs::create_dir_all(dir.join("styles")).expect("styles dir");
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        fs::create_dir_all(dir.path().join("styles")).expect("styles dir");
         for (index, file) in STYLES.iter().enumerate() {
-            fs::write(dir.join(file.name), format!("/* {index} */")).expect("fixture write");
+            fs::write(dir.path().join(file.name), format!("/* {index} */")).expect("fixture write");
         }
-        let read = read_sources(&dir, STYLES);
+        let read = read_sources(dir.path(), STYLES);
         assert_eq!(read[0], "/* 0 */");
         assert_eq!(read[8], "/* 8 */");
         let css = join(&read.iter().map(String::as_str).collect::<Vec<_>>());
         assert!(css.find("/* 0 */").expect("first file") < css.find("/* 8 */").expect("last file"));
-        fs::remove_dir_all(dir).ok();
     }
 }

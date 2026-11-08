@@ -24,7 +24,7 @@ Build needs `cmake`, `clang` and `libclang-dev` (wreq compiles BoringSSL). Full 
    - `cargo test -p neuradex --no-default-features` (no utoipa at all)
    - `cargo test -p neuradex --no-default-features --features utoipa`
 
-Also in CI: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features` (all-features pulls in kagi's native-tls/OpenSSL), `shellcheck hack/*.sh`, `cargo-deny ... check advisories` (only advisories gate). Tests are offline: unit tests are inline `#[cfg(test)]` modules; HTTP integration tests use the `test-support` harness against local `httpmock` servers. kagi reads `crates/kagi/tests/fixtures`.
+Also in CI: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features` (all-features pulls in kagi's native-tls/OpenSSL), `shellcheck hack/*.sh`, `cargo-deny ... check advisories` (only advisories gate). Tests are offline: unit tests are inline `#[cfg(test)]` modules; HTTP integration tests use the `test-support` harness against local `httpmock` servers. Kagi fixtures live in `crates/test-support/fixtures/kagi` and are read through `test_support::kagi::fixture`/`read_fixture`.
 
 ## Running locally
 

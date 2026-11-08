@@ -81,9 +81,8 @@ mod tests {
 
         let json = fs::read_to_string(&spec).expect("the spec is written");
         let document: Value = serde_json::from_str(&json).expect("valid json");
+        let expected = serde_json::to_value(v1::openapi_document()).expect("the spec serializes");
 
-        for path in ["/healthz", "/v1/fetch", "/v1/peek", "/v1/search"] {
-            assert!(document["paths"].get(path).is_some(), "missing {path}");
-        }
+        assert_eq!(document, expected);
     }
 }
