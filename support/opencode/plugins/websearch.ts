@@ -53,7 +53,7 @@ export default Plugin.define({
 
           return body.results.map((result) => ({
             url: result.url,
-            title: result.title,
+            title: result.title ?? undefined,
             content: result.description || undefined,
             time: {},
           }))
