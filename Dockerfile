@@ -29,7 +29,6 @@ RUN TOOLS_FILE=/usr/local/lib/ci/docker-tools.txt \
 FROM chef AS planner
 
 COPY Cargo.toml Cargo.lock ./
-COPY src src
 COPY crates crates
 
 RUN cargo chef prepare --recipe-path recipe.json
@@ -43,11 +42,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo chef cook --release --recipe-path recipe.json
 
 COPY Cargo.toml Cargo.lock ./
-COPY src src
 COPY crates crates
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    cargo auditable build --release --locked --bin neuradex && \
+    cargo auditable build --release --locked --package neuradex --bin neuradex && \
     strip target/release/neuradex && \
     cp target/release/neuradex /usr/local/bin/neuradex
 
