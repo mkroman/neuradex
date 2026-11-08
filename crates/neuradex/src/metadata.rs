@@ -288,11 +288,20 @@ impl HeadSink {
         let mut metadata = self.metadata.borrow_mut();
 
         if let Some(key) = key.strip_prefix(OG_PREFIX) {
-            insert_first(&mut metadata.og, key, content);
+            metadata
+                .og
+                .entry(key.to_owned())
+                .or_insert_with(|| content.to_owned());
         } else if let Some(key) = key.strip_prefix(TWITTER_PREFIX) {
-            insert_first(&mut metadata.twitter, key, content);
+            metadata
+                .twitter
+                .entry(key.to_owned())
+                .or_insert_with(|| content.to_owned());
         } else {
-            insert_first(&mut metadata.other, key, content);
+            metadata
+                .other
+                .entry(key.to_owned())
+                .or_insert_with(|| content.to_owned());
 
             if key == "description" {
                 metadata
@@ -333,13 +342,6 @@ impl HeadSink {
                 .canonical
                 .get_or_insert_with(|| href.to_owned());
         }
-    }
-}
-
-/// Inserts `value` under `key` unless the key is already present.
-fn insert_first(map: &mut BTreeMap<String, String>, key: &str, value: &str) {
-    if !map.contains_key(key) {
-        map.insert(key.to_owned(), value.to_owned());
     }
 }
 
