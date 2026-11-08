@@ -10,12 +10,16 @@
 //!
 //! Nothing in this crate panics on its own; see [`render`] for the one exception.
 
-#[cfg(not(debug_assertions))]
+use std::borrow::Cow;
 use std::sync::LazyLock;
 
-use std::borrow::Cow;
-
 use askama::Template;
+
+/// Whether theme sources are re-read from disk and the docs page is re-rendered per request.
+///
+/// This is the single place the debug/release behavior difference is defined; the dead branch
+/// is removed by the optimizer in release builds.
+pub const RELOAD_SOURCES: bool = cfg!(debug_assertions);
 
 mod assets;
 mod bundle;
@@ -60,12 +64,9 @@ pub fn render(document: &utoipa::openapi::OpenApi) -> String {
 /// The bundled stylesheet for the page: re-bundled per call in debug builds, borrowed from a
 /// process-wide cache in release builds.
 fn page_style() -> Cow<'static, str> {
-    #[cfg(debug_assertions)]
-    {
+    if RELOAD_SOURCES {
         Cow::Owned(bundle::bundle(&assets::style_raw()))
-    }
-    #[cfg(not(debug_assertions))]
-    {
+    } else {
         static BUNDLED: LazyLock<String> = LazyLock::new(|| bundle::bundle(&assets::style_raw()));
 
         Cow::Borrowed(BUNDLED.as_str())

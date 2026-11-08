@@ -6,16 +6,12 @@
 //! disk on every call so local edits show up on browser refresh without recompiling,
 //! falling back to the embedded copies when a file cannot be read.
 
-#[cfg(debug_assertions)]
 use std::path::{Path, PathBuf};
-#[cfg(debug_assertions)]
 use std::sync::LazyLock;
 
 /// One theme source file: its path under `theme/` and its embedded copy.
 struct Source {
-    /// The path under the theme directory, e.g. `styles/tokens.css`. Only the debug disk
-    /// loader reads it.
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    /// The path under the theme directory, e.g. `styles/tokens.css`.
     name: &'static str,
     /// The content embedded at compile time.
     embedded: &'static str,
@@ -100,7 +96,6 @@ const BOOTSTRAP: &[Source] = &[Source {
 
 /// Reads every listed source from `base`, falling back to the embedded copy per file on
 /// I/O errors. Parameterized over the base directory for tests.
-#[cfg(debug_assertions)]
 fn read_sources(base: &Path, list: &[Source]) -> Vec<String> {
     list.iter()
         .map(
@@ -122,12 +117,13 @@ fn read_sources(base: &Path, list: &[Source]) -> Vec<String> {
 /// Concatenates the sources in canonical order: re-read from disk per call in debug
 /// builds, the embedded copies in release.
 fn source_text(list: &[Source]) -> String {
-    #[cfg(debug_assertions)]
-    let sources = read_sources(theme_dir(), list);
-    #[cfg(not(debug_assertions))]
-    let sources: Vec<&str> = list.iter().map(|source| source.embedded).collect();
+    if crate::RELOAD_SOURCES {
+        join(&read_sources(theme_dir(), list))
+    } else {
+        let sources: Vec<&str> = list.iter().map(|source| source.embedded).collect();
 
-    join(&sources)
+        join(&sources)
+    }
 }
 
 /// Concatenates the stylesheet sources in canonical order.
@@ -146,7 +142,6 @@ pub fn bootstrap_raw() -> String {
 }
 
 /// The theme directory the debug builds re-read from.
-#[cfg(debug_assertions)]
 fn theme_dir() -> &'static Path {
     static DIR: LazyLock<PathBuf> =
         LazyLock::new(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("theme"));
@@ -177,7 +172,6 @@ fn join<T: AsRef<str>>(sources: &[T]) -> String {
 }
 
 #[cfg(test)]
-#[cfg(debug_assertions)]
 mod tests {
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};

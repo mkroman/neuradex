@@ -29,7 +29,7 @@ use axum::routing::get;
 #[cfg(not(feature = "utoipa"))]
 use axum::routing::post;
 use secrecy::SecretString;
-#[cfg(all(feature = "docs", not(debug_assertions)))]
+#[cfg(feature = "docs")]
 use std::sync::LazyLock;
 #[cfg(feature = "utoipa")]
 use utoipa_axum::router::OpenApiRouter;
@@ -234,13 +234,13 @@ fn render_docs_page() -> String {
 /// template and theme edits show up on refresh during development.
 #[cfg(feature = "docs")]
 async fn docs() -> impl IntoResponse {
-    #[cfg(not(debug_assertions))]
     static PAGE: LazyLock<String> = LazyLock::new(render_docs_page);
 
-    #[cfg(not(debug_assertions))]
-    let body = axum::body::Body::from(Bytes::from_static(PAGE.as_bytes()));
-    #[cfg(debug_assertions)]
-    let body = axum::body::Body::from(render_docs_page());
+    let body = if neuradex_docs::RELOAD_SOURCES {
+        axum::body::Body::from(render_docs_page())
+    } else {
+        axum::body::Body::from(Bytes::from_static(PAGE.as_bytes()))
+    };
 
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body)
 }
