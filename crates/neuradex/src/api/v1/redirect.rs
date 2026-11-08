@@ -31,7 +31,9 @@ impl ResponseInfo {
 
         Self {
             status: response.status().as_u16(),
-            http_version: http_version(response.version()),
+            // `http::Version` has no `Display` impl; its `Debug` impl is the canonical
+            // version string, e.g. `HTTP/1.1`.
+            http_version: format!("{:?}", response.version()),
             content_type: headers
                 .get(CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
@@ -42,13 +44,6 @@ impl ResponseInfo {
                 .and_then(|value| value.parse().ok()),
         }
     }
-}
-
-/// Returns the HTTP version of `response` as a display string, e.g. `HTTP/1.1`.
-#[must_use]
-fn http_version(version: wreq::Version) -> String {
-    // `http::Version` has no `Display` impl; its `Debug` impl is the canonical version string.
-    format!("{version:?}")
 }
 
 /// Returns the media type — the first, lowercased parameter-free segment — of a content type.
@@ -181,15 +176,6 @@ mod tests {
         assert_eq!(media_type("text/html; charset=utf-8"), "text/html");
         assert_eq!(media_type(" Application/JSON "), "application/json");
         assert_eq!(media_type(""), "");
-    }
-
-    #[test]
-    fn formats_http_versions() {
-        assert_eq!(http_version(wreq::Version::HTTP_09), "HTTP/0.9");
-        assert_eq!(http_version(wreq::Version::HTTP_10), "HTTP/1.0");
-        assert_eq!(http_version(wreq::Version::HTTP_11), "HTTP/1.1");
-        assert_eq!(http_version(wreq::Version::HTTP_2), "HTTP/2.0");
-        assert_eq!(http_version(wreq::Version::HTTP_3), "HTTP/3.0");
     }
 
     #[test]

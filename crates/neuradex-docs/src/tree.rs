@@ -173,11 +173,11 @@ fn resolved_body(
         .then(|| field(target, "items"))
         .flatten();
 
-    // The parent is on the stack for every child it expands, not once per branch child.
+    // The recursion-guard key is the `$ref` target when the node has one, its name otherwise.
     let needs_key =
         properties.is_some_and(|properties| properties.values().any(is_branch)) || items.is_some();
     if needs_key {
-        stack.push(stack_key(ref_target, name));
+        stack.push(ref_target.unwrap_or(name).to_owned());
     }
 
     let mut props = Vec::new();
@@ -229,12 +229,6 @@ fn resolved_body(
         examples_label: examples_label.to_owned(),
         examples,
     }
-}
-
-/// The recursion-guard key a node contributes to the stack: its `$ref` target when it has
-/// one, its name otherwise.
-fn stack_key(ref_target: Option<&str>, name: &str) -> String {
-    ref_target.unwrap_or(name).to_owned()
 }
 
 /// Builds a flat (non-expandable) property row.

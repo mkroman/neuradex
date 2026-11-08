@@ -886,16 +886,12 @@ impl Selectors {
     }
 }
 
-/// Returns the pre-compiled result selectors.
-fn selectors() -> &'static Selectors {
-    static SELECTORS: LazyLock<Selectors> = LazyLock::new(Selectors::new);
-
-    &SELECTORS
-}
+/// The pre-compiled result selectors, initialized on first use.
+static SELECTORS: LazyLock<Selectors> = LazyLock::new(Selectors::new);
 
 fn parse_search_results_html(html: &str) -> Vec<SearchResult> {
     let fragment = Html::parse_fragment(html);
-    let selectors = selectors();
+    let selectors = &SELECTORS;
 
     let search_results = fragment.select(&selectors.search_result);
 
@@ -937,7 +933,7 @@ fn parse_image_result_messages(messages: &[KagiMessage]) -> Vec<ImageResult> {
 
 fn parse_image_results_html(html: &str) -> Vec<ImageResult> {
     let fragment = Html::parse_fragment(html);
-    let selectors = selectors();
+    let selectors = &SELECTORS;
 
     let mut results = Vec::new();
 
