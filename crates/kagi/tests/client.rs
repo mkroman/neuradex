@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use kagi::{Error, SearchResult};
-use test_support::httpmock::prelude::*;
-use test_support::kagi::{KagiHarness, NONCE, QUERY, TOKEN, fixture};
+use test_support::kagi as support;
+use test_support::kagi::{KagiHarness, NONCE, QUERY, TOKEN};
 
 #[tokio::test]
 async fn search_fetches_a_session_and_parses_the_results() {
@@ -140,7 +140,7 @@ async fn a_rejected_session_is_reestablished() {
     let session = harness.mock_session();
     let nonce = harness.mock_nonce();
     let rejected = harness.server.mock(|when, then| {
-        when.method(GET)
+        when.method("GET")
             .path("/socket/search")
             .query_param("q", QUERY);
         then.status(401).up_to_n_times(1);
@@ -175,7 +175,7 @@ async fn a_non_credential_stream_error_keeps_the_session() {
     let session = harness.mock_session();
     let nonce = harness.mock_nonce();
     let server_error = harness.server.mock(|when, then| {
-        when.method(GET)
+        when.method("GET")
             .path("/socket/search")
             .query_param("q", QUERY)
             .query_param("nonce", NONCE);
@@ -209,7 +209,9 @@ async fn a_failed_session_fetch_is_retried_after_backoff() {
     let harness = KagiHarness::start();
     let client = harness.client_with(1, Duration::from_secs(60));
     let failed = harness.server.mock(|when, then| {
-        when.method(GET).path("/search").query_param("token", TOKEN);
+        when.method("GET")
+            .path("/search")
+            .query_param("token", TOKEN);
         then.status(200).up_to_n_times(1);
     });
     let session = harness.mock_session();
@@ -285,13 +287,13 @@ async fn a_cancelled_search_releases_the_session() {
     let session = harness.mock_session();
     let nonce = harness.mock_nonce();
     let mut slow = harness.server.mock(|when, then| {
-        when.method(GET)
+        when.method("GET")
             .path("/socket/search")
             .query_param("q", QUERY);
         then.status(200)
             .header("content-type", "text/event-stream")
             .delay(Duration::from_secs(5))
-            .body_from_file(fixture("search_stream_sse.bin"));
+            .body_from_file(support::fixture("search_stream_sse.bin"));
     });
     let retry = harness.mock_search_stream(None, "search_stream_sse.bin");
 

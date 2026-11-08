@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::Path;
 
-use neuradex::api::v1::openapi_document;
+use neuradex::api::v1;
 
 /// Renders the documentation page and writes it to `output`.
 ///
@@ -18,7 +18,7 @@ use neuradex::api::v1::openapi_document;
 ///
 /// Returns an error when the OpenAPI document cannot be serialized or a file cannot be written.
 pub fn run(output: &Path, spec: Option<&Path>) -> Result<(), String> {
-    let document = openapi_document();
+    let document = v1::openapi_document();
 
     let page = neuradex_docs::render(&document);
     write(output, &page)?;

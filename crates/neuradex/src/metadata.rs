@@ -599,7 +599,7 @@ mod tests {
     fn replaces_invalid_sequences() {
         let mut pending = Vec::new();
 
-        assert_eq!(decode_chunk(&mut pending, &[0xFF, b'a']), "\u{fffd}a");
+        assert_eq!(decode_chunk(&mut pending, &[0xff, b'a']), "\u{fffd}a");
         assert_eq!(decode_chunk(&mut pending, b"b"), "b");
         assert_eq!(decode_chunk(&mut pending, "æ".as_bytes()), "æ");
         assert_eq!(pending, Vec::<u8>::new());
@@ -608,7 +608,7 @@ mod tests {
     #[test]
     fn replaces_long_invalid_runs() {
         let mut pending = Vec::new();
-        let bytes = vec![0xFF; 64 * 1024];
+        let bytes = vec![0xff; 64 * 1024];
 
         let text = decode_chunk(&mut pending, &bytes);
 

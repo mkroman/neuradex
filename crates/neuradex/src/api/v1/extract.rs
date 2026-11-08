@@ -8,7 +8,8 @@
 //! parameters, and expose the validation each endpoint applies to its own request.
 
 use axum::Json;
-use axum::extract::{FromRequest, FromRequestParts, Request, rejection::JsonRejection};
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::request::Parts;
 use axum_extra::extract::Query;
 use serde::Deserialize;

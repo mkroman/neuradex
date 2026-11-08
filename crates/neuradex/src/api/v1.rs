@@ -16,8 +16,6 @@ use std::time::Duration;
 
 #[cfg(feature = "utoipa")]
 use axum::Extension;
-use axum::Json;
-use axum::Router;
 #[cfg(feature = "utoipa")]
 use axum::body::Bytes;
 #[cfg(any(feature = "docs", feature = "utoipa"))]
@@ -25,9 +23,8 @@ use axum::http::header;
 use axum::http::{Method, StatusCode, Uri};
 #[cfg(feature = "utoipa")]
 use axum::response::IntoResponse;
-use axum::routing::get;
-#[cfg(not(feature = "utoipa"))]
-use axum::routing::post;
+use axum::routing;
+use axum::{Json, Router};
 use secrecy::SecretString;
 #[cfg(feature = "docs")]
 use std::sync::LazyLock;
@@ -87,7 +84,7 @@ impl AppState {
     /// # Errors
     ///
     /// Returns an error if the HTTP or Kagi clients fail to build.
-    pub fn new(
+    pub fn try_new(
         user_agent: &str,
         kagi_token: SecretString,
         timeout: Duration,
@@ -101,19 +98,19 @@ impl AppState {
             },
         )?;
 
-        Self::with_kagi_client(user_agent, kagi_client, timeout)
+        Self::try_new_with_kagi_client(user_agent, kagi_client, timeout)
     }
 
     /// Constructs the application state around an existing Kagi client.
     ///
     /// The page-fetching HTTP client is built with the same production configuration as
-    /// [`AppState::new`]. This is the injection point for a Kagi client pointed at another
+    /// [`AppState::try_new`]. This is the injection point for a Kagi client pointed at another
     /// endpoint, such as a local test server.
     ///
     /// # Errors
     ///
     /// Returns an error if the HTTP client fails to build or a configured header is invalid.
-    pub fn with_kagi_client(
+    pub fn try_new_with_kagi_client(
         user_agent: &str,
         kagi_client: kagi::Client,
         timeout: Duration,
@@ -178,13 +175,13 @@ fn api() -> (Router<Arc<AppState>>, utoipa::openapi::OpenApi) {
 #[cfg(not(feature = "utoipa"))]
 fn api() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/healthz", get(healthz))
-        .route("/v1/peek", get(peek::peek))
-        .route("/v1/fetch", get(fetch::fetch))
-        .route("/v1/search", get(search::search))
+        .route("/healthz", routing::get(healthz))
+        .route("/v1/peek", routing::get(peek::peek))
+        .route("/v1/fetch", routing::get(fetch::fetch))
+        .route("/v1/search", routing::get(search::search))
         .route(
             "/v1/openwebui_search",
-            post(openwebui_search::openwebui_search),
+            routing::post(openwebui_search::openwebui_search),
         )
 }
 
@@ -223,15 +220,15 @@ pub fn router(state: AppState) -> Router {
 
         router.route(
             "/openapi.json",
-            get(serve_openapi).layer(Extension(Bytes::from(document))),
+            routing::get(serve_openapi).layer(Extension(Bytes::from(document))),
         )
     };
 
     #[cfg(feature = "docs")]
     let router = router
-        .route("/docs", get(docs))
-        .route("/swagger-ui", get(swagger_ui_redirect))
-        .route("/swagger-ui/", get(swagger_ui_redirect));
+        .route("/docs", routing::get(docs))
+        .route("/swagger-ui", routing::get(swagger_ui_redirect))
+        .route("/swagger-ui/", routing::get(swagger_ui_redirect));
 
     router
         .fallback(not_found)
@@ -324,7 +321,7 @@ mod tests {
 
     /// Builds a router around a state constructed with test settings.
     fn router_for_test() -> Router {
-        let state = AppState::new(
+        let state = AppState::try_new(
             "test-agent",
             SecretString::from("test-token"),
             Duration::from_secs(30),

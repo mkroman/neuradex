@@ -11,12 +11,15 @@ use axum::body::Body;
 use axum::http::Request;
 use axum::response::Response;
 use httpmock::{Mock, MockServer};
-use neuradex::api::v1::{AppState, router};
+use kagi::Client;
+use kagi::ClientOptions;
+use neuradex::api::v1;
+use neuradex::api::v1::AppState;
 use secrecy::SecretString;
 use serde_json::Value;
-use tower::ServiceExt;
 
-use crate::kagi::{SESSION_COOKIE, TOKEN, fixture};
+use crate::kagi as support;
+use crate::kagi::{SESSION_COOKIE, TOKEN};
 
 /// The user agent reported by the test application.
 pub const USER_AGENT_VALUE: &str = "neuradex-test";
@@ -48,24 +51,27 @@ impl TestApp {
     pub fn with_kagi_sessions(max_sessions: usize) -> Self {
         let server = MockServer::start();
 
-        let kagi_client = kagi::Client::with_token_and_options(
+        let kagi_client = Client::with_token_and_options(
             SecretString::from(TOKEN),
-            &kagi::ClientOptions {
+            &ClientOptions {
                 base_url: server.base_url(),
                 max_sessions,
                 timeout: Duration::from_secs(5),
-                ..kagi::ClientOptions::default()
+                ..ClientOptions::default()
             },
         )
         .expect("the test Kagi client builds");
 
-        let state =
-            AppState::with_kagi_client(USER_AGENT_VALUE, kagi_client, Duration::from_secs(5))
-                .expect("the test application state builds");
+        let state = AppState::try_new_with_kagi_client(
+            USER_AGENT_VALUE,
+            kagi_client,
+            Duration::from_secs(5),
+        )
+        .expect("the test application state builds");
 
         Self {
             server,
-            router: router(state),
+            router: v1::router(state),
         }
     }
 
@@ -109,6 +115,8 @@ impl TestApp {
     }
 
     async fn send(&self, request: Request<Body>) -> Response {
+        use tower::ServiceExt;
+
         self.router
             .clone()
             .oneshot(request)
@@ -153,7 +161,7 @@ impl TestApp {
                 .header("x-kagi-authorization", TOKEN);
             then.status(200)
                 .header("content-type", "text/html; charset=utf-8")
-                .body_from_file(fixture("landing.html"));
+                .body_from_file(support::fixture("landing.html"));
         })
     }
 
@@ -182,7 +190,7 @@ impl TestApp {
             then.status(200)
                 .header("content-type", "text/event-stream")
                 .delay(delay)
-                .body_from_file(fixture(fixture_name));
+                .body_from_file(support::fixture(fixture_name));
         })
     }
 }

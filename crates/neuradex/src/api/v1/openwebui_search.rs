@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::api::v1::AppState;
 use crate::api::v1::error::ApiError;
 use crate::api::v1::extract::ApiJson;
-use crate::api::v1::search::run_queued_search;
+use crate::api::v1::search;
 
 /// The number of results returned when the request carries no `count`.
 pub(crate) const DEFAULT_COUNT: usize = 5;
@@ -133,7 +133,7 @@ pub(crate) async fn openwebui_search(
     request.validate()?;
 
     let count = request.count();
-    let (_, results) = run_queued_search(&state, &request.query, None).await?;
+    let (_, results) = search::run_queued_search(&state, &request.query, None).await?;
     let results = results
         .into_iter()
         .take(count)

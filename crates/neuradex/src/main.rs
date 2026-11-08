@@ -125,7 +125,7 @@ fn serve() -> Result<(), Box<dyn std::error::Error>> {
 
     let runtime = tokio::runtime::Runtime::new()?;
 
-    let state = AppState::new(
+    let state = AppState::try_new(
         &user_agent,
         SecretString::from(kagi_token),
         REQUEST_TIMEOUT,

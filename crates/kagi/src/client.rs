@@ -1,9 +1,6 @@
-use std::{
-    sync::{Arc, LazyLock, Mutex},
-    time::Duration,
-};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Duration;
 
-use htmlize::unescape;
 use reqwest::StatusCode;
 use reqwest::header::{
     ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, HeaderValue, PRAGMA, REFERER, SET_COOKIE,
@@ -165,7 +162,11 @@ impl SessionLease {
 impl Drop for SessionLease {
     fn drop(&mut self) {
         {
-            let mut inner = self.slot.inner.lock().unwrap();
+            let mut inner = self
+                .slot
+                .inner
+                .lock()
+                .expect("the session lock is not poisoned");
             inner.busy = false;
             inner.session = self.session.take();
         }
@@ -356,12 +357,12 @@ impl Client {
     // the scan would let another request take the slot we picked.
     #[allow(clippy::significant_drop_tightening)]
     fn try_check_out(&self) -> Option<CheckOut> {
-        let slots = self.slots.lock().unwrap();
+        let slots = self.slots.lock().expect("the session lock is not poisoned");
         let mut expired = None;
         let mut empty = None;
 
         for slot in slots.iter() {
-            let mut inner = slot.inner.lock().unwrap();
+            let mut inner = slot.inner.lock().expect("the session lock is not poisoned");
 
             if inner.busy {
                 continue;
@@ -388,7 +389,7 @@ impl Client {
         }
 
         if let Some(slot) = expired {
-            let mut inner = slot.inner.lock().unwrap();
+            let mut inner = slot.inner.lock().expect("the session lock is not poisoned");
             let session = inner.check_out().expect("an expired session was parked");
             drop(inner);
 
@@ -396,7 +397,10 @@ impl Client {
         }
 
         if let Some(slot) = empty {
-            slot.inner.lock().unwrap().check_out();
+            slot.inner
+                .lock()
+                .expect("the session lock is not poisoned")
+                .check_out();
 
             return Some(CheckOut::Empty(slot));
         }
@@ -406,15 +410,24 @@ impl Client {
 
     /// Returns whether any slot is parked and the number of slots in the pool.
     fn pool_state(&self) -> (bool, usize) {
-        let slots = self.slots.lock().unwrap();
-        let idle = slots.iter().any(|slot| !slot.inner.lock().unwrap().busy);
+        let slots = self.slots.lock().expect("the session lock is not poisoned");
+        let idle = slots.iter().any(|slot| {
+            !slot
+                .inner
+                .lock()
+                .expect("the session lock is not poisoned")
+                .busy
+        });
 
         (idle, slots.len())
     }
 
     /// Returns the number of slots in the pool.
     fn slot_count(&self) -> usize {
-        self.slots.lock().unwrap().len()
+        self.slots
+            .lock()
+            .expect("the session lock is not poisoned")
+            .len()
     }
 
     /// Adds a new, empty slot to the pool.
@@ -442,14 +455,21 @@ impl Client {
             http,
         });
 
-        self.slots.lock().unwrap().push(Arc::clone(&slot));
+        self.slots
+            .lock()
+            .expect("the session lock is not poisoned")
+            .push(Arc::clone(&slot));
 
         Ok(slot)
     }
 
     /// Waits out the slot's remaining backoff, if one is scheduled.
     async fn wait_backoff(&self, slot: &Slot) {
-        let next_retry = slot.inner.lock().unwrap().next_retry;
+        let next_retry = slot
+            .inner
+            .lock()
+            .expect("the session lock is not poisoned")
+            .next_retry;
 
         if let Some(next_retry) = next_retry
             && next_retry > Instant::now()
@@ -460,7 +480,7 @@ impl Client {
 
     /// Records a failed fetch on the slot: its backoff doubles, bounded.
     fn record_failure(slot: &Slot) {
-        let mut inner = slot.inner.lock().unwrap();
+        let mut inner = slot.inner.lock().expect("the session lock is not poisoned");
         inner.failures = inner.failures.saturating_add(1);
 
         let backoff = backoff_after_failures(inner.failures);
@@ -477,7 +497,7 @@ impl Client {
         match http_fetch_session(&slot.http, &self.base_url, &self.token, &self.language).await {
             Ok(nonce) => {
                 {
-                    let mut inner = slot.inner.lock().unwrap();
+                    let mut inner = slot.inner.lock().expect("the session lock is not poisoned");
                     inner.failures = 0;
                     inner.next_retry = None;
                 }
@@ -806,7 +826,7 @@ fn parse_search_result_messages(messages: &[KagiMessage]) -> Vec<SearchResult> {
                 .map(|item| SearchResult {
                     title: item.title,
                     url: item.url,
-                    description: unescape(item.snippet).into_owned(),
+                    description: htmlize::unescape(item.snippet).into_owned(),
                 })
                 .collect();
         }
@@ -929,7 +949,7 @@ fn parse_image_results_html(html: &str) -> Vec<ImageResult> {
         };
 
         results.push(ImageResult {
-            title: unescape(title).into_owned(),
+            title: htmlize::unescape(title).into_owned(),
             page_url: page_url.to_string(),
             image_url: image_url.to_string(),
             thumbnail_url: thumbnail.to_string(),

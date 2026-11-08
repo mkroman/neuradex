@@ -8,11 +8,11 @@
 
 use utoipa::OpenApi;
 
-use crate::api::v1::{
-    error::ErrorBody, fetch::FetchResponse, openwebui_search::OpenWebUiSearchRequest,
-    openwebui_search::OpenWebUiSearchResult, peek::PeekResponse, search::SearchResponse,
-    search::SearchResult,
-};
+use crate::api::v1::error::ErrorBody;
+use crate::api::v1::fetch::FetchResponse;
+use crate::api::v1::openwebui_search::{OpenWebUiSearchRequest, OpenWebUiSearchResult};
+use crate::api::v1::peek::PeekResponse;
+use crate::api::v1::search::{SearchResponse, SearchResult};
 use crate::metadata::PageMetadata;
 use crate::metrics::{Metrics, RedirectHop, SearchMetrics};
 
