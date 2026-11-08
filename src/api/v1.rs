@@ -183,7 +183,7 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
 ///
 /// Every error response — including the router-level `404` and `405` fallbacks — renders the
 /// `{"error": {type, message}}` envelope. With the `utoipa` feature the API operations' routes
-/// come from [`api`] together with the document served at `/openapi.json`; with the `docs`
+/// come from `api` together with the document served at `/openapi.json`; with the `docs`
 /// feature the page at `/docs` and the legacy `/swagger-ui` redirect are added. These
 /// infrastructure endpoints are hand-registered like the fallbacks — they are not
 /// OpenAPI-documented operations.

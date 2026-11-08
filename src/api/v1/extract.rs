@@ -1,10 +1,10 @@
 //! Request parsing shared by the API handlers.
 //!
 //! The wire types are the single source of truth for the request contracts: they deserialize
-//! the request (queries through [`ApiQuery`], a thin extractor over
+//! the request (queries through `ApiQuery`, a thin extractor over
 //! [`axum_extra::extract::Query`], which uses `serde_html_form`, so the `include` parameter may
 //! be repeated — `include=redirects&include=headers` — or comma-separated; JSON bodies through
-//! [`ApiJson`], a thin extractor over [`axum::extract::Json`]), document the OpenAPI
+//! `ApiJson`, a thin extractor over [`axum::extract::Json`]), document the OpenAPI
 //! parameters, and expose the validation each endpoint applies to its own request.
 
 use axum::Json;

@@ -1,0 +1,94 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+# Cancel superseded runs on the same ref to free runners and cache writers.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    permissions:
+      contents: read
+    uses: $/.github/workflows/lint.yaml
+
+  # The feature matrix from AGENTS.md: `default` is the full service, the lean
+  # build has no utoipa at all, and `lean + utoipa` serves the OpenAPI JSON
+  # without the documentation page.
+  test:
+    name: Test (${{ matrix.name }})
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            args: --workspace
+            cache-key: ci-stable
+          - name: no default features
+            args: --no-default-features
+            cache-key: ci-stable-lean
+          - name: lean + utoipa
+            args: --no-default-features --features utoipa
+            cache-key: ci-stable-lean-utoipa
+    uses: $/.github/workflows/test.yaml
+    with:
+      test-args: ${{ matrix.args }}
+      cache-key: ${{ matrix.cache-key }}
+
+  doc:
+    name: Rustdoc
+    permissions:
+      contents: read
+    uses: $/.github/workflows/doc.yaml
+    with:
+      # The artifact has no consumer yet; only publish it from main.
+      upload: ${{ github.event_name == 'push' }}
+
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install shellcheck
+        # $HOME/.local/bin is already on PATH on ubuntu-latest.
+        run: ./hack/ci/install-tools.sh "$HOME/.local/bin" shellcheck
+      - name: Lint scripts
+        run: shellcheck hack/*.sh hack/ci/*.sh
+
+  # Stable check for branch protection: job names change with the matrix and the
+  # reusable-workflow split, this one does not.
+  ci-success:
+    name: CI Success
+    if: always()
+    needs:
+      - lint
+      - test
+      - doc
+      - shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check that all jobs succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: echo "${NEEDS}" | jq -e 'all(.[]; .result == "success")'

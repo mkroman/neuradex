@@ -1,0 +1,39 @@
+# CI tool manifest.
+#
+# Each [tool] block is read by install-tools.sh. Keep repo, version and
+# sha256 contiguous: the Renovate manager in renovate.json matches that block
+# head. All other keys are installer details.
+#
+#   [tool]
+#   repo=owner/repository
+#   version=v1.2.3
+#   sha256=<64 hex characters>
+#   tag=${version}
+#   asset=<release asset template>
+#   binary=<path inside the archive>
+#   archive=tar.gz|tar.xz|raw
+#
+# version is the upstream release tag as published (with or without a leading
+# "v"). Renovate updates it and sha256 with the github-release-attachments
+# datasource, which requests releases by their exact tag.
+#
+# ${version} expands to the full tag. ${version_nov} expands to the tag with a
+# leading "v" removed, for release asset names that omit the prefix.
+#
+[cargo-deny]
+repo=EmbarkStudios/cargo-deny
+version=0.20.2
+sha256=9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+tag=${version}
+asset=cargo-deny-${version}-x86_64-unknown-linux-musl.tar.gz
+binary=cargo-deny-${version}-x86_64-unknown-linux-musl/cargo-deny
+archive=tar.gz
+
+[shellcheck]
+repo=koalaman/shellcheck
+version=v0.11.0
+sha256=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+tag=${version}
+asset=shellcheck-v${version_nov}.linux.x86_64.tar.xz
+binary=shellcheck-v${version_nov}/shellcheck
+archive=tar.xz

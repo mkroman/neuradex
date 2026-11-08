@@ -68,7 +68,7 @@ pub const LANGUAGE: &str = "en-US,en;q=0.9";
 /// The default maximum number of simultaneous sessions.
 pub const DEFAULT_MAX_SESSIONS: usize = 2;
 
-/// Options for configuring a Kagi [`Client`][client::Client].
+/// Options for configuring a Kagi [`Client`].
 #[derive(Clone, Debug)]
 pub struct ClientOptions {
     /// The duration before an HTTP request times out.

@@ -1,0 +1,6 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # First-party actions are tag-pinned; Renovate digest-pins them.
+        actions/*: ref-pin

@@ -12,8 +12,22 @@ on:
     - cron: "17 5 * * 1" # Mondays 05:17 UTC
   workflow_dispatch:
 
+# Keep the runs list readable for schedule/manual runs; PRs keep the PR title.
+run-name: >-
+  ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+      && format('Security audit · {0}', github.ref_name)
+      || github.event.pull_request.title || github.event.head_commit.message || github.event_name }}
+
 env:
   CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  RUST_BACKTRACE: short
+
+# Cancel superseded runs on the same ref to free runners.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -21,33 +35,24 @@ permissions:
 jobs:
   cargo-deny:
     name: Cargo Deny
-    # Advisory checks only: `cargo deny check advisories` is the blocking gate;
-    # licenses/bans/sources are warning-level in deny.toml. Skip the scheduled
-    # runs, which are reserved for cargo-audit.
-    if: github.event_name != 'schedule'
+    # Advisory checks only: `cargo deny check advisories` is the blocking gate.
+    # The licenses/bans/sources sections are not evaluated by this job.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Checkout source
+      - name: Check out source
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        # cargo-deny shells out to `cargo metadata`, so cargo must be on PATH.
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - name: Install cargo-deny
+        # $HOME/.local/bin is already on PATH on ubuntu-latest.
+        run: ./hack/ci/install-tools.sh "$HOME/.local/bin" cargo-deny
       - name: Check advisories
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check advisories
-
-  cargo-audit:
-    name: Cargo Audit
-    # Reserved for the weekly schedule (and manual dispatch); pull requests and
-    # pushes are already covered by the cargo-deny advisory check.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v7
-      # Audit Cargo.lock against the RustSec database without compiling
-      # cargo-audit.
-      - name: Audit Cargo.lock
-        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        # Mirrors the replaced cargo-deny-action invocation, including its
+        # input defaults (--log-level warn, --manifest-path, --all-features).
+        run: cargo-deny --log-level warn --manifest-path Cargo.toml --all-features check advisories
