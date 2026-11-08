@@ -774,15 +774,34 @@ fn extract_nonce(html: &str) -> Option<String> {
         let Some(after) = rest.trim_start().strip_prefix('=') else {
             continue;
         };
-        let Some(after) = after.trim_start().strip_prefix('"') else {
-            continue;
-        };
-        let Some(end) = after.find('"') else {
+        let Some((nonce, _)) = quoted_string_literal(after.trim_start()) else {
             continue;
         };
 
-        if end > 0 {
-            return Some(after[..end].to_owned());
+        if !nonce.is_empty() {
+            return Some(nonce.to_owned());
+        }
+    }
+
+    None
+}
+
+/// Splits a leading double-quoted string literal from `input`.
+///
+/// Returns the literal's contents without the surrounding quotes and the input following the
+/// closing quote. The literal ends at the first unescaped `"`, so backslash escapes such as
+/// `\"` are skipped. Returns `None` if `input` does not start with a quote or the literal is
+/// unterminated.
+fn quoted_string_literal(input: &str) -> Option<(&str, &str)> {
+    let body = input.strip_prefix('"')?;
+    let mut escaped = false;
+
+    for (index, character) in body.char_indices() {
+        match (escaped, character) {
+            (true, _) => escaped = false,
+            (false, '\\') => escaped = true,
+            (false, '"') => return Some((&body[..index], &body[index + 1..])),
+            _ => {}
         }
     }
 
@@ -809,7 +828,17 @@ fn parse_sse_stream(raw_body: &str) -> Vec<KagiMessage> {
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim_start)
-        .filter_map(|json| serde_json::from_str::<Vec<KagiMessage>>(json).ok())
+        .filter_map(|json| {
+            serde_json::from_str::<Vec<KagiMessage>>(json)
+                .inspect_err(|error| {
+                    debug!(
+                        event = json,
+                        exception.message = %error,
+                        "dropping an unparseable Kagi SSE event"
+                    );
+                })
+                .ok()
+        })
         .flatten()
         .collect()
 }
@@ -827,9 +856,22 @@ fn parse_kagi_stream(raw_body: &str) -> Vec<KagiMessage> {
         .split_terminator("\0\n")
         .filter_map(|chunk| {
             // Split wire format: "tag:json_data"
-            let (wire_tag, json_str) = chunk.split_once(':')?;
+            let Some((wire_tag, json_str)) = chunk.split_once(':') else {
+                debug!(chunk, "dropping a Kagi chunk without a wire tag");
+                return None;
+            };
             // Parse JSON body
-            let mut message: KagiMessage = serde_json::from_str(json_str).ok()?;
+            let mut message: KagiMessage = match serde_json::from_str(json_str) {
+                Ok(message) => message,
+                Err(error) => {
+                    debug!(
+                        wire_tag,
+                        exception.message = %error,
+                        "dropping an unparseable Kagi chunk"
+                    );
+                    return None;
+                }
+            };
             // Normalize Tag: If the JSON body didn't have a tag, use the wire tag.
             if message.tag.is_empty() {
                 message.tag = wire_tag.to_string();
@@ -838,6 +880,11 @@ fn parse_kagi_stream(raw_body: &str) -> Vec<KagiMessage> {
             Some(message)
         })
         .collect()
+}
+
+/// Returns the `content` string of a message's payload, if it has one.
+fn payload_content(message: &KagiMessage) -> Option<&str> {
+    message.payload.as_ref()?.get("content")?.as_str()
 }
 
 fn parse_search_result_messages(messages: &[KagiMessage]) -> Vec<SearchResult> {
@@ -849,8 +896,15 @@ fn parse_search_result_messages(messages: &[KagiMessage]) -> Vec<SearchResult> {
         let Some(payload) = message.payload.as_ref().and_then(Value::as_str) else {
             continue;
         };
-        let Ok(results) = serde_json::from_str::<SearchResultsJson>(payload) else {
-            continue;
+        let results = match serde_json::from_str::<SearchResultsJson>(payload) {
+            Ok(results) => results,
+            Err(error) => {
+                debug!(
+                    exception.message = %error,
+                    "falling back to HTML results, structured payload is malformed"
+                );
+                continue;
+            }
         };
 
         if !results.items.is_empty() {
@@ -858,7 +912,7 @@ fn parse_search_result_messages(messages: &[KagiMessage]) -> Vec<SearchResult> {
                 .items
                 .into_iter()
                 .map(|item| SearchResult {
-                    title: item.title,
+                    title: htmlize::unescape(item.title).into_owned(),
                     url: item.url,
                     description: htmlize::unescape(item.snippet).into_owned(),
                 })
@@ -869,14 +923,12 @@ fn parse_search_result_messages(messages: &[KagiMessage]) -> Vec<SearchResult> {
     // Fall back to parsing the HTML fragments of `search` messages.
     let mut result: Vec<SearchResult> = Vec::new();
 
-    for msg in messages.iter().filter(|message| message.tag == "search") {
-        if let Some(content) = msg
-            .payload
-            .as_ref()
-            .and_then(|payload| payload.get("content").and_then(Value::as_str))
-        {
-            result.extend(parse_search_results_html(content));
-        }
+    for content in messages
+        .iter()
+        .filter(|message| message.tag == "search")
+        .filter_map(payload_content)
+    {
+        result.extend(parse_search_results_html(content));
     }
 
     result
@@ -933,7 +985,7 @@ fn parse_search_results_html(html: &str) -> Vec<SearchResult> {
             let url = title.attr("href").unwrap_or("").to_string();
 
             results.push(SearchResult {
-                title: title.text().collect::<String>().trim().to_owned(),
+                title: collect_trimmed_text(&title),
                 url,
                 description: extract_topmost_text(&description),
             });
@@ -946,14 +998,12 @@ fn parse_search_results_html(html: &str) -> Vec<SearchResult> {
 fn parse_image_result_messages(messages: &[KagiMessage]) -> Vec<ImageResult> {
     let mut result: Vec<ImageResult> = Vec::new();
 
-    for message in messages.iter().filter(|message| message.tag == "images") {
-        if let Some(content) = message
-            .payload
-            .as_ref()
-            .and_then(|payload| payload.get("content").and_then(Value::as_str))
-        {
-            result.extend(parse_image_results_html(content));
-        }
+    for content in messages
+        .iter()
+        .filter(|message| message.tag == "images")
+        .filter_map(payload_content)
+    {
+        result.extend(parse_image_results_html(content));
     }
 
     result
@@ -1004,6 +1054,22 @@ fn parse_image_results_html(html: &str) -> Vec<ImageResult> {
     }
 
     results
+}
+
+/// Collects an element's text nodes into one allocation, trimmed.
+fn collect_trimmed_text(elem: &ElementRef<'_>) -> String {
+    let mut text = String::with_capacity(elem.text().map(str::len).sum());
+
+    for node in elem.text() {
+        text.push_str(node);
+    }
+
+    let start = text.len() - text.trim_start().len();
+    let end = start + text[start..].trim_end().len();
+    text.truncate(end);
+    text.drain(..start);
+
+    text
 }
 
 fn extract_topmost_text(elem: &ElementRef<'_>) -> String {
@@ -1064,6 +1130,21 @@ mod tests {
         // Snippets arrive HTML-entity encoded and must be decoded.
         assert!(results[0].description.contains('"'));
         assert!(!results[0].description.contains("&quot;"));
+    }
+
+    #[test]
+    fn unescapes_structured_search_result_titles_and_snippets() {
+        let payload = r#"{"items":[{"title":"Fish &amp; Chips","url":"https://example.com/fish","snippet":"A &quot;classic&quot; dish &amp; more"}]}"#;
+        let messages = vec![KagiMessage {
+            tag: "search_results_json".to_string(),
+            payload: Some(Value::String(payload.to_string())),
+        }];
+
+        let results = parse_search_result_messages(&messages);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Fish & Chips");
+        assert_eq!(results[0].description, "A \"classic\" dish & more");
     }
 
     #[test]
@@ -1135,6 +1216,44 @@ mod tests {
         assert_eq!(
             extract_nonce("window.sse_nonce_nope = \"x\"; window.sse_nonce = \"y\""),
             Some("y".to_owned())
+        );
+    }
+
+    #[test]
+    fn extracts_nonces_with_escaped_quotes() {
+        // The scan continues past a backslash-escaped quote instead of truncating there.
+        assert_eq!(
+            extract_nonce(r#"window.sse_nonce = "abc\"def""#),
+            Some(r#"abc\"def"#.to_owned())
+        );
+        assert_eq!(
+            extract_nonce(r#"window.sse_nonce = "abc\";def";"#),
+            Some(r#"abc\";def"#.to_owned())
+        );
+    }
+
+    #[test]
+    fn skips_malformed_and_empty_nonces() {
+        // A marker without an assignment does not hide a later valid one.
+        assert_eq!(
+            extract_nonce("window.sse_nonce = 42; window.sse_nonce = \"later\""),
+            Some("later".to_owned())
+        );
+        // An empty nonce is ignored in favor of a later assignment.
+        assert_eq!(
+            extract_nonce("window.sse_nonce = \"\"; window.sse_nonce = \"later\""),
+            Some("later".to_owned())
+        );
+        // An unterminated literal and a page without the marker yield no nonce.
+        assert_eq!(extract_nonce("window.sse_nonce = \"unterminated"), None);
+        assert_eq!(extract_nonce("no nonce here"), None);
+    }
+
+    #[test]
+    fn extracts_nonces_with_whitespace_around_the_assignment() {
+        assert_eq!(
+            extract_nonce("window.sse_nonce\t=\n  \"abc\""),
+            Some("abc".to_owned())
         );
     }
 
