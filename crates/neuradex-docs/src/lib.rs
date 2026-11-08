@@ -11,7 +11,7 @@
 //! Nothing in this crate panics on its own; see [`render`] for the one exception.
 
 #[cfg(not(debug_assertions))]
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 use std::borrow::Cow;
 
@@ -66,12 +66,9 @@ fn page_style() -> Cow<'static, str> {
     }
     #[cfg(not(debug_assertions))]
     {
-        static BUNDLED: OnceLock<String> = OnceLock::new();
-        Cow::Borrowed(
-            BUNDLED
-                .get_or_init(|| bundle::bundle(&assets::style_raw()))
-                .as_str(),
-        )
+        static BUNDLED: LazyLock<String> = LazyLock::new(|| bundle::bundle(&assets::style_raw()));
+
+        Cow::Borrowed(BUNDLED.as_str())
     }
 }
 

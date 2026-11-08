@@ -9,7 +9,7 @@
 #[cfg(debug_assertions)]
 use std::path::{Path, PathBuf};
 #[cfg(debug_assertions)]
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 /// One theme source file: its path under `theme/` and its embedded copy.
 struct Source {
@@ -169,10 +169,10 @@ pub fn bootstrap_raw() -> String {
 /// The theme directory the debug builds re-read from.
 #[cfg(debug_assertions)]
 fn theme_dir() -> &'static Path {
-    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    static DIR: LazyLock<PathBuf> =
+        LazyLock::new(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("theme"));
 
-    DIR.get_or_init(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("theme"))
-        .as_path()
+    DIR.as_path()
 }
 
 /// Joins sources with a separating newline.

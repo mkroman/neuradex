@@ -136,12 +136,10 @@ pub(crate) async fn run_queued_search(
     let queued = Instant::now();
 
     let search = async {
-        let permit = state
-            .search_gate
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|error| ApiError::internal(format!("the search gate is closed: {error}")))?;
+        let permit =
+            state.search_gate.acquire().await.map_err(|error| {
+                ApiError::internal(format!("the search gate is closed: {error}"))
+            })?;
         let queue_ms = redirect::duration_ms(queued.elapsed());
 
         let results = state

@@ -47,25 +47,18 @@ impl ResponseInfo {
 /// Returns the HTTP version of `response` as a display string, e.g. `HTTP/1.1`.
 #[must_use]
 fn http_version(version: wreq::Version) -> String {
-    match version {
-        wreq::Version::HTTP_09 => "HTTP/0.9".to_string(),
-        wreq::Version::HTTP_10 => "HTTP/1.0".to_string(),
-        wreq::Version::HTTP_11 => "HTTP/1.1".to_string(),
-        wreq::Version::HTTP_2 => "HTTP/2.0".to_string(),
-        wreq::Version::HTTP_3 => "HTTP/3.0".to_string(),
-        other => format!("{other:?}"),
-    }
+    // `http::Version` has no `Display` impl; its `Debug` impl is the canonical version string.
+    format!("{version:?}")
 }
 
 /// Returns the media type — the first, lowercased parameter-free segment — of a content type.
 #[must_use]
 pub(crate) fn media_type(content_type: &str) -> String {
-    content_type
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase()
+    let media = content_type
+        .split_once(';')
+        .map_or(content_type, |(media, _)| media);
+
+    media.trim().to_ascii_lowercase()
 }
 
 /// The outcome of a fetch with redirects followed manually.
@@ -188,6 +181,15 @@ mod tests {
         assert_eq!(media_type("text/html; charset=utf-8"), "text/html");
         assert_eq!(media_type(" Application/JSON "), "application/json");
         assert_eq!(media_type(""), "");
+    }
+
+    #[test]
+    fn formats_http_versions() {
+        assert_eq!(http_version(wreq::Version::HTTP_09), "HTTP/0.9");
+        assert_eq!(http_version(wreq::Version::HTTP_10), "HTTP/1.0");
+        assert_eq!(http_version(wreq::Version::HTTP_11), "HTTP/1.1");
+        assert_eq!(http_version(wreq::Version::HTTP_2), "HTTP/2.0");
+        assert_eq!(http_version(wreq::Version::HTTP_3), "HTTP/3.0");
     }
 
     #[test]

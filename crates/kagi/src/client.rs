@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, LazyLock, Mutex},
     time::Duration,
 };
 
@@ -713,9 +713,7 @@ fn stream_request(
 fn backoff_after_failures(failures: u32) -> Duration {
     let exponent = failures.saturating_sub(1).min(16);
 
-    BACKOFF_BASE
-        .checked_mul(1 << exponent)
-        .map_or(BACKOFF_MAX, |backoff| backoff.min(BACKOFF_MAX))
+    BACKOFF_BASE.saturating_mul(1 << exponent).min(BACKOFF_MAX)
 }
 
 /// Returns whether the stream response status invalidates the session: the
@@ -798,8 +796,7 @@ fn parse_sse_stream(raw_body: &str) -> Vec<KagiMessage> {
 /// 4. Ensures the `tag` field is populated.
 fn parse_kagi_stream(raw_body: &str) -> Vec<KagiMessage> {
     raw_body
-        .split("\0\n")
-        .filter(|chunk| !chunk.is_empty())
+        .split_terminator("\0\n")
         .filter_map(|chunk| {
             // Split wire format: "tag:json_data"
             let (wire_tag, json_str) = chunk.split_once(':')?;
@@ -891,9 +888,9 @@ impl Selectors {
 
 /// Returns the pre-compiled result selectors.
 fn selectors() -> &'static Selectors {
-    static SELECTORS: OnceLock<Selectors> = OnceLock::new();
+    static SELECTORS: LazyLock<Selectors> = LazyLock::new(Selectors::new);
 
-    SELECTORS.get_or_init(Selectors::new)
+    &SELECTORS
 }
 
 fn parse_search_results_html(html: &str) -> Vec<SearchResult> {

@@ -30,7 +30,7 @@ use axum::routing::get;
 use axum::routing::post;
 use secrecy::SecretString;
 #[cfg(all(feature = "docs", not(debug_assertions)))]
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 #[cfg(feature = "utoipa")]
 use utoipa_axum::router::OpenApiRouter;
 #[cfg(feature = "utoipa")]
@@ -76,7 +76,7 @@ pub struct AppState {
     pub kagi_client: kagi::Client,
     /// Gates the number of searches in flight; each search acquires a permit, extra requests
     /// wait here until a slot frees up.
-    pub search_gate: Arc<tokio::sync::Semaphore>,
+    pub search_gate: tokio::sync::Semaphore,
     /// The default request headers sent with every fetch, kept for reporting.
     pub default_headers: HeaderMap,
 }
@@ -115,7 +115,7 @@ impl AppState {
         Ok(Self {
             client,
             kagi_client,
-            search_gate: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SEARCHES)),
+            search_gate: tokio::sync::Semaphore::new(MAX_CONCURRENT_SEARCHES),
             default_headers,
         })
     }
@@ -132,10 +132,7 @@ fn default_headers(user_agent: &str) -> Result<HeaderMap, BuildError> {
         ACCEPT_ENCODING,
         HeaderValue::from_static("gzip, deflate, br, zstd"),
     );
-    headers.insert(
-        USER_AGENT,
-        HeaderValue::from_str(user_agent).map_err(BuildError::from)?,
-    );
+    headers.insert(USER_AGENT, HeaderValue::from_str(user_agent)?);
 
     Ok(headers)
 }
@@ -238,12 +235,10 @@ fn render_docs_page() -> String {
 #[cfg(feature = "docs")]
 async fn docs() -> impl IntoResponse {
     #[cfg(not(debug_assertions))]
-    static PAGE: OnceLock<String> = OnceLock::new();
+    static PAGE: LazyLock<String> = LazyLock::new(render_docs_page);
 
     #[cfg(not(debug_assertions))]
-    let body = axum::body::Body::from(Bytes::from_static(
-        PAGE.get_or_init(render_docs_page).as_bytes(),
-    ));
+    let body = axum::body::Body::from(Bytes::from_static(PAGE.as_bytes()));
     #[cfg(debug_assertions)]
     let body = axum::body::Body::from(render_docs_page());
 

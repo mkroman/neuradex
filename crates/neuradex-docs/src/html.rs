@@ -1,7 +1,5 @@
 //! HTML and JSON helpers shared by the page renderer.
 
-use std::borrow::Cow;
-
 use serde_json::Value;
 
 /// Appends `s` to `out`, escaping it for HTML text nodes and attribute values.
@@ -65,7 +63,9 @@ pub fn strip_dot(s: &str) -> &str {
 
 /// Returns the last path segment of a `$ref` pointer.
 pub fn ref_name(reference: &str) -> &str {
-    reference.rsplit('/').next().unwrap_or(reference)
+    reference
+        .rsplit_once('/')
+        .map_or(reference, |(_, name)| name)
 }
 
 /// Returns a field of a JSON object, treating explicit nulls as absent.
@@ -83,19 +83,15 @@ pub fn bool_field(value: &Value, key: &str) -> bool {
     field(value, key).and_then(Value::as_bool).unwrap_or(false)
 }
 
-/// Resolves a local `#/...` JSON pointer against `spec`, unescaping `~1` and `~0`.
+/// Resolves a local `#/...` JSON pointer against `spec`.
 pub fn resolve_ref<'a>(spec: &'a Value, reference: &str) -> Option<&'a Value> {
-    let pointer = reference.strip_prefix("#/")?;
-    let mut node = spec;
-    for part in pointer.split('/') {
-        let key = if part.contains('~') {
-            Cow::Owned(part.replace("~1", "/").replace("~0", "~"))
-        } else {
-            Cow::Borrowed(part)
-        };
-        node = node.get(key.as_ref())?;
+    let pointer = reference.strip_prefix('#')?;
+
+    if !pointer.starts_with('/') {
+        return None;
     }
-    Some(node)
+
+    spec.pointer(pointer)
 }
 
 #[cfg(test)]
