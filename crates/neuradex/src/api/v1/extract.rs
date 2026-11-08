@@ -19,7 +19,7 @@ use crate::api::v1::error::ApiError;
 use crate::api::v1::{MAX_REDIRECTS, MAX_SEARCH_TIMEOUT_SECS};
 
 /// The default number of redirects to follow when none is requested.
-pub const DEFAULT_REDIRECTS: u32 = 5;
+pub const DEFAULT_REDIRECTS: u32 = MAX_REDIRECTS;
 
 /// The `include` values accepted by the peek endpoint.
 pub const PEEK_INCLUDES: &[&str] = &["redirects"];
@@ -157,20 +157,28 @@ impl IncludeSet {
         let mut includes = Self::default();
 
         for value in values.iter().flat_map(|value| value.split(',')) {
-            let value = value.trim().to_ascii_lowercase();
+            let value = value.trim();
 
             if value.is_empty() {
                 continue;
             }
 
-            if !allowed.contains(&value.as_str()) {
-                return Err(ApiError::invalid_param(format!("unknown include: {value}")));
+            if !allowed
+                .iter()
+                .any(|allowed| value.eq_ignore_ascii_case(allowed))
+            {
+                return Err(ApiError::invalid_param(format!(
+                    "unknown include: {}",
+                    value.to_ascii_lowercase()
+                )));
             }
 
-            match value.as_str() {
-                "redirects" => includes.redirects = true,
-                "headers" => includes.headers = true,
-                _ => unreachable!("validated against `allowed`"),
+            if value.eq_ignore_ascii_case("redirects") {
+                includes.redirects = true;
+            } else if value.eq_ignore_ascii_case("headers") {
+                includes.headers = true;
+            } else {
+                unreachable!("validated against `allowed`");
             }
         }
 
@@ -249,18 +257,26 @@ impl SearchParams {
 #[cfg(test)]
 mod tests {
     use axum::http::Uri;
-    use axum_extra::extract::Query;
+    use axum_extra::extract::{Query, QueryRejection};
 
     use super::*;
 
-    /// Parses `pairs` into `FetchParams`, mirroring the `Query` extraction path.
-    fn fetch_params(pairs: &str) -> Result<FetchParams, serde_html_form::de::Error> {
-        serde_html_form::from_str(pairs)
+    /// Parses `pairs` into `FetchParams` through the real query extractor.
+    fn fetch_params(pairs: &str) -> Result<FetchParams, QueryRejection> {
+        let uri: Uri = format!("https://example.com/v1/fetch?{pairs}")
+            .parse()
+            .expect("the test query is a valid URI");
+
+        Query::<FetchParams>::try_from_uri(&uri).map(|Query(params)| params)
     }
 
-    /// Parses `pairs` into `SearchParams`, mirroring the `Query` extraction path.
-    fn search_params(pairs: &str) -> Result<SearchParams, serde_html_form::de::Error> {
-        serde_html_form::from_str(pairs)
+    /// Parses `pairs` into `SearchParams` through the real query extractor.
+    fn search_params(pairs: &str) -> Result<SearchParams, QueryRejection> {
+        let uri: Uri = format!("https://example.com/v1/search?{pairs}")
+            .parse()
+            .expect("the test query is a valid URI");
+
+        Query::<SearchParams>::try_from_uri(&uri).map(|Query(params)| params)
     }
 
     #[test]
@@ -346,7 +362,7 @@ mod tests {
     fn requires_a_url() {
         assert!(fetch_params("").is_err());
 
-        let query = fetch_params("url=not a url").expect("valid");
+        let query = fetch_params("url=not%20a%20url").expect("valid");
         assert!(matches!(query.url(), Err(ApiError::InvalidParam(_))));
     }
 

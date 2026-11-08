@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::api::v1::AppState;
 use crate::api::v1::error::ApiError;
 use crate::api::v1::extract::ApiJson;
+use crate::api::v1::search::run_queued_search;
 
 /// The number of results returned when the request carries no `count`.
 pub(crate) const DEFAULT_COUNT: usize = 5;
@@ -131,26 +132,13 @@ pub(crate) async fn openwebui_search(
 ) -> Result<Json<Vec<OpenWebUiSearchResult>>, ApiError> {
     request.validate()?;
 
-    // Blocks while all search slots are busy; FIFO order. Dropping the permit when the handler
-    // returns releases the slot.
-    let _permit = state
-        .search_gate
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|error| ApiError::internal(format!("the search gate is closed: {error}")))?;
-
-    let mut results: Vec<OpenWebUiSearchResult> = state
-        .kagi_client
-        .search(&request.query)
-        .await
-        .map_err(|error| ApiError::upstream(error.to_string()))?
+    let count = request.count();
+    let (_, results) = run_queued_search(&state, &request.query, None).await?;
+    let results = results
         .into_iter()
+        .take(count)
         .map(OpenWebUiSearchResult::from)
         .collect();
-
-    let count = request.count();
-    results.truncate(count);
 
     Ok(Json(results))
 }

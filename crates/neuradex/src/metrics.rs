@@ -3,7 +3,7 @@
 use serde::Serialize;
 
 /// A single intermediate redirect hop.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Debug, Serialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[cfg_attr(
     feature = "utoipa",

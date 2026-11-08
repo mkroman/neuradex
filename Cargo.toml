@@ -13,8 +13,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 htmlize = { version = "1.1.0", features = ["unescape"] }
-regex = "1.12.2"
-reqwest = { version = "0.13.1", default-features = false, features = ["charset", "http2", "system-proxy", "json", "query"] }
+reqwest = { version = "0.13.1", default-features = false, features = ["charset", "http2", "system-proxy", "query"] }
 scraper = "0.29.0"
 secrecy = "0.10.3"
 serde = { version = "1.0.215", features = ["derive"] }
@@ -24,6 +23,7 @@ tokio = { version = "1.52.3", features = [
     "rt-multi-thread",
     "macros",
     "sync",
+    "time",
 ] }
 tracing = "0.1.41"
 url = "2.5.8"

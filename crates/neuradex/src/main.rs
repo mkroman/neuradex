@@ -34,12 +34,11 @@ const KAGI_MAX_SESSIONS_ENV: &str = "KAGI_MAX_SESSIONS";
 /// The default listen address.
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:8080";
 
-/// The default user agent.
-const DEFAULT_USER_AGENT: &str =
-    "Mozilla/5.0 (X11; Linux x86_64; rv:155.0) Gecko/20100101 Firefox/155.0";
+/// The default user agent, shared with the Kagi client so both emulate the same browser.
+const DEFAULT_USER_AGENT: &str = kagi::USER_AGENT;
 
-/// The duration before an HTTP request times out.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// The duration before an HTTP request times out, shared with the Kagi client.
+const REQUEST_TIMEOUT: Duration = kagi::HTTP_TIMEOUT;
 
 /// A small API service implementing tools for LLM agents.
 #[derive(Parser)]
@@ -124,9 +123,7 @@ fn serve() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|token| !token.is_empty())
         .ok_or_else(|| format!("{KAGI_TOKEN_ENV} is required"))?;
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
+    let runtime = tokio::runtime::Runtime::new()?;
 
     let state = AppState::new(
         &user_agent,

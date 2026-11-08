@@ -15,8 +15,15 @@ use crate::tree::{self, SchemaNode};
 const TAG_PRIORITY: &[&str] = &["fetch", "peek", "search"];
 
 /// The methods rendered as endpoint sections, in precedence order.
-const HTTP_METHODS: &[&str] = &[
-    "get", "post", "put", "patch", "delete", "head", "options", "trace",
+const HTTP_METHODS: &[(&str, &str)] = &[
+    ("get", "GET"),
+    ("post", "POST"),
+    ("put", "PUT"),
+    ("patch", "PATCH"),
+    ("delete", "DELETE"),
+    ("head", "HEAD"),
+    ("options", "OPTIONS"),
+    ("trace", "TRACE"),
 ];
 
 /// The documentation page, as data.
@@ -39,8 +46,6 @@ pub struct Page {
     pub endpoint_count: usize,
     /// The table of contents groups, in display order.
     pub toc_groups: Vec<TocGroup>,
-    /// The schema entries of the table of contents, in display order.
-    pub schemas_toc: Vec<TocSchema>,
     /// The endpoint sections, in display order.
     pub endpoints: Vec<Endpoint>,
     /// The schema appendix entries, in display order.
@@ -67,14 +72,6 @@ pub struct TocLink {
     pub num: String,
     /// The display label.
     pub label: String,
-}
-
-/// One schema entry of the table of contents.
-pub struct TocSchema {
-    /// The anchor target, without the leading `#`.
-    pub href: String,
-    /// The schema name.
-    pub name: String,
 }
 
 /// One endpoint section of the page.
@@ -118,9 +115,33 @@ pub struct Param {
 /// One constraint annotation.
 pub struct Anno {
     /// The annotation key, e.g. `default`.
-    pub key: String,
+    pub key: &'static str,
     /// The annotation value, e.g. `5`.
     pub value: String,
+}
+
+impl Anno {
+    /// Constructs an annotation from a static key and a rendered value.
+    pub(crate) const fn new(key: &'static str, value: String) -> Self {
+        Self { key, value }
+    }
+}
+
+/// Appends the annotations shared by query parameters and schema properties: `format`,
+/// `default`, and the numeric bounds.
+pub fn common_anns(anns: &mut Vec<Anno>, schema: &Value) {
+    if let Some(format) = str_field(schema, "format") {
+        anns.push(Anno::new("format", format.to_owned()));
+    }
+    if let Some(default) = field(schema, "default") {
+        anns.push(Anno::new("default", default.to_string()));
+    }
+    if let Some(minimum) = field(schema, "minimum") {
+        anns.push(Anno::new("min", minimum.to_string()));
+    }
+    if let Some(maximum) = field(schema, "maximum") {
+        anns.push(Anno::new("max", maximum.to_string()));
+    }
 }
 
 /// One documented response of an endpoint.
@@ -149,13 +170,12 @@ pub struct SchemaDoc {
 struct Op<'a> {
     path: &'a str,
     id: String,
-    method: String,
+    method: &'static str,
     tag: &'a str,
     summary: Option<&'a str>,
     description: Option<&'a str>,
     params: Vec<&'a Value>,
     operation: &'a Value,
-    num: usize,
 }
 
 /// Builds the page model from the serialized document.
@@ -184,9 +204,6 @@ pub fn page(spec: &Value) -> Page {
             })
     };
     ops.sort_by_key(|op| group_index(op.tag));
-    for (index, op) in ops.iter_mut().enumerate() {
-        op.num = index + 1;
-    }
 
     let tag_description = |tag: &str| -> Option<String> {
         spec.get("tags")
@@ -203,13 +220,14 @@ pub fn page(spec: &Value) -> Page {
 
     let mut toc_groups: Vec<TocGroup> = Vec::new();
     let mut endpoints: Vec<Endpoint> = Vec::new();
-    for op in &ops {
+    for (index, op) in ops.iter().enumerate() {
+        let num = format!("{:02}", index + 1);
         let link = TocLink {
             href: op.id.clone(),
-            num: format!("{:02}", op.num),
+            num: num.clone(),
             label: strip_dot(op.summary.unwrap_or(op.path)).to_owned(),
         };
-        let endpoint = endpoint(spec, op);
+        let endpoint = endpoint(spec, op, &num);
         match toc_groups.last_mut().filter(|group| group.label == op.tag) {
             Some(group) => group.links.push(link),
             None => {
@@ -250,13 +268,6 @@ pub fn page(spec: &Value) -> Page {
         spec_version: str_field(spec, "openapi").unwrap_or("3.1").to_owned(),
         endpoint_count: endpoints.len(),
         toc_groups,
-        schemas_toc: schemas
-            .iter()
-            .map(|schema| TocSchema {
-                href: schema.anchor_id.clone(),
-                name: schema.name.clone(),
-            })
-            .collect(),
         endpoints,
         appendix_intro_html: prose(&format!(
             "Every schema the API references, rendered as collapsible trees — {} in total. \
@@ -299,7 +310,7 @@ fn collect_ops(spec: &Value) -> Vec<Op<'_>> {
         let Some(item) = item.as_object() else {
             continue;
         };
-        for method in HTTP_METHODS {
+        for (method, method_label) in HTTP_METHODS {
             let Some(op) = item.get(*method).filter(|op| op.is_object()) else {
                 continue;
             };
@@ -314,7 +325,7 @@ fn collect_ops(spec: &Value) -> Vec<Op<'_>> {
             ops.push(Op {
                 path,
                 id,
-                method: method.to_uppercase(),
+                method: method_label,
                 tag: op
                     .get("tags")
                     .and_then(Value::as_array)
@@ -336,7 +347,6 @@ fn collect_ops(spec: &Value) -> Vec<Op<'_>> {
                     })
                     .unwrap_or_default(),
                 operation: op,
-                num: 0,
             });
         }
     }
@@ -344,11 +354,11 @@ fn collect_ops(spec: &Value) -> Vec<Op<'_>> {
 }
 
 /// Builds the endpoint section of one operation.
-fn endpoint(spec: &Value, op: &Op<'_>) -> Endpoint {
+fn endpoint(spec: &Value, op: &Op<'_>, num: &str) -> Endpoint {
     Endpoint {
-        num: format!("{:02}", op.num),
+        num: num.to_owned(),
         id: op.id.clone(),
-        method: op.method.clone(),
+        method: op.method.to_owned(),
         path: op.path.to_owned(),
         title: op.summary.unwrap_or(op.path).to_owned(),
         description_html: op.description.map_or_else(String::new, prose),
@@ -369,45 +379,31 @@ fn endpoint(spec: &Value, op: &Op<'_>) -> Endpoint {
 fn param(p: &Value) -> Param {
     let schema = field(p, "schema");
     let schema_type = schema.and_then(|s| str_field(s, "type"));
+    let example = field(p, "example");
 
     let mut anns: Vec<Anno> = Vec::new();
-    let mut push = |key: &str, value: String| {
-        anns.push(Anno {
-            key: key.to_owned(),
-            value,
-        });
-    };
     if schema_type == Some("array") {
         let items_type = schema
             .and_then(|s| field(s, "items"))
             .and_then(|items| str_field(items, "type"));
-        push(
+        anns.push(Anno::new(
             "type",
             items_type.map_or_else(
                 || "array".to_owned(),
                 |items_type| format!("array<{items_type}>"),
             ),
-        );
+        ));
     } else if let Some(schema_type) = schema_type {
-        push("type", (*schema_type).to_owned());
+        anns.push(Anno::new("type", schema_type.to_owned()));
     }
-    if let Some(format) = schema.and_then(|s| str_field(s, "format")) {
-        push("format", format.to_owned());
+    if let Some(schema) = schema {
+        common_anns(&mut anns, schema);
     }
-    if let Some(default) = schema.and_then(|s| field(s, "default")) {
-        push("default", default.to_string());
-    }
-    if let Some(minimum) = schema.and_then(|s| field(s, "minimum")) {
-        push("min", minimum.to_string());
-    }
-    if let Some(maximum) = schema.and_then(|s| field(s, "maximum")) {
-        push("max", maximum.to_string());
-    }
-    if let Some(example) = field(p, "example") {
-        push("example", flat_value(example));
+    if let Some(example) = example {
+        anns.push(Anno::new("example", flat_value(example)));
     }
     if schema_type == Some("array") {
-        push("send as", "repeated keys".to_owned());
+        anns.push(Anno::new("send as", "repeated keys".to_owned()));
     }
     if p.get("style").is_some() || p.get("explode").is_some() {
         let style = str_field(p, "style").unwrap_or("form");
@@ -416,7 +412,7 @@ fn param(p: &Value) -> Param {
         } else {
             " · explode"
         };
-        push("style", format!("{style}{explode}"));
+        anns.push(Anno::new("style", format!("{style}{explode}")));
     }
 
     Param {
@@ -424,18 +420,18 @@ fn param(p: &Value) -> Param {
         required: bool_field(p, "required"),
         description_html: prose(str_field(p, "description").unwrap_or_default()),
         anns,
-        seed: seed(p),
+        seed: seed(example, schema),
         is_array: schema_type == Some("array"),
     }
 }
 
 /// The value the request builder's input is seeded with: the example when documented, the
 /// default otherwise.
-fn seed(p: &Value) -> String {
-    if let Some(example) = field(p, "example") {
+fn seed(example: Option<&Value>, schema: Option<&Value>) -> String {
+    if let Some(example) = example {
         return flat_value(example);
     }
-    match p.get("schema").and_then(|s| field(s, "default")) {
+    match schema.and_then(|s| field(s, "default")) {
         Some(Value::String(default)) => default.clone(),
         Some(default) => default.to_string(),
         None => String::new(),
@@ -637,7 +633,7 @@ mod tests {
         assert!(!responses[1].ok);
         assert_eq!(responses[1].refs, Vec::<String>::new());
         // The referenced schema lands in the appendix with its anchor id.
-        assert_eq!(page.schemas_toc[0].href, "schema-Thing");
+        assert_eq!(page.schemas[0].anchor_id, "schema-Thing");
     }
 
     #[test]

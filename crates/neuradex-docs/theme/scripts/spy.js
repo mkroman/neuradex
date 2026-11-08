@@ -4,7 +4,7 @@
 (function () {
   'use strict';
 
-  const { $ } = window.docsUI;
+  const { tocLink } = window.docsUI;
   const doc = document;
 
   /* ---------------------------------------------------------- scrollspy */
@@ -19,7 +19,7 @@
       a.removeAttribute('aria-current');
     });
     if (!id) return;
-    const a = $('#toc a[href="#' + id + '"]');
+    const a = tocLink(id);
     if (a) {
       a.classList.add('active');
       a.setAttribute('aria-current', 'true');

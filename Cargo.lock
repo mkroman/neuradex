@@ -212,7 +212,6 @@ checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
 dependencies = [
  "axum-core",
  "bytes",
- "form_urlencoded",
  "futures-util",
  "http",
  "http-body",
@@ -228,7 +227,6 @@ dependencies = [
  "serde_core",
  "serde_json",
  "serde_path_to_error",
- "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tower",
@@ -273,7 +271,7 @@ dependencies = [
  "mime",
  "pin-project-lite",
  "serde_core",
- "serde_html_form 0.2.8",
+ "serde_html_form",
  "serde_path_to_error",
  "tower-layer",
  "tower-service",
@@ -1440,7 +1438,6 @@ name = "kagi"
 version = "0.1.0"
 dependencies = [
  "htmlize",
- "regex",
  "reqwest",
  "scraper",
  "secrecy",
@@ -1657,7 +1654,6 @@ dependencies = [
  "neuradex-docs",
  "secrecy",
  "serde",
- "serde_html_form 0.4.1",
  "serde_json",
  "thiserror",
  "tokio",
@@ -1676,6 +1672,7 @@ name = "neuradex-docs"
 version = "0.1.0"
 dependencies = [
  "askama",
+ "htmlize",
  "lightningcss",
  "serde_json",
  "tracing",
@@ -2231,7 +2228,6 @@ dependencies = [
  "rustls-pki-types",
  "rustls-platform-verifier",
  "serde",
- "serde_json",
  "serde_urlencoded",
  "sync_wrapper",
  "tokio",
@@ -2509,19 +2505,6 @@ dependencies = [
  "itoa",
  "ryu",
  "serde_core",
-]
-
-[[package]]
-name = "serde_html_form"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f0346d7a342ab90f405cfc08f25d15075f944f42fcabbc5eac923829fa6d228"
-dependencies = [
- "form_urlencoded",
- "indexmap",
- "itoa",
- "serde_core",
- "zmij",
 ]
 
 [[package]]
@@ -2949,7 +2932,6 @@ dependencies = [
  "tokio",
  "tower-layer",
  "tower-service",
- "tracing",
 ]
 
 [[package]]
@@ -2993,7 +2975,6 @@ version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
- "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",

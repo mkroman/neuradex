@@ -88,18 +88,19 @@ pub(crate) async fn peek(
     let url = params.url()?;
     let redirects = params.redirects()?;
     let includes = params.includes(PEEK_INCLUDES)?;
+    let requested = url.to_string();
 
     let started = Instant::now();
-    let (response, fetched) = redirect::fetch(&state.client, url.clone(), redirects).await?;
+    let (response, fetched) =
+        redirect::fetch(&state.client, url, redirects, includes.redirects).await?;
 
-    stream::ensure_text_content(&response)?;
+    stream::ensure_text_content(fetched.info.content_type.as_deref())?;
 
     let read = stream::read(response, stream::Mode::Head).await?;
-    let metrics =
-        fetched.into_metrics(read.bytes_read, read.truncated, includes.redirects, started);
+    let metrics = fetched.into_metrics(read.bytes_read, read.truncated, started);
 
     Ok(Json(PeekResponse {
-        url: url.to_string(),
+        url: requested,
         metadata: read.metadata,
         metrics,
     }))

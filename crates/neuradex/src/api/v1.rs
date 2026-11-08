@@ -18,7 +18,9 @@ use std::time::Duration;
 use axum::Extension;
 use axum::Json;
 use axum::Router;
-#[cfg(feature = "docs")]
+#[cfg(feature = "utoipa")]
+use axum::body::Bytes;
+#[cfg(any(feature = "docs", feature = "utoipa"))]
 use axum::http::header;
 use axum::http::{Method, StatusCode, Uri};
 #[cfg(feature = "utoipa")]
@@ -187,6 +189,11 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
 /// feature the page at `/docs` and the legacy `/swagger-ui` redirect are added. These
 /// infrastructure endpoints are hand-registered like the fallbacks — they are not
 /// OpenAPI-documented operations.
+///
+/// # Panics
+///
+/// Panics if the OpenAPI document cannot be serialized to JSON, which cannot happen for a
+/// document derived by `utoipa`.
 pub fn router(state: AppState) -> Router {
     #[cfg(feature = "utoipa")]
     let (router, openapi) = api();
@@ -194,10 +201,17 @@ pub fn router(state: AppState) -> Router {
     let router = api();
 
     #[cfg(feature = "utoipa")]
-    let router = router.route(
-        "/openapi.json",
-        get(serve_openapi).layer(Extension(openapi)),
-    );
+    let router = {
+        // Serialize once at startup: the document is static, and the extension clone per request
+        // is then just a refcount bump instead of a deep clone plus serialization.
+        let document =
+            serde_json::to_vec(&openapi).expect("the OpenAPI document is always serializable");
+
+        router.route(
+            "/openapi.json",
+            get(serve_openapi).layer(Extension(Bytes::from(document))),
+        )
+    };
 
     #[cfg(feature = "docs")]
     let router = router
@@ -227,22 +241,22 @@ async fn docs() -> impl IntoResponse {
     static PAGE: OnceLock<String> = OnceLock::new();
 
     #[cfg(not(debug_assertions))]
-    let body = PAGE.get_or_init(render_docs_page).clone();
+    let body = axum::body::Body::from(Bytes::from_static(
+        PAGE.get_or_init(render_docs_page).as_bytes(),
+    ));
     #[cfg(debug_assertions)]
-    let body = render_docs_page();
+    let body = axum::body::Body::from(render_docs_page());
 
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body)
 }
 
 /// Serves the OpenAPI document as JSON at `GET /openapi.json`.
 ///
-/// The document is the one [`api`] derives from the routes, injected as an extension at router
-/// construction, so what is served cannot drift from the API operations.
+/// The document is the one [`api`] derives from the routes, serialized once when the router is
+/// built and injected as an extension, so what is served cannot drift from the API operations.
 #[cfg(feature = "utoipa")]
-async fn serve_openapi(
-    Extension(document): Extension<utoipa::openapi::OpenApi>,
-) -> impl IntoResponse {
-    Json(document)
+async fn serve_openapi(Extension(document): Extension<Bytes>) -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "application/json")], document)
 }
 
 /// Redirects the legacy Swagger UI paths to [`docs`].

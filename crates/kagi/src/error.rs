@@ -12,6 +12,9 @@ pub enum Error {
     /// The response body of the stream request could not be read.
     #[error("could not read response body of stream request")]
     StreamRequestBody(#[source] reqwest::Error),
+    /// The stream response could not be processed on a blocking task.
+    #[error("could not process the response")]
+    ParseTask(#[source] tokio::task::JoinError),
     /// The nonce request could not be sent.
     #[error("could not send nonce request")]
     RequestNonce(#[source] reqwest::Error),

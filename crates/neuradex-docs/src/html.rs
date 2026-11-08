@@ -1,22 +1,12 @@
 //! HTML and JSON helpers shared by the page renderer.
 
+use std::borrow::Cow;
+
 use serde_json::Value;
 
-/// Escapes a string for HTML text nodes and attribute values.
-#[must_use]
-pub fn esc(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(c),
-        }
-    }
-    out
+/// Appends `s` to `out`, escaping it for HTML text nodes and attribute values.
+pub fn push_escaped(out: &mut String, s: &str) {
+    out.push_str(&htmlize::escape_all_quotes(s));
 }
 
 /// Renders description prose: backtick-delimited spans become inline `<code>` elements,
@@ -27,11 +17,11 @@ pub fn prose(text: &str) -> String {
     let mut out = String::new();
     let mut rest = text;
     while let Some(open) = rest.find('`') {
-        out.push_str(&esc(&rest[..open]));
+        push_escaped(&mut out, &rest[..open]);
         let body = &rest[open + 1..];
         if let Some(close) = body.find('`') {
             out.push_str("<code>");
-            out.push_str(&esc(&body[..close]));
+            push_escaped(&mut out, &body[..close]);
             out.push_str("</code>");
             rest = &body[close + 1..];
         } else {
@@ -40,7 +30,7 @@ pub fn prose(text: &str) -> String {
             rest = body;
         }
     }
-    out.push_str(&esc(rest));
+    push_escaped(&mut out, rest);
     out
 }
 
@@ -98,8 +88,12 @@ pub fn resolve_ref<'a>(spec: &'a Value, reference: &str) -> Option<&'a Value> {
     let pointer = reference.strip_prefix("#/")?;
     let mut node = spec;
     for part in pointer.split('/') {
-        let key = part.replace("~1", "/").replace("~0", "~");
-        node = node.get(&key)?;
+        let key = if part.contains('~') {
+            Cow::Owned(part.replace("~1", "/").replace("~0", "~"))
+        } else {
+            Cow::Borrowed(part)
+        };
+        node = node.get(key.as_ref())?;
     }
     Some(node)
 }
@@ -110,8 +104,15 @@ mod tests {
 
     #[test]
     fn escapes_markup() {
-        assert_eq!(esc("a<b>&\"'"), "a&lt;b&gt;&amp;&quot;&#39;");
-        assert_eq!(esc("plain"), "plain");
+        let mut out = String::new();
+        push_escaped(&mut out, "a<b>&\"'");
+
+        assert_eq!(out, "a&lt;b&gt;&amp;&quot;&apos;");
+
+        let mut plain = String::new();
+        push_escaped(&mut plain, "plain");
+
+        assert_eq!(plain, "plain");
     }
 
     #[test]

@@ -160,11 +160,15 @@ impl IntoResponse for ApiError {
 
         // 5xx bodies stay generic per the "Invariants" rule: the details are for the logs,
         // never for the client.
-        let message = if status.is_server_error() {
+        if status.is_server_error() {
             tracing::error!(kind, message = %self, "request failed");
-            generic_message(kind).to_owned()
-        } else {
-            self.to_string()
+        }
+
+        // 4xx variants already own their client-facing message; only the 5xx classes need a
+        // generic replacement.
+        let message = match self {
+            Self::InvalidParam(message) | Self::UnsupportedMediaType(message) => message,
+            Self::Upstream(_) | Self::Internal(_) => generic_message(kind).to_owned(),
         };
 
         let body = ErrorBody {

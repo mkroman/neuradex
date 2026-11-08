@@ -237,7 +237,6 @@ mod tests {
         );
 
         // The 200 response is a bare array of results — the shape Open WebUI expects.
-        // The 200 response is a bare array of results — the shape Open WebUI expects.
         let response_schema =
             &rendered["responses"]["200"]["content"]["application/json"]["schema"];
         assert_eq!(response_schema["type"], "array");

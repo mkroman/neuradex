@@ -84,15 +84,11 @@ pub(crate) struct Fetched {
 
 impl Fetched {
     /// Assembles the request metrics from this fetch outcome and the body read.
-    ///
-    /// The intermediate hops are included only when `include_hops` is requested through
-    /// `include=redirects`.
     #[must_use]
     pub(crate) fn into_metrics(
         self,
         bytes_read: u64,
         truncated: bool,
-        include_hops: bool,
         started: Instant,
     ) -> Metrics {
         Metrics {
@@ -105,7 +101,7 @@ impl Fetched {
             ttfb_ms: duration_ms(self.headers_elapsed),
             total_ms: duration_ms(started.elapsed()),
             redirects_followed: self.followed,
-            redirects: if include_hops { self.hops } else { Vec::new() },
+            redirects: self.hops,
             truncated,
         }
     }
@@ -114,11 +110,13 @@ impl Fetched {
 /// Sends GET requests, following at most `max_redirects` redirects by hand.
 ///
 /// When the budget is exhausted on a redirect response, that response is returned as the final
-/// response; the caller can see the truncation through [`Fetched::followed`].
+/// response; the caller can see the truncation through [`Fetched::followed`]. Intermediate hops
+/// are only recorded when `collect_hops` is set; `followed` always counts them.
 pub(crate) async fn fetch(
     client: &wreq::Client,
     url: Url,
     max_redirects: u32,
+    collect_hops: bool,
 ) -> Result<(wreq::Response, Fetched), ApiError> {
     let started = Instant::now();
     let mut current = url;
@@ -136,10 +134,14 @@ pub(crate) async fn fetch(
             && followed < max_redirects
         {
             followed += 1;
-            hops.push(RedirectHop {
-                status: response.status().as_u16(),
-                url: current.to_string(),
-            });
+
+            if collect_hops {
+                hops.push(RedirectHop {
+                    status: response.status().as_u16(),
+                    url: current.to_string(),
+                });
+            }
+
             current = target;
 
             continue;

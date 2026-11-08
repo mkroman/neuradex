@@ -7,7 +7,8 @@
 //! falling back to the embedded copies when a file cannot be read.
 
 #[cfg(debug_assertions)]
-use std::path::Path;
+use std::path::{Path, PathBuf};
+#[cfg(debug_assertions)]
 use std::sync::OnceLock;
 
 /// One theme source file: its path under `theme/` and its embedded copy.
@@ -165,47 +166,35 @@ pub fn bootstrap_raw() -> String {
     }
 }
 
-/// The stylesheet sources as one string, cached at first call — for the public accessor,
-/// whose `&'static str` signature cannot honor per-call disk reads.
-pub fn style() -> &'static str {
-    static STYLE: OnceLock<String> = OnceLock::new();
-    STYLE.get_or_init(style_raw)
-}
-
-/// The behavior scripts as one string, cached at first call — for the public accessor,
-/// whose `&'static str` signature cannot honor per-call disk reads.
-pub fn behavior() -> &'static str {
-    static BEHAVIOR: OnceLock<String> = OnceLock::new();
-    BEHAVIOR.get_or_init(behavior_raw)
-}
-
-/// The pre-paint theme bootstrap, cached at first call — for the public accessor, whose
-/// `&'static str` signature cannot honor per-call disk reads.
-pub fn bootstrap() -> &'static str {
-    static BOOTSTRAP_TEXT: OnceLock<String> = OnceLock::new();
-    BOOTSTRAP_TEXT.get_or_init(bootstrap_raw)
-}
-
 /// The theme directory the debug builds re-read from.
 #[cfg(debug_assertions)]
 fn theme_dir() -> &'static Path {
-    static DIR: OnceLock<&'static Path> = OnceLock::new();
-    DIR.get_or_init(|| {
-        Box::leak(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("theme")
-                .into_boxed_path(),
-        )
-    })
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+
+    DIR.get_or_init(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("theme"))
+        .as_path()
 }
 
 /// Joins sources with a separating newline.
 fn join<T: AsRef<str>>(sources: &[T]) -> String {
-    sources
+    let Some((first, rest)) = sources.split_first() else {
+        return String::new();
+    };
+
+    let capacity = sources
         .iter()
-        .map(AsRef::as_ref)
-        .collect::<Vec<_>>()
-        .join("\n")
+        .map(|source| source.as_ref().len())
+        .sum::<usize>()
+        + rest.len();
+    let mut out = String::with_capacity(capacity);
+    out.push_str(first.as_ref());
+
+    for source in rest {
+        out.push('\n');
+        out.push_str(source.as_ref());
+    }
+
+    out
 }
 
 #[cfg(test)]
@@ -217,7 +206,7 @@ mod tests {
     use super::*;
 
     /// A fresh throwaway directory per test, so fixtures never collide.
-    fn temp_dir(tag: &str) -> std::path::PathBuf {
+    fn temp_dir(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())

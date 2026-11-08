@@ -103,44 +103,12 @@ pub(crate) async fn search(
     let started = Instant::now();
     let timeout = params.timeout.map(Duration::from_secs);
 
-    let timed_out = |timeout: Option<Duration>| {
-        ApiError::upstream(timeout.map_or_else(
-            || "the search timed out".to_owned(),
-            |timeout| format!("the search timed out after {}s", timeout.as_secs()),
-        ))
-    };
-
-    // Blocks while all search slots are busy; FIFO order. Dropping the permit — including when
-    // the surrounding timeout cancels the future mid-search — releases the slot.
-    let (_permit, queue_ms, mut results) =
-        tokio::time::timeout(timeout.unwrap_or(Duration::MAX), async {
-            let permit = state
-                .search_gate
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|error| {
-                    ApiError::internal(format!("the search gate is closed: {error}"))
-                })?;
-            let queue_ms = redirect::duration_ms(started.elapsed());
-
-            let results: Vec<SearchResult> = state
-                .kagi_client
-                .search(&params.query)
-                .await
-                .map_err(|error| ApiError::upstream(error.to_string()))?
-                .into_iter()
-                .map(SearchResult::from)
-                .collect();
-
-            Ok::<_, ApiError>((permit, queue_ms, results))
-        })
-        .await
-        .map_err(|_| timed_out(timeout))??;
-
-    if let Some(limit) = params.limit {
-        results.truncate(limit);
-    }
+    let (queue_ms, results) = run_queued_search(&state, &params.query, timeout).await?;
+    let results: Vec<SearchResult> = results
+        .into_iter()
+        .take(params.limit.unwrap_or(usize::MAX))
+        .map(SearchResult::from)
+        .collect();
 
     let metrics = SearchMetrics {
         queue_ms,
@@ -153,6 +121,46 @@ pub(crate) async fn search(
         results,
         metrics,
     }))
+}
+
+/// Runs a search behind the shared search gate, returning the queue wait and the raw results.
+///
+/// The gate blocks while all slots are busy, in FIFO order. Dropping the permit — including when
+/// the surrounding timeout cancels the future mid-search — releases the slot. The optional
+/// `timeout` covers the queue wait, the session wait, and the search itself.
+pub(crate) async fn run_queued_search(
+    state: &AppState,
+    query: &str,
+    timeout: Option<Duration>,
+) -> Result<(u64, Vec<kagi::SearchResult>), ApiError> {
+    let queued = Instant::now();
+
+    let search = async {
+        let permit = state
+            .search_gate
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|error| ApiError::internal(format!("the search gate is closed: {error}")))?;
+        let queue_ms = redirect::duration_ms(queued.elapsed());
+
+        let results = state
+            .kagi_client
+            .search(query)
+            .await
+            .map_err(|error| ApiError::upstream(error.to_string()))?;
+
+        Ok::<_, ApiError>((permit, queue_ms, results))
+    };
+
+    let (_permit, queue_ms, results) = match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, search).await.map_err(|_| {
+            ApiError::upstream(format!("the search timed out after {}s", timeout.as_secs()))
+        })??,
+        None => search.await?,
+    };
+
+    Ok((queue_ms, results))
 }
 
 #[cfg(test)]
