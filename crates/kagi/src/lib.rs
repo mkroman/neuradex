@@ -71,6 +71,11 @@ pub const DEFAULT_MAX_SESSIONS: usize = 2;
 /// Options for configuring a Kagi [`Client`].
 #[derive(Clone, Debug)]
 pub struct ClientOptions {
+    /// The base URL of the Kagi service.
+    ///
+    /// Defaults to [`BASE_URL`]. Overriding it is useful for testing against a local mock
+    /// server or for pointing the client at a compatible deployment.
+    pub base_url: String,
     /// The duration before an HTTP request times out.
     pub timeout: Duration,
     /// The `User-Agent` header sent with requests.
@@ -91,6 +96,7 @@ pub struct ClientOptions {
 impl Default for ClientOptions {
     fn default() -> Self {
         Self {
+            base_url: BASE_URL.to_string(),
             timeout: HTTP_TIMEOUT,
             user_agent: USER_AGENT.to_string(),
             session_duration: SESSION_DURATION,

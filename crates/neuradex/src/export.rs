@@ -44,32 +44,15 @@ fn write(path: &Path, contents: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     use serde_json::Value;
+    use tempfile::tempdir;
 
     use super::*;
 
-    /// Returns a unique scratch directory for a test, creating it.
-    fn scratch_dir(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("the clock is after the unix epoch")
-            .as_nanos();
-
-        let dir = std::env::temp_dir().join(format!(
-            "neuradex-export-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).expect("the scratch directory is created");
-
-        dir
-    }
-
     #[test]
     fn writes_the_documentation_page() {
-        let output = scratch_dir("page").join("docs.html");
+        let dir = tempdir().expect("a temporary directory");
+        let output = dir.path().join("docs.html");
 
         run(&output, None).expect("the export succeeds");
 
@@ -88,8 +71,11 @@ mod tests {
 
     #[test]
     fn writes_the_openapi_spec_alongside_the_page() {
-        let dir = scratch_dir("spec");
-        let (output, spec) = (dir.join("docs.html"), dir.join("openapi.json"));
+        let dir = tempdir().expect("a temporary directory");
+        let (output, spec) = (
+            dir.path().join("docs.html"),
+            dir.path().join("openapi.json"),
+        );
 
         run(&output, Some(&spec)).expect("the export succeeds");
 

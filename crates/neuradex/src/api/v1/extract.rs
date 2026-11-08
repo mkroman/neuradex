@@ -256,6 +256,8 @@ impl SearchParams {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+
     use axum::http::Uri;
     use axum_extra::extract::{Query, QueryRejection};
 
@@ -338,7 +340,7 @@ mod tests {
     fn rejects_out_of_range_redirects() {
         let query = fetch_params("url=https://example.com&redirects=6").expect("valid");
 
-        assert!(matches!(query.redirects(), Err(ApiError::InvalidParam(_))));
+        assert_matches!(query.redirects(), Err(ApiError::InvalidParam(_)));
 
         assert!(fetch_params("url=https://example.com&redirects=-1").is_err());
     }
@@ -353,16 +355,16 @@ mod tests {
         assert!(fetch_params("").is_err());
 
         let query = fetch_params("url=not%20a%20url").expect("valid");
-        assert!(matches!(query.url(), Err(ApiError::InvalidParam(_))));
+        assert_matches!(query.url(), Err(ApiError::InvalidParam(_)));
     }
 
     #[test]
     fn validates_includes_against_each_endpoints_allow_list() {
         let query = fetch_params("url=https://example.com&include=nope").expect("valid");
-        assert!(matches!(
+        assert_matches!(
             query.includes(FETCH_INCLUDES),
             Err(ApiError::InvalidParam(_))
-        ));
+        );
 
         // `include=headers` is valid for the fetch endpoint, but not for peek.
         let peek_query = fetch_params("url=https://example.com&include=headers").expect("valid");
@@ -410,8 +412,9 @@ mod tests {
         ] {
             let query = search_params(raw).expect("valid");
 
-            assert!(
-                matches!(query.validate(), Err(ApiError::InvalidParam(message)) if message.contains(expected)),
+            assert_matches!(
+                query.validate(),
+                Err(ApiError::InvalidParam(message)) if message.contains(expected),
                 "expected {raw} to be rejected"
             );
         }
@@ -433,7 +436,7 @@ mod tests {
             .expect("valid uri");
         let Query(query) = Query::<SearchParams>::try_from_uri(&uri).expect("valid query");
 
-        assert!(matches!(query.validate(), Err(ApiError::InvalidParam(_))));
+        assert_matches!(query.validate(), Err(ApiError::InvalidParam(_)));
     }
 
     #[test]

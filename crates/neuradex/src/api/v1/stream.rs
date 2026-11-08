@@ -220,6 +220,8 @@ pub(crate) fn headers_to_json(headers: &HeaderMap) -> BTreeMap<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+
     use wreq::header::CONTENT_LENGTH;
 
     use super::*;
@@ -244,10 +246,10 @@ mod tests {
         assert!(ensure_text_content(Some("text/html")).is_ok());
         assert!(ensure_text_content(None).is_ok());
         assert!(ensure_text_content(Some("")).is_ok());
-        assert!(matches!(
+        assert_matches!(
             ensure_text_content(Some("image/png")),
             Err(ApiError::UnsupportedMediaType(_))
-        ));
+        );
     }
 
     #[test]

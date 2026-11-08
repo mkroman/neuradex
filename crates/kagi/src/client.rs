@@ -1,6 +1,4 @@
 use std::{
-    future::Future,
-    pin::Pin,
     sync::{Arc, LazyLock, Mutex},
     time::Duration,
 };
@@ -20,7 +18,7 @@ use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 use tokio::time::Instant;
 use tracing::{debug, error};
 
-use super::{BASE_URL, ClientOptions, Error, ImageResult, SearchResult};
+use super::{ClientOptions, Error, ImageResult, SearchResult};
 
 /// The base duration of the exponential backoff between session fetch retries.
 const BACKOFF_BASE: Duration = Duration::from_millis(500);
@@ -181,14 +179,6 @@ impl Drop for SessionLease {
     }
 }
 
-/// Produces the nonce for a fresh session with the given HTTP client.
-///
-/// The production implementation performs the session-cookie and nonce requests; tests supply
-/// a mock. The future borrows the session's HTTP client so that its requests land in the
-/// session's cookie jar.
-type SessionFetchFuture<'a> = Pin<Box<dyn Future<Output = Result<String, Error>> + Send + 'a>>;
-type SessionFetcher = dyn for<'a> Fn(&'a reqwest::Client) -> SessionFetchFuture<'a> + Send + Sync;
-
 /// Client for searching with Kagi.
 ///
 /// The client keeps a pool of up to [`ClientOptions::max_sessions`] persistent sessions. Each
@@ -200,6 +190,8 @@ type SessionFetcher = dyn for<'a> Fn(&'a reqwest::Client) -> SessionFetchFuture<
 pub struct Client {
     /// Kagi login token.
     token: Arc<SecretString>,
+    /// The base URL of the Kagi service.
+    base_url: reqwest::Url,
     /// The `Accept-Language` header sent with requests.
     language: HeaderValue,
     /// The maximum number of simultaneous sessions.
@@ -216,8 +208,6 @@ pub struct Client {
     creation: AsyncMutex<()>,
     /// Signals requests waiting for a session to be checked back in; one permit per check-in.
     check_in: Arc<Semaphore>,
-    /// Produces the nonce for a fresh session.
-    fetch: Box<SessionFetcher>,
 }
 
 impl Client {
@@ -228,10 +218,10 @@ impl Client {
     ///
     /// # Panics
     ///
-    /// Panics if the HTTP client fails to build.
+    /// Panics if the default options are invalid; they are compile-time constants.
     pub fn with_token(token: impl Into<SecretString>) -> Client {
         Self::with_token_and_options(token, &ClientOptions::default())
-            .expect("could not build http client")
+            .expect("the default client options are valid")
     }
 
     /// Constructs a new [`Client`] for searching with Kagi using the given session token and
@@ -239,46 +229,20 @@ impl Client {
     ///
     /// The token is the value of the `kagi_session` cookie from an authenticated browser session.
     ///
-    /// # Panics
-    ///
-    /// Panics if the HTTP client fails to build.
-    ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidHeader`] if a configured header value is invalid.
+    /// Returns [`Error::InvalidHeader`] if a configured header value is invalid, or
+    /// [`Error::InvalidBaseUrl`] if [`ClientOptions::base_url`] is not a valid URL.
     pub fn with_token_and_options(
         token: impl Into<SecretString>,
         options: &ClientOptions,
     ) -> Result<Client, Error> {
-        let token = Arc::new(token.into());
-        let language = HeaderValue::from_str(&options.language)?;
+        let base_url = reqwest::Url::parse(&options.base_url)
+            .map_err(|error| Error::InvalidBaseUrl(error.to_string()))?;
 
-        let fetch: Box<SessionFetcher> = {
-            let token = Arc::clone(&token);
-
-            Box::new(move |http: &reqwest::Client| -> SessionFetchFuture<'_> {
-                let token = Arc::clone(&token);
-                let language = language.clone();
-
-                Box::pin(async move { http_fetch_session(http, &token, &language).await })
-            })
-        };
-
-        Self::assemble(token, options, fetch)
-    }
-
-    /// Assembles a client from its parts. Split out so tests can supply their own fetcher.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::InvalidHeader`] if a configured header value is invalid.
-    fn assemble(
-        token: Arc<SecretString>,
-        options: &ClientOptions,
-        fetch: Box<SessionFetcher>,
-    ) -> Result<Client, Error> {
         Ok(Client {
-            token,
+            token: Arc::new(token.into()),
+            base_url,
             language: HeaderValue::from_str(&options.language)?,
             max_sessions: options.max_sessions.max(1),
             session_duration: options.session_duration,
@@ -287,7 +251,6 @@ impl Client {
             slots: Mutex::new(Vec::new()),
             creation: AsyncMutex::new(()),
             check_in: Arc::new(Semaphore::new(0)),
-            fetch,
         })
     }
 
@@ -511,7 +474,7 @@ impl Client {
 
     /// Fetches a fresh session for the given checked-out slot.
     async fn fetch_session(&self, slot: &Slot) -> Result<Session, Error> {
-        match (self.fetch)(&slot.http).await {
+        match http_fetch_session(&slot.http, &self.base_url, &self.token, &self.language).await {
             Ok(nonce) => {
                 {
                     let mut inner = slot.inner.lock().unwrap();
@@ -569,8 +532,12 @@ impl Client {
         let mut lease = self.acquire().await?;
         let nonce = lease.take_nonce();
 
-        let url = url_with_query(&format!("/socket/{endpoint}"), &[("q", query)]);
-        let referer = url_with_query(&format!("/{endpoint}"), &[("q", query)]);
+        let url = url_with_query(
+            &self.base_url,
+            &format!("/socket/{endpoint}"),
+            &[("q", query)],
+        );
+        let referer = url_with_query(&self.base_url, &format!("/{endpoint}"), &[("q", query)]);
         let req = stream_request(lease.http(), &self.token, &self.language, url)
             .header(REFERER, referer.as_str());
         let req = if let Some(nonce) = nonce {
@@ -642,10 +609,11 @@ impl Client {
 /// for the session's first stream request.
 async fn http_fetch_session(
     http: &reqwest::Client,
+    base_url: &reqwest::Url,
     token: &SecretString,
     language: &HeaderValue,
 ) -> Result<String, Error> {
-    let token_url = url_with_query("/search", &[("token", token.expose_secret())]);
+    let token_url = url_with_query(base_url, "/search", &[("token", token.expose_secret())]);
     debug!("requesting session cookies");
 
     let res = document_request(http, token, language, token_url.as_str())
@@ -658,7 +626,7 @@ async fn http_fetch_session(
     }
 
     debug!("requesting nonce");
-    let res = document_request(http, token, language, BASE_URL)
+    let res = document_request(http, token, language, base_url.as_str())
         .send()
         .await
         .map_err(Error::RequestNonce)?;
@@ -724,14 +692,20 @@ fn invalidates_session(status: StatusCode) -> bool {
     matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
 }
 
-/// Builds a Kagi URL with the given query parameters, percent-encoding as needed.
+/// Builds a URL under `base` with the given query parameters, percent-encoding as needed.
 ///
 /// # Panics
 ///
-/// Panics if the static [`BASE_URL`] is not a valid URL.
-fn url_with_query(path: &str, params: &[(&str, &str)]) -> reqwest::Url {
-    reqwest::Url::parse_with_params(&format!("{BASE_URL}{path}"), params)
-        .expect("the static base url always produces a valid url")
+/// Panics if `base` cannot be joined with `path`; `base` is an HTTP(S) URL validated by
+/// [`Client::with_token_and_options`], so this cannot happen.
+fn url_with_query(base: &reqwest::Url, path: &str, params: &[(&str, &str)]) -> reqwest::Url {
+    let mut url = base
+        .join(path)
+        .expect("the validated base url joins request paths");
+
+    url.query_pairs_mut().extend_pairs(params);
+
+    url
 }
 
 // Extracts the `window.sse_nonce` value from the raw HTML content.
@@ -1003,98 +977,10 @@ fn extract_topmost_text(elem: &ElementRef<'_>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        path::PathBuf,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
+    use std::assert_matches;
+    use std::path::PathBuf;
 
     use super::*;
-
-    /// A session fetcher that fails its first `failures` calls, optionally sleeps, and tracks
-    /// the number of concurrent in-flight fetches.
-    struct MockFetch {
-        calls: AtomicUsize,
-        in_flight: AtomicUsize,
-        max_in_flight: AtomicUsize,
-        failures: AtomicUsize,
-        delay: Option<Duration>,
-    }
-
-    impl MockFetch {
-        fn new(failures: u32, delay: Option<Duration>) -> Arc<Self> {
-            Arc::new(Self {
-                calls: AtomicUsize::new(0),
-                in_flight: AtomicUsize::new(0),
-                max_in_flight: AtomicUsize::new(0),
-                failures: AtomicUsize::new(failures as usize),
-                delay,
-            })
-        }
-
-        fn calls(&self) -> usize {
-            self.calls.load(Ordering::Relaxed)
-        }
-
-        fn max_in_flight(&self) -> usize {
-            self.max_in_flight.load(Ordering::Relaxed)
-        }
-
-        async fn hit(&self) -> Result<String, Error> {
-            let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
-
-            if call <= self.failures.load(Ordering::Relaxed) {
-                return Err(Error::Nonce);
-            }
-
-            let in_flight = self.in_flight.fetch_add(1, Ordering::AcqRel) + 1;
-            self.max_in_flight.fetch_max(in_flight, Ordering::AcqRel);
-
-            if let Some(delay) = self.delay {
-                tokio::time::sleep(delay).await;
-            }
-
-            self.in_flight.fetch_sub(1, Ordering::AcqRel);
-
-            Ok(format!("nonce-{call}"))
-        }
-    }
-
-    /// Builds a client whose session fetch is the given mock.
-    fn client_with(
-        token: &str,
-        max_sessions: usize,
-        session_duration: Duration,
-        fetch: Arc<MockFetch>,
-    ) -> Client {
-        let fetcher: Box<SessionFetcher> = Box::new(move |_http: &reqwest::Client| {
-            let mock = Arc::clone(&fetch);
-
-            Box::pin(async move { mock.hit().await })
-        });
-
-        let options = ClientOptions {
-            session_duration,
-            max_sessions,
-            ..ClientOptions::default()
-        };
-
-        Client::assemble(
-            Arc::new(SecretString::from(token.to_owned())),
-            &options,
-            fetcher,
-        )
-        .expect("client options are valid")
-    }
-
-    /// Acquires a session, holds it for the given duration as if streaming a search, and
-    /// releases it.
-    async fn exercise(client: &Client, hold: Duration) -> Result<(), Error> {
-        let lease = client.acquire().await?;
-        tokio::time::sleep(hold).await;
-        drop(lease);
-
-        Ok(())
-    }
 
     fn read_fixture(name: &str) -> String {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1105,363 +991,63 @@ mod tests {
             .expect("fixture is not valid UTF-8")
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn inrush_establishes_sessions_one_at_a_time() {
-        let mock = MockFetch::new(0, Some(Duration::from_millis(5)));
-        let client = client_with("token", 2, Duration::from_secs(60), Arc::clone(&mock));
+    #[test]
+    fn parses_the_legacy_stream_format() {
+        let messages = parse_stream(&read_fixture("search_stream.bin"));
 
-        let hold = Duration::from_millis(5);
-        let (a, b, c, d) = tokio::join!(
-            exercise(&client, hold),
-            exercise(&client, hold),
-            exercise(&client, hold),
-            exercise(&client, hold),
-        );
-
-        a.expect("first search succeeds");
-        b.expect("second search succeeds");
-        c.expect("third search succeeds");
-        d.expect("fourth search succeeds");
-
-        // The inrush of four requests grows the pool to its capacity of two, one session at
-        // a time: exactly two fetches, never more than one in flight.
-        assert_eq!(mock.calls(), 2);
-        assert_eq!(mock.max_in_flight(), 1);
-        assert_eq!(client.slot_count(), 2);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn sequential_requests_reuse_the_session() {
-        let mock = MockFetch::new(0, Some(Duration::from_millis(5)));
-        let client = client_with("token", 2, Duration::from_secs(60), Arc::clone(&mock));
-
-        let hold = Duration::from_millis(1);
-        exercise(&client, hold)
-            .await
-            .expect("first search succeeds");
-        exercise(&client, hold)
-            .await
-            .expect("second search succeeds");
-        exercise(&client, hold)
-            .await
-            .expect("third search succeeds");
-
-        // The session from the first request is still valid, so no further fetches happen.
-        assert_eq!(mock.calls(), 1);
-        assert_eq!(client.slot_count(), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn check_ins_do_not_accumulate_permits_beyond_capacity() {
-        let mock = MockFetch::new(0, Some(Duration::from_millis(1)));
-        let client = client_with("token", 2, Duration::from_secs(60), Arc::clone(&mock));
-
-        for _ in 0..10 {
-            exercise(&client, Duration::from_millis(1))
-                .await
-                .expect("search succeeds");
-        }
-
-        assert_eq!(mock.calls(), 1, "the session is reused throughout");
-        assert_eq!(
-            client.check_in.available_permits(),
-            2,
-            "stale check-in permits are capped at the pool capacity"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn request_beyond_capacity_waits_for_a_session() {
-        let mock = MockFetch::new(0, Some(Duration::from_millis(5)));
-        let client = client_with("token", 1, Duration::from_secs(60), Arc::clone(&mock));
-
-        let hold = Duration::from_millis(20);
-        let (a, b) = tokio::join!(exercise(&client, hold), exercise(&client, hold));
-
-        a.expect("first search succeeds");
-        b.expect("second search succeeds");
-
-        // The second request waits for the first to release the session and reuses it.
-        assert_eq!(mock.calls(), 1);
-        assert_eq!(client.slot_count(), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn expired_session_is_refreshed_with_a_new_nonce() {
-        let mock = MockFetch::new(0, Some(Duration::from_millis(1)));
-        let client = client_with("token", 1, Duration::from_millis(30), Arc::clone(&mock));
-
-        exercise(&client, Duration::from_millis(1))
-            .await
-            .expect("first search succeeds");
-        assert_eq!(mock.calls(), 1);
-
-        // Outlive the session duration: the next request refreshes the session.
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        exercise(&client, Duration::from_millis(1))
-            .await
-            .expect("second search succeeds");
-
-        assert_eq!(mock.calls(), 2);
-        assert_eq!(client.slot_count(), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn concurrent_refreshes_are_single_flight() {
-        let mock = MockFetch::new(0, Some(Duration::from_millis(5)));
-        let client = client_with("token", 1, Duration::from_millis(30), Arc::clone(&mock));
-
-        exercise(&client, Duration::from_millis(1))
-            .await
-            .expect("first search succeeds");
-        tokio::time::sleep(Duration::from_millis(40)).await;
-
-        let hold = Duration::from_millis(10);
-        let (a, b) = tokio::join!(exercise(&client, hold), exercise(&client, hold));
-
-        a.expect("first search succeeds");
-        b.expect("second search succeeds");
-
-        // Both requests race on the one expired session: it is refreshed exactly once, with
-        // no more than one fetch in flight; the other request waits and reuses the result.
-        assert_eq!(mock.calls(), 2);
-        assert_eq!(mock.max_in_flight(), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn failed_fetch_backs_off_exponentially() {
-        let mock = MockFetch::new(2, Some(Duration::from_millis(1)));
-        let client = client_with("token", 1, Duration::from_secs(60), Arc::clone(&mock));
-
-        let first = client.acquire().await;
-        assert!(matches!(first, Err(Error::Nonce)), "first fetch fails");
-
-        // The second attempt waits out the first backoff (500 ms) and fails again.
-        let second = client.acquire().await;
-        assert!(matches!(second, Err(Error::Nonce)), "second fetch fails");
-
-        // The third attempt waits out the doubled backoff (1s) and succeeds.
-        let third = client.acquire().await;
-        assert!(third.is_ok(), "third fetch succeeds");
-
-        assert_eq!(mock.calls(), 3);
-        assert_eq!(client.slot_count(), 1);
-
-        // The success resets the backoff.
-        let inner = client.slots.lock().unwrap();
-        assert_eq!(inner.first().unwrap().inner.lock().unwrap().failures, 0);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn failed_establishment_does_not_grow_the_pool() {
-        let mock = MockFetch::new(1, Some(Duration::from_millis(1)));
-        let client = client_with("token", 2, Duration::from_secs(60), Arc::clone(&mock));
-
-        let first = client.acquire().await;
-        assert!(matches!(first, Err(Error::Nonce)), "first fetch fails");
-        assert_eq!(client.slot_count(), 1, "the empty slot absorbs the retry");
-
-        exercise(&client, Duration::from_millis(1))
-            .await
-            .expect("retry succeeds on the same slot");
-
-        assert_eq!(mock.calls(), 2);
-        assert_eq!(client.slot_count(), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn cancelled_caller_releases_the_session() {
-        let mock = MockFetch::new(0, Some(Duration::from_millis(1)));
-        let client = Arc::new(client_with(
-            "token",
-            1,
-            Duration::from_secs(60),
-            Arc::clone(&mock),
-        ));
-
-        let task = tokio::spawn({
-            let client = Arc::clone(&client);
-
-            async move {
-                let lease = client.acquire().await.expect("session is established");
-                // The lease is dropped when the task is cancelled at this await point.
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                drop(lease);
-            }
-        });
-
-        // Let the task establish the session and park on its hold.
-        tokio::time::sleep(Duration::from_millis(5)).await;
-        assert_eq!(mock.calls(), 1);
-
-        task.abort();
-
-        // The cancelled task released the session: the next request reuses it immediately.
-        exercise(&client, Duration::from_millis(1))
-            .await
-            .expect("second search succeeds");
-        assert_eq!(mock.calls(), 1, "the released session is reused");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn rejected_stream_status_invalidates_the_session() {
-        let mock = MockFetch::new(0, Some(Duration::from_millis(1)));
-        let client = client_with("token", 1, Duration::from_secs(60), Arc::clone(&mock));
-
-        let mut lease = client.acquire().await.expect("session is established");
-        assert_eq!(mock.calls(), 1);
-
-        // Kagi rejects the session's credentials (401/403): the lease is
-        // invalidated the way `stream` does — the session is dropped and the
-        // slot backs off like a failed fetch.
-        lease.invalidate();
-        drop(lease);
-
-        // The rejection backed the slot off.
-        let backed_off = {
-            let inner = client.slots.lock().unwrap();
-
-            inner
-                .first()
-                .unwrap()
-                .inner
-                .lock()
-                .unwrap()
-                .next_retry
-                .is_some()
-        };
-        assert!(backed_off, "the rejection backs the slot off");
-
-        // The next request cannot reuse the dead session: it re-establishes it
-        // after the backoff.
-        client.acquire().await.expect("second search succeeds");
-        assert_eq!(mock.calls(), 2);
-
-        // The success resets the backoff.
-        let inner = client.slots.lock().unwrap();
-        assert_eq!(inner.first().unwrap().inner.lock().unwrap().failures, 0);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn other_stream_statuses_keep_the_session() {
-        let mock = MockFetch::new(0, Some(Duration::from_millis(1)));
-        let client = client_with("token", 1, Duration::from_secs(60), Arc::clone(&mock));
-
-        let lease = client.acquire().await.expect("session is established");
-        assert_eq!(mock.calls(), 1);
-
-        // A rate limit or server error says nothing about the session: it is
-        // parked back and reused.
-        assert!(!invalidates_session(StatusCode::TOO_MANY_REQUESTS));
-        assert!(!invalidates_session(StatusCode::INTERNAL_SERVER_ERROR));
-        drop(lease);
-
-        client.acquire().await.expect("second search succeeds");
-        assert_eq!(mock.calls(), 1, "the parked session is reused");
+        assert_eq!(messages.len(), 8);
     }
 
     #[test]
-    fn backoff_doubles_and_is_bounded() {
-        assert_eq!(backoff_after_failures(1), Duration::from_millis(500));
-        assert_eq!(backoff_after_failures(2), Duration::from_secs(1));
-        assert_eq!(backoff_after_failures(3), Duration::from_secs(2));
-        assert_eq!(backoff_after_failures(5), Duration::from_secs(8));
-        assert_eq!(backoff_after_failures(7), BACKOFF_MAX);
-        assert_eq!(backoff_after_failures(100), BACKOFF_MAX);
-    }
-
-    #[test]
-    fn test_parse_legacy_stream() {
-        let stream = read_fixture("search_stream.bin");
-        let result = parse_kagi_stream(&stream);
-
-        assert_eq!(result.len(), 8); // 8 messages
-    }
-
-    #[test]
-    fn test_parse_sse_stream() {
-        let stream = read_fixture("search_stream_sse.bin");
-        let result = parse_stream(&stream);
+    fn parses_structured_search_results() {
+        let messages = parse_stream(&read_fixture("search_stream_sse.bin"));
 
         assert!(
-            result
+            messages
                 .iter()
                 .any(|message| message.tag == "search_results_json")
         );
-        assert!(result.iter().any(|message| message.tag == "search"));
-        assert!(result.iter().any(|message| message.tag == "search.info"));
-    }
+        assert!(messages.iter().any(|message| message.tag == "search"));
+        assert!(messages.iter().any(|message| message.tag == "search.info"));
 
-    #[test]
-    fn test_extract_nonce() {
-        let html = read_fixture("landing.html");
-        let result = extract_nonce(&html).expect("could not extract nonce");
-
-        assert_eq!(result, "0123456789abcdef0123456789abcdef");
-    }
-
-    #[test]
-    fn extracts_nonce_with_surrounding_whitespace() {
-        assert_eq!(
-            extract_nonce("window.sse_nonce =\n\t\"abc\""),
-            Some("abc".to_owned())
-        );
-        assert_eq!(extract_nonce("window.sse_nonce = \"\""), None);
-        // A malformed marker does not hide a later valid one.
-        assert_eq!(
-            extract_nonce("window.sse_nonce_nope = \"x\"; window.sse_nonce = \"y\""),
-            Some("y".to_owned())
-        );
-    }
-
-    #[test]
-    fn test_search_results_structured() {
-        let stream = read_fixture("search_stream_sse.bin");
-        let messages = parse_stream(&stream);
         let results = parse_search_result_messages(&messages);
 
-        assert_ne!(results, Vec::new());
-
-        let result = results.first().unwrap();
-
-        assert_eq!(result.title, "Hello, world - Wikipedia");
-        assert_eq!(result.url, "https://en.wikipedia.org/wiki/Hello,_world");
+        assert_eq!(results.len(), 5);
+        assert_eq!(results[0].title, "Hello, world - Wikipedia");
+        assert_eq!(results[0].url, "https://en.wikipedia.org/wiki/Hello,_world");
         // Snippets arrive HTML-entity encoded and must be decoded.
-        assert!(result.description.contains('"'));
-        assert!(!result.description.contains("&quot;"));
+        assert!(results[0].description.contains('"'));
+        assert!(!results[0].description.contains("&quot;"));
     }
 
     #[test]
-    fn test_search_results_html_fallback() {
-        let stream = read_fixture("search_stream.bin");
-        let messages = parse_kagi_stream(&stream);
+    fn falls_back_to_html_search_results() {
+        let messages = parse_stream(&read_fixture("search_stream.bin"));
         let results = parse_search_result_messages(&messages);
 
         assert_eq!(results.len(), 19);
-
-        let result = results.first().unwrap();
-
-        assert_eq!(result.title, "Vitamin D - Health Professional Fact Sheet");
         assert_eq!(
-            result.description,
+            results[0].title,
+            "Vitamin D - Health Professional Fact Sheet"
+        );
+        assert_eq!(
+            results[0].description,
             "Vitamin D (also referred to as calciferol) is a fat-soluble vitamin that is naturally present in a few foods, added to others, and available as a dietary ..."
         );
         assert_eq!(
-            result.url,
+            results[0].url,
             "https://ods.od.nih.gov/factsheets/VitaminD-HealthProfessional/"
         );
     }
 
     #[test]
-    fn test_image_results() {
-        let stream = read_fixture("images_stream_sse.bin");
-        let messages = parse_stream(&stream);
+    fn parses_image_results() {
+        let messages = parse_stream(&read_fixture("images_stream_sse.bin"));
         let results = parse_image_result_messages(&messages);
 
         assert_eq!(results.len(), 5);
 
-        let result = results.first().unwrap();
-
+        let result = &results[0];
         assert_eq!(
             result.title,
             "How to Do a Reverse Image Search From Your Phone"
@@ -1486,7 +1072,28 @@ mod tests {
     }
 
     #[test]
-    fn test_session_nonce_is_only_taken_once() {
+    fn extracts_the_nonce_from_the_landing_page() {
+        let nonce = extract_nonce(&read_fixture("landing.html")).expect("could not extract nonce");
+
+        assert_eq!(nonce, "0123456789abcdef0123456789abcdef");
+    }
+
+    #[test]
+    fn extracts_nonces_with_surrounding_whitespace() {
+        assert_eq!(
+            extract_nonce("window.sse_nonce =\n\t\"abc\""),
+            Some("abc".to_owned())
+        );
+        assert_eq!(extract_nonce("window.sse_nonce = \"\""), None);
+        // A malformed marker does not hide a later valid one.
+        assert_eq!(
+            extract_nonce("window.sse_nonce_nope = \"x\"; window.sse_nonce = \"y\""),
+            Some("y".to_owned())
+        );
+    }
+
+    #[test]
+    fn takes_the_session_nonce_only_once() {
         let mut session = Session {
             nonce: Some("nonce".to_string()),
             created_at: Instant::now(),
@@ -1497,15 +1104,38 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_language_is_rejected() {
+    fn backoff_doubles_and_is_bounded() {
+        assert_eq!(backoff_after_failures(1), Duration::from_millis(500));
+        assert_eq!(backoff_after_failures(2), Duration::from_secs(1));
+        assert_eq!(backoff_after_failures(3), Duration::from_secs(2));
+        assert_eq!(backoff_after_failures(5), Duration::from_secs(8));
+        assert_eq!(backoff_after_failures(7), BACKOFF_MAX);
+        assert_eq!(backoff_after_failures(100), BACKOFF_MAX);
+    }
+
+    #[test]
+    fn rejects_an_invalid_language() {
         let options = ClientOptions {
             language: "invalid\nlanguage".to_string(),
             ..ClientOptions::default()
         };
 
-        assert!(matches!(
-            Client::with_token_and_options("token", &options),
-            Err(Error::InvalidHeader(_))
-        ));
+        assert_matches!(
+            Client::with_token_and_options("token", &options).err(),
+            Some(Error::InvalidHeader(_))
+        );
+    }
+
+    #[test]
+    fn rejects_an_invalid_base_url() {
+        let options = ClientOptions {
+            base_url: "not a url".to_string(),
+            ..ClientOptions::default()
+        };
+
+        assert_matches!(
+            Client::with_token_and_options("token", &options).err(),
+            Some(Error::InvalidBaseUrl(_))
+        );
     }
 }

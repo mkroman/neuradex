@@ -93,6 +93,31 @@ impl AppState {
         timeout: Duration,
         max_sessions: usize,
     ) -> Result<Self, BuildError> {
+        let kagi_client = kagi::Client::with_token_and_options(
+            kagi_token,
+            &kagi::ClientOptions {
+                max_sessions,
+                ..kagi::ClientOptions::default()
+            },
+        )?;
+
+        Self::with_kagi_client(user_agent, kagi_client, timeout)
+    }
+
+    /// Constructs the application state around an existing Kagi client.
+    ///
+    /// The page-fetching HTTP client is built with the same production configuration as
+    /// [`AppState::new`]. This is the injection point for a Kagi client pointed at another
+    /// endpoint, such as a local test server.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP client fails to build or a configured header is invalid.
+    pub fn with_kagi_client(
+        user_agent: &str,
+        kagi_client: kagi::Client,
+        timeout: Duration,
+    ) -> Result<Self, BuildError> {
         let default_headers = default_headers(user_agent)?;
 
         let client = wreq::Client::builder()
@@ -103,14 +128,6 @@ impl AppState {
             .redirect(Policy::none())
             .timeout(timeout)
             .build()?;
-
-        let kagi_client = kagi::Client::with_token_and_options(
-            kagi_token,
-            &kagi::ClientOptions {
-                max_sessions,
-                ..kagi::ClientOptions::default()
-            },
-        )?;
 
         Ok(Self {
             client,

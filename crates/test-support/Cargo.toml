@@ -1,0 +1,33 @@
+[package]
+name = "test-support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared HTTP test harnesses for the neuradex workspace."
+publish = false
+
+[features]
+default = []
+# The Kagi client harness; keeps the service and its HTTP stack out of client-level tests.
+client = ["dep:httpmock", "dep:kagi"]
+# The full-service harness, including the Kagi client harness.
+app = [
+    "client",
+    "dep:axum",
+    "dep:neuradex",
+    "dep:secrecy",
+    "dep:serde_json",
+    "dep:tower",
+]
+
+[dependencies]
+axum = { workspace = true, optional = true }
+httpmock = { workspace = true, optional = true }
+kagi = { path = "../kagi", default-features = false, features = ["rustls"], optional = true }
+neuradex = { path = "../neuradex", default-features = false, optional = true }
+secrecy = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+
+[lints]
+workspace = true
