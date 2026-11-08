@@ -90,19 +90,28 @@ jobs:
             echo "build=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          build=true
+          if ! changed="$(git diff --name-only --no-renames "${base}" HEAD)"; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -z "${changed}" ]]; then
+            # An empty diff is unexpected; fail safe and run the build.
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          build=false
           while IFS= read -r file; do
             case "${file}" in
               *.md|docs/*) ;;
               *)
-                build=false
+                build=true
                 break
                 ;;
             esac
-          done < <(git diff --name-only --no-renames "${base}" HEAD)
+          done <<< "${changed}"
           echo "build=${build}" >> "$GITHUB_OUTPUT"
       - name: Set up Docker Buildx
-        if: github.event_name == 'push' || steps.scope.outputs.build == 'true'
+        if: github.event_name == 'push' || steps.scope.outputs.build != 'false'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Log in to GHCR
         if: github.ref == 'refs/heads/main'
@@ -112,7 +121,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build image from local source
-        if: github.event_name == 'push' || steps.scope.outputs.build == 'true'
+        if: github.event_name == 'push' || steps.scope.outputs.build != 'false'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           # The build record/summary uploads add seconds and are not needed here.
@@ -126,13 +135,16 @@ jobs:
             type=registry,ref=ghcr.io/mkroman/neuradex/buildcache
             type=gha,scope=neuradex-kind
           # Only main writes the shared cache, else PRs accumulate per-branch
-          # caches against the repository cache quota.
-          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=registry,ref=ghcr.io/mkroman/neuradex/buildcache,mode=max,ignore-error=true' || '' }}
+          # caches against the repository cache quota. The GHA export is kept so
+          # PRs always have a readable fallback while the GHCR package is private.
+          cache-to: |
+            ${{ github.ref == 'refs/heads/main' && format('type=registry,ref=ghcr.io/{0}/buildcache,mode=max,ignore-error=true', github.repository) || '' }}
+            ${{ github.ref == 'refs/heads/main' && 'type=gha,scope=neuradex-kind,mode=max,ignore-error=true' || '' }}
       - name: Create kind cluster
         id: kind
-        if: github.event_name == 'push' || steps.scope.outputs.build == 'true'
+        if: github.event_name == 'push' || steps.scope.outputs.build != 'false'
         run: |
-          expected=v0.33.0
+          expected="$(awk -F= '$0=="[kind]"{found=1;next} found && /^version=/{print $2; exit}' hack/tools.txt)"
           # The runner image already ships a recent kind; only download when the
           # version does not match the pinned one.
           if [[ "$(kind version 2>/dev/null | awk '{print $2}')" != "${expected}" ]]; then
@@ -144,10 +156,10 @@ jobs:
             --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5 \
             --wait 60s
       - name: Load image into the cluster
-        if: github.event_name == 'push' || steps.scope.outputs.build == 'true'
+        if: github.event_name == 'push' || steps.scope.outputs.build != 'false'
         run: kind load docker-image "$IMAGE" --name neuradex
       - name: Install chart
-        if: github.event_name == 'push' || steps.scope.outputs.build == 'true'
+        if: github.event_name == 'push' || steps.scope.outputs.build != 'false'
         run: |
           helm install neuradex chart/neuradex \
             --set image.repository=ghcr.io/mkroman/neuradex \
@@ -156,7 +168,7 @@ jobs:
             --set kagiSessionToken=ci-dummy \
             --wait --timeout 2m
       - name: Run in-cluster smoke checks (hack/smoke-test.sh)
-        if: github.event_name == 'push' || steps.scope.outputs.build == 'true'
+        if: github.event_name == 'push' || steps.scope.outputs.build != 'false'
         run: |
           kubectl run curl --quiet --restart=Never --image="$CURL_IMAGE" --command -- sleep 300
           kubectl wait --for=condition=Ready pod/curl --timeout=120s

@@ -140,7 +140,7 @@ flush_section() {
   [[ -n "${REPO}" && -n "${VERSION}" && -n "${SHA256}" &&
     -n "${TAG_TEMPLATE}" && -n "${ASSET_TEMPLATE}" &&
     -n "${BINARY_TEMPLATE}" && -n "${ARCHIVE_FORMAT}" ]] ||
-    die "incomplete tools.txt block for ${SECTION}"
+    die "incomplete block for ${SECTION} in ${TOOLS_FILE}"
 
   [[ "${SHA256}" =~ ^[a-f0-9]{64}$ ]] ||
     die "invalid sha256 for ${SECTION}"
@@ -185,12 +185,12 @@ main() {
       continue
     fi
 
-    [[ "${line}" == *=* ]] || die "invalid tools.txt line: ${line}"
+    [[ "${line}" == *=* ]] || die "invalid line in ${TOOLS_FILE}: ${line}"
 
     key="${line%%=*}"
     value="${line#*=}"
 
-    [[ -n "${SECTION}" ]] || die "tools.txt key outside a block: ${key}"
+    [[ -n "${SECTION}" ]] || die "key outside a block in ${TOOLS_FILE}: ${key}"
 
     case "${key}" in
       repo)
@@ -215,7 +215,7 @@ main() {
         ARCHIVE_FORMAT="${value}"
         ;;
       *)
-        die "unknown tools.txt key: ${key}"
+        die "unknown key in ${TOOLS_FILE}: ${key}"
         ;;
     esac
   done <"${TOOLS_FILE}"

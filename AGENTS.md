@@ -36,6 +36,8 @@ Run, in order: `cargo fmt` → `cargo clippy --all-targets --workspace` (CI runs
 
 Do not create new branches or pull requests without being explicitly told to. Work in the current checkout and leave the changes there (committing on the current branch only when asked); finishing the verification pass is not a signal to ship — opening PRs, creating branches, and pushing are explicit-instruction actions.
 
+Don't use `sleep` to watch for PR checks, just use the `gh` CLI with `--wait`.
+
 ## Running locally
 
 - `cargo run` — no arguments start the server; `neuradex export-docs <output.html> [--spec <output.json>]` writes the documentation page (and with `--spec`, the OpenAPI document) to disk. The subcommand never builds `AppState`, so it needs no `KAGI_SESSION_TOKEN` and works from any build with the `docs` feature; in a build without it, the binary prints "this binary was built without the docs feature; rebuild with --features docs" and exits non-zero. Unknown arguments and typo'd subcommands are rejected by clap with the usage on stderr and exit code 2 — they never silently start the server.

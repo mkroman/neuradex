@@ -43,11 +43,11 @@
   ],
   "packageRules": [
     {
-      "description": "Group the pinned cargo tool updates in hack/tools.txt and hack/docker-tools.txt",
+      "description": "Group the pinned CI tool updates in hack/tools.txt and hack/docker-tools.txt",
       "matchDatasources": [
         "github-release-attachments"
       ],
-      "groupName": "cargo tools"
+      "groupName": "pinned CI tools"
     }
   ]
 }
