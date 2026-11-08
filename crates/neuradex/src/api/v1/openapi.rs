@@ -8,11 +8,11 @@
 
 use utoipa::OpenApi;
 
-use crate::api::v1::{
-    error::ErrorBody, fetch::FetchResponse, openwebui_search::OpenWebUiSearchRequest,
-    openwebui_search::OpenWebUiSearchResult, peek::PeekResponse, search::SearchResponse,
-    search::SearchResult,
-};
+use crate::api::v1::error::ErrorBody;
+use crate::api::v1::fetch::FetchResponse;
+use crate::api::v1::openwebui_search::{OpenWebUiSearchRequest, OpenWebUiSearchResult};
+use crate::api::v1::peek::PeekResponse;
+use crate::api::v1::search::{SearchResponse, SearchResult};
 use crate::metadata::PageMetadata;
 use crate::metrics::{Metrics, RedirectHop, SearchMetrics};
 
@@ -57,6 +57,15 @@ pub(crate) fn base() -> utoipa::openapi::OpenApi {
 
 #[cfg(test)]
 mod tests {
+    /// The expected paths, their query parameters, and their tags.
+    const EXPECTED_OPERATIONS: &[(&str, &[&str], &str)] = &[
+        ("/healthz", &[], "healthz"),
+        ("/v1/fetch", &["include", "redirects", "url"], "fetch"),
+        ("/v1/peek", &["include", "redirects", "url"], "peek"),
+        ("/v1/search", &["limit", "query", "timeout"], "search"),
+        ("/v1/openwebui_search", &[], "search"),
+    ];
+
     /// The OpenAPI document derived from the API's routes.
     fn document() -> utoipa::openapi::OpenApi {
         crate::api::v1::api().1
@@ -76,15 +85,28 @@ mod tests {
     }
 
     #[test]
+    fn documents_the_expected_operations() {
+        let document = document();
+        let mut documented: Vec<&str> = document.paths.paths.keys().map(String::as_str).collect();
+        let mut expected: Vec<&str> = EXPECTED_OPERATIONS
+            .iter()
+            .map(|(path, _, _)| *path)
+            .collect();
+        documented.sort_unstable();
+        expected.sort_unstable();
+
+        assert_eq!(documented, expected);
+    }
+
+    #[test]
     fn documents_the_error_responses_on_every_endpoint() {
         let document = document();
 
-        for path in [
-            "/v1/fetch",
-            "/v1/peek",
-            "/v1/search",
-            "/v1/openwebui_search",
-        ] {
+        for &(path, _, _) in EXPECTED_OPERATIONS {
+            if path == "/healthz" {
+                continue;
+            }
+
             let responses = &operation(&document, path).responses;
 
             for status in ["400", "415", "500", "502"] {
@@ -100,13 +122,7 @@ mod tests {
     fn documents_the_query_parameters() {
         let document = document();
 
-        for (path, expected) in [
-            ("/healthz", &[][..]),
-            ("/v1/fetch", &["include", "redirects", "url"][..]),
-            ("/v1/peek", &["include", "redirects", "url"][..]),
-            ("/v1/search", &["limit", "query", "timeout"][..]),
-            ("/v1/openwebui_search", &[][..]),
-        ] {
+        for &(path, expected, _) in EXPECTED_OPERATIONS {
             let rendered = serde_json::to_value(operation(&document, path)).expect("serializes");
 
             let mut names: Vec<&str> = rendered["parameters"]
@@ -148,13 +164,7 @@ mod tests {
     fn tags_the_operations() {
         let document = document();
 
-        for (path, tag) in [
-            ("/healthz", "healthz"),
-            ("/v1/fetch", "fetch"),
-            ("/v1/peek", "peek"),
-            ("/v1/search", "search"),
-            ("/v1/openwebui_search", "search"),
-        ] {
+        for &(path, _, tag) in EXPECTED_OPERATIONS {
             let tags = operation(&document, path).tags.clone().unwrap_or_default();
 
             assert_eq!(tags, [tag], "unexpected tags for {path}");
@@ -165,13 +175,7 @@ mod tests {
     fn summarizes_the_operations() {
         let document = document();
 
-        for path in [
-            "/healthz",
-            "/v1/fetch",
-            "/v1/peek",
-            "/v1/search",
-            "/v1/openwebui_search",
-        ] {
+        for &(path, _, _) in EXPECTED_OPERATIONS {
             let operation = operation(&document, path);
 
             assert!(

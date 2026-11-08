@@ -8,6 +8,7 @@ axum 0.8 HTTP service exposing LLM-agent tools as JSON: `GET /v1/{fetch,peek,sea
 - `crates/neuradex` — the service (binary + lib). Entry: `src/main.rs` (clap) → `src/http.rs::serve`; routes in `src/api/v1.rs`.
 - `crates/neuradex-docs` — renders `/docs` from an `utoipa::openapi::OpenApi`; `render()` is the only entry point the service uses.
 - `crates/kagi` — vendored copy of `kagi` from `github.com/mkroman/zeta` (its `repository` field still points there). Never re-point the dep at the zeta git repo. It carries a **local session-pool divergence** in `client.rs` (pinned by its tests) that a re-vendor must re-apply. A re-vendor also overwrites its `Cargo.toml`, so redo the workspace wiring: shared deps as `workspace = true`, `version`/`edition`/`license` from `[workspace.package]`, `[lints] workspace = true`, `publish = false`. Dependency direction: neuradex → kagi / neuradex-docs, never the reverse; don't move helpers between this repo and zeta.
+- `crates/test-support` — shared HTTP test harnesses (`KagiHarness`, `TestApp`) built on `httpmock`; production crates depend on it only under `[dev-dependencies]`. It is feature-gated (`client` for kagi tests, `app` for service tests) so client tests do not build the whole service, and it depends on the crates under test (the allowed dev-dependency cycle). Keep harness code here rather than in `tests/common` modules.
 - Lints live only in root `[workspace.lints]` (clippy `all`/`pedantic`/`nursery` as warn, `unsafe_code` forbidden, `missing_docs` incl. `# Errors` sections). Members use `[lints] workspace = true`; Cargo rejects per-member overrides.
 - Shared deps (and the tokio feature set) are pinned in `[workspace.dependencies]`; members add features on top. New dependencies must be justified.
 - utoipa's `macros` feature can't be dropped (utoipa 6.0.0 doesn't compile without it), even for neuradex-docs, which never uses the macros.
@@ -23,7 +24,7 @@ Build needs `cmake`, `clang` and `libclang-dev` (wreq compiles BoringSSL). Full 
    - `cargo test -p neuradex --no-default-features` (no utoipa at all)
    - `cargo test -p neuradex --no-default-features --features utoipa`
 
-Also in CI: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features` (all-features pulls in kagi's native-tls/OpenSSL), `shellcheck hack/*.sh`, `cargo-deny ... check advisories` (only advisories gate). Tests are offline: inline `#[cfg(test)]` modules. kagi reads `crates/kagi/tests/fixtures` and stubs the session fetcher.
+Also in CI: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features` (all-features pulls in kagi's native-tls/OpenSSL), `shellcheck hack/*.sh`, `cargo-deny ... check advisories` (only advisories gate). Tests are offline: unit tests are inline `#[cfg(test)]` modules; HTTP integration tests use the `test-support` harness against local `httpmock` servers. Kagi fixtures live in `crates/test-support/fixtures/kagi` and are read through `test_support::kagi::fixture`/`read_fixture`.
 
 ## Running locally
 

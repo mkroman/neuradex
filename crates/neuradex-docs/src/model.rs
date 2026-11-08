@@ -7,8 +7,9 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use crate::html::{field, prose, ref_name, slug, str_field};
-use crate::tree::{self, SchemaNode};
+use crate::html;
+use crate::tree;
+use crate::tree::SchemaNode;
 
 /// The tags pinned to the front of the page, in order; other tags follow in document tag
 /// order. This is a neuradex presentation choice — the tools read top to bottom.
@@ -28,7 +29,7 @@ const HTTP_METHODS: &[(&str, &str)] = &[
 
 /// The documentation page, as data.
 ///
-/// All prose fields (`*_html`) carry pre-rendered HTML — built with [`prose`] or plain
+/// All prose fields (`*_html`) carry pre-rendered HTML — built with [`html::prose`] or plain
 /// escaped text — and are embedded verbatim; every other string field is escaped by the
 /// template.
 pub struct Page {
@@ -130,16 +131,16 @@ impl Anno {
 /// Appends the annotations shared by query parameters and schema properties: `format`,
 /// `default`, and the numeric bounds.
 pub fn common_anns(anns: &mut Vec<Anno>, schema: &Value) {
-    if let Some(format) = str_field(schema, "format") {
+    if let Some(format) = html::str_field(schema, "format") {
         anns.push(Anno::new("format", format.to_owned()));
     }
-    if let Some(default) = field(schema, "default") {
+    if let Some(default) = html::field(schema, "default") {
         anns.push(Anno::new("default", default.to_string()));
     }
-    if let Some(minimum) = field(schema, "minimum") {
+    if let Some(minimum) = html::field(schema, "minimum") {
         anns.push(Anno::new("min", minimum.to_string()));
     }
-    if let Some(maximum) = field(schema, "maximum") {
+    if let Some(maximum) = html::field(schema, "maximum") {
         anns.push(Anno::new("max", maximum.to_string()));
     }
 }
@@ -187,7 +188,7 @@ pub fn page(spec: &Value) -> Page {
         .and_then(Value::as_array)
         .map(|tags| {
             tags.iter()
-                .filter_map(|tag| str_field(tag, "name"))
+                .filter_map(|tag| html::str_field(tag, "name"))
                 .collect()
         })
         .unwrap_or_default();
@@ -210,8 +211,8 @@ pub fn page(spec: &Value) -> Page {
             .and_then(Value::as_array)
             .and_then(|tags| {
                 tags.iter().find_map(|documented| {
-                    (str_field(documented, "name") == Some(tag))
-                        .then(|| str_field(documented, "description"))
+                    (html::str_field(documented, "name") == Some(tag))
+                        .then(|| html::str_field(documented, "description"))
                         .flatten()
                 })
             })
@@ -252,25 +253,25 @@ pub fn page(spec: &Value) -> Page {
     Page {
         title: spec
             .get("info")
-            .and_then(|info| str_field(info, "title"))
+            .and_then(|info| html::str_field(info, "title"))
             .unwrap_or("neuradex")
             .to_owned(),
         version: spec
             .get("info")
-            .and_then(|info| str_field(info, "version"))
+            .and_then(|info| html::str_field(info, "version"))
             .map(str::to_owned),
         description_html: spec
             .get("info")
-            .and_then(|info| str_field(info, "description"))
-            .map_or_else(String::new, prose),
+            .and_then(|info| html::str_field(info, "description"))
+            .map_or_else(String::new, html::prose),
         // The service serves the raw document from its own root; this is the one
         // neuradex-specific path in the model.
         spec_url: "/openapi.json".to_owned(),
-        spec_version: str_field(spec, "openapi").unwrap_or("3.1").to_owned(),
+        spec_version: html::str_field(spec, "openapi").unwrap_or("3.1").to_owned(),
         endpoint_count: endpoints.len(),
         toc_groups,
         endpoints,
-        appendix_intro_html: prose(&format!(
+        appendix_intro_html: html::prose(&format!(
             "Every schema the API references, rendered as collapsible trees — {} in total. \
              Errors resolve to {errors_schema}.",
             schemas.len()
@@ -282,8 +283,8 @@ pub fn page(spec: &Value) -> Page {
 /// Builds the schema appendix: every component schema, in document order, as its own
 /// anchored tree.
 fn schemas(spec: &Value) -> Vec<SchemaDoc> {
-    field(spec, "components")
-        .and_then(|components| field(components, "schemas"))
+    html::field(spec, "components")
+        .and_then(|components| html::field(components, "schemas"))
         .and_then(Value::as_object)
         .map(|schemas| {
             schemas
@@ -315,7 +316,7 @@ fn collect_ops(spec: &Value) -> Vec<Op<'_>> {
             let Some(op) = item.get(method).filter(|op| op.is_object()) else {
                 continue;
             };
-            let base = format!("ep-{}", slug(path));
+            let base = format!("ep-{}", html::slug(path));
             let seen = used_ids.entry(base.clone()).or_insert(0);
             *seen += 1;
             let id = if *seen == 1 {
@@ -333,8 +334,8 @@ fn collect_ops(spec: &Value) -> Vec<Op<'_>> {
                     .and_then(|tags| tags.first())
                     .and_then(Value::as_str)
                     .unwrap_or("other"),
-                summary: str_field(op, "summary"),
-                description: str_field(op, "description"),
+                summary: html::str_field(op, "summary"),
+                description: html::str_field(op, "description"),
                 params: op
                     .get("parameters")
                     .and_then(Value::as_array)
@@ -342,7 +343,7 @@ fn collect_ops(spec: &Value) -> Vec<Op<'_>> {
                         parameters
                             .iter()
                             .filter(|p| {
-                                str_field(p, "in").is_none_or(|location| location == "query")
+                                html::str_field(p, "in").is_none_or(|location| location == "query")
                             })
                             .collect::<Vec<_>>()
                     })
@@ -362,13 +363,13 @@ fn endpoint(spec: &Value, op: &Op<'_>, num: &str) -> Endpoint {
         method: op.method.to_owned(),
         path: op.path.to_owned(),
         title: op.summary.unwrap_or(op.path).to_owned(),
-        description_html: op.description.map_or_else(String::new, prose),
+        description_html: op.description.map_or_else(String::new, html::prose),
         params: op.params.iter().map(|p| param(p)).collect(),
         responses: responses(op.operation),
         schema_tree: success_schema(op.operation).map(|schema| {
-            let name = str_field(schema, "$ref").map_or_else(
+            let name = html::str_field(schema, "$ref").map_or_else(
                 || "response".to_owned(),
-                |reference| ref_name(reference).to_owned(),
+                |reference| html::ref_name(reference).to_owned(),
             );
             tree::root(spec, &name, schema)
         }),
@@ -378,15 +379,15 @@ fn endpoint(spec: &Value, op: &Op<'_>, num: &str) -> Endpoint {
 /// Builds one query-parameter row: description, constraint annotations, and the request
 /// builder's seed value.
 fn param(p: &Value) -> Param {
-    let schema = field(p, "schema");
-    let schema_type = schema.and_then(|s| str_field(s, "type"));
-    let example = field(p, "example");
+    let schema = html::field(p, "schema");
+    let schema_type = schema.and_then(|s| html::str_field(s, "type"));
+    let example = html::field(p, "example");
 
     let mut anns: Vec<Anno> = Vec::new();
     if schema_type == Some("array") {
         let items_type = schema
-            .and_then(|s| field(s, "items"))
-            .and_then(|items| str_field(items, "type"));
+            .and_then(|s| html::field(s, "items"))
+            .and_then(|items| html::str_field(items, "type"));
         anns.push(Anno::new(
             "type",
             items_type.map_or_else(
@@ -407,7 +408,7 @@ fn param(p: &Value) -> Param {
         anns.push(Anno::new("send as", "repeated keys".to_owned()));
     }
     if p.get("style").is_some() || p.get("explode").is_some() {
-        let style = str_field(p, "style").unwrap_or("form");
+        let style = html::str_field(p, "style").unwrap_or("form");
         let explode = if p.get("explode").and_then(Value::as_bool) == Some(false) {
             " · no explode"
         } else {
@@ -417,11 +418,11 @@ fn param(p: &Value) -> Param {
     }
 
     Param {
-        name: str_field(p, "name").unwrap_or_default().to_owned(),
-        required: field(p, "required")
+        name: html::str_field(p, "name").unwrap_or_default().to_owned(),
+        required: html::field(p, "required")
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        description_html: prose(str_field(p, "description").unwrap_or_default()),
+        description_html: html::prose(html::str_field(p, "description").unwrap_or_default()),
         anns,
         seed: seed(example, schema),
         is_array: schema_type == Some("array"),
@@ -434,7 +435,7 @@ fn seed(example: Option<&Value>, schema: Option<&Value>) -> String {
     if let Some(example) = example {
         return flat_value(example);
     }
-    match schema.and_then(|s| field(s, "default")) {
+    match schema.and_then(|s| html::field(s, "default")) {
         Some(Value::String(default)) => default.clone(),
         Some(default) => default.to_string(),
         None => String::new(),
@@ -468,7 +469,9 @@ fn responses(op: &Value) -> Vec<ResponseView> {
         .map(|(code, response)| ResponseView {
             code: code.clone(),
             ok: code.starts_with('2') || code.starts_with('3'),
-            description_html: prose(str_field(response, "description").unwrap_or_default()),
+            description_html: html::prose(
+                html::str_field(response, "description").unwrap_or_default(),
+            ),
             refs: find_refs(response),
         })
         .collect()
@@ -506,7 +509,7 @@ fn find_refs(response: &Value) -> Vec<String> {
 
     let mut names = Vec::new();
     walk(
-        field(response, "content").unwrap_or(&Value::Null),
+        html::field(response, "content").unwrap_or(&Value::Null),
         &mut names,
     );
     names
@@ -520,7 +523,7 @@ fn success_schema(op: &Value) -> Option<&Value> {
     let media = content
         .get("application/json")
         .or_else(|| content.get("text/json"))?;
-    field(media, "schema")
+    html::field(media, "schema")
 }
 
 #[cfg(test)]

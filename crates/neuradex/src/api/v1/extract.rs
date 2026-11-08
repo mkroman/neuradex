@@ -8,7 +8,8 @@
 //! parameters, and expose the validation each endpoint applies to its own request.
 
 use axum::Json;
-use axum::extract::{FromRequest, FromRequestParts, Request, rejection::JsonRejection};
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::request::Parts;
 use axum_extra::extract::Query;
 use serde::Deserialize;
@@ -21,11 +22,49 @@ use crate::api::v1::{MAX_REDIRECTS, MAX_SEARCH_TIMEOUT_SECS};
 /// The default number of redirects to follow when none is requested.
 pub const DEFAULT_REDIRECTS: u32 = MAX_REDIRECTS;
 
+/// A response section that an endpoint may include.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Include {
+    /// The chain of intermediate redirect hops in the metrics.
+    Redirects,
+    /// The request and response headers of the fetched page.
+    Headers,
+}
+
+impl Include {
+    /// Every include the API understands.
+    const ALL: &[Self] = &[Self::Redirects, Self::Headers];
+
+    /// Returns the wire name of the include.
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Redirects => "redirects",
+            Self::Headers => "headers",
+        }
+    }
+
+    /// Resolves a wire name to its include, ignoring ASCII case.
+    fn from_name(value: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|include| value.eq_ignore_ascii_case(include.name()))
+    }
+
+    /// Marks the include in `set`.
+    const fn apply(self, set: &mut IncludeSet) {
+        match self {
+            Self::Redirects => set.redirects = true,
+            Self::Headers => set.headers = true,
+        }
+    }
+}
+
 /// The `include` values accepted by the peek endpoint.
-pub const PEEK_INCLUDES: &[&str] = &["redirects"];
+pub(crate) const PEEK_INCLUDES: &[Include] = &[Include::Redirects];
 
 /// The `include` values accepted by the fetch endpoint.
-pub const FETCH_INCLUDES: &[&str] = &["redirects", "headers"];
+pub(crate) const FETCH_INCLUDES: &[Include] = &[Include::Redirects, Include::Headers];
 
 /// The query parameters of the page-fetching endpoints (`/v1/fetch` and `/v1/peek`), as they
 /// arrive on the wire.
@@ -153,7 +192,7 @@ impl IncludeSet {
     /// # Errors
     ///
     /// Returns an error when an unknown include value is requested.
-    pub fn parse(values: &[String], allowed: &[&str]) -> Result<Self, ApiError> {
+    pub(crate) fn parse(values: &[String], allowed: &[Include]) -> Result<Self, ApiError> {
         let mut includes = Self::default();
 
         for value in values.iter().flat_map(|value| value.split(',')) {
@@ -163,23 +202,16 @@ impl IncludeSet {
                 continue;
             }
 
-            if !allowed
-                .iter()
-                .any(|allowed| value.eq_ignore_ascii_case(allowed))
-            {
-                return Err(ApiError::invalid_param(format!(
-                    "unknown include: {}",
-                    value.to_ascii_lowercase()
-                )));
-            }
+            let include = Include::from_name(value)
+                .filter(|include| allowed.contains(include))
+                .ok_or_else(|| {
+                    ApiError::invalid_param(format!(
+                        "unknown include: {}",
+                        value.to_ascii_lowercase()
+                    ))
+                })?;
 
-            if value.eq_ignore_ascii_case("redirects") {
-                includes.redirects = true;
-            } else if value.eq_ignore_ascii_case("headers") {
-                includes.headers = true;
-            } else {
-                unreachable!("validated against `allowed`");
-            }
+            include.apply(&mut includes);
         }
 
         Ok(includes)
@@ -219,7 +251,7 @@ impl FetchParams {
     /// # Errors
     ///
     /// Returns an error when an unknown include value is requested.
-    pub(crate) fn includes(&self, allowed: &[&str]) -> Result<IncludeSet, ApiError> {
+    pub(crate) fn includes(&self, allowed: &[Include]) -> Result<IncludeSet, ApiError> {
         IncludeSet::parse(&self.include, allowed)
     }
 }
@@ -256,6 +288,8 @@ impl SearchParams {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+
     use axum::http::Uri;
     use axum_extra::extract::{Query, QueryRejection};
 
@@ -338,7 +372,7 @@ mod tests {
     fn rejects_out_of_range_redirects() {
         let query = fetch_params("url=https://example.com&redirects=6").expect("valid");
 
-        assert!(matches!(query.redirects(), Err(ApiError::InvalidParam(_))));
+        assert_matches!(query.redirects(), Err(ApiError::InvalidParam(_)));
 
         assert!(fetch_params("url=https://example.com&redirects=-1").is_err());
     }
@@ -353,16 +387,16 @@ mod tests {
         assert!(fetch_params("").is_err());
 
         let query = fetch_params("url=not%20a%20url").expect("valid");
-        assert!(matches!(query.url(), Err(ApiError::InvalidParam(_))));
+        assert_matches!(query.url(), Err(ApiError::InvalidParam(_)));
     }
 
     #[test]
     fn validates_includes_against_each_endpoints_allow_list() {
         let query = fetch_params("url=https://example.com&include=nope").expect("valid");
-        assert!(matches!(
+        assert_matches!(
             query.includes(FETCH_INCLUDES),
             Err(ApiError::InvalidParam(_))
-        ));
+        );
 
         // `include=headers` is valid for the fetch endpoint, but not for peek.
         let peek_query = fetch_params("url=https://example.com&include=headers").expect("valid");
@@ -410,8 +444,9 @@ mod tests {
         ] {
             let query = search_params(raw).expect("valid");
 
-            assert!(
-                matches!(query.validate(), Err(ApiError::InvalidParam(message)) if message.contains(expected)),
+            assert_matches!(
+                query.validate(),
+                Err(ApiError::InvalidParam(message)) if message.contains(expected),
                 "expected {raw} to be rejected"
             );
         }
@@ -433,7 +468,7 @@ mod tests {
             .expect("valid uri");
         let Query(query) = Query::<SearchParams>::try_from_uri(&uri).expect("valid query");
 
-        assert!(matches!(query.validate(), Err(ApiError::InvalidParam(_))));
+        assert_matches!(query.validate(), Err(ApiError::InvalidParam(_)));
     }
 
     #[test]

@@ -12,19 +12,25 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+assert_cmd = "2.2.2"
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "tracing"] }
 htmlize = { version = "1.1.0", features = ["unescape"] }
+httpmock = "0.9.0"
+predicates = "3.1.4"
 reqwest = { version = "0.13.1", default-features = false, features = ["charset", "http2", "system-proxy", "query"] }
 scraper = "0.29.0"
 secrecy = "0.10.3"
 serde = { version = "1.0.215", features = ["derive"] }
 serde_json = "1.0.149"
 thiserror = "2.0"
+tempfile = "3.27.0"
 tokio = { version = "1.52.3", features = [
     "rt-multi-thread",
     "macros",
     "sync",
     "time",
 ] }
+tower = { version = "0.5.2", features = ["util"] }
 tracing = "0.1.41"
 url = "2.5.8"
 # The OpenAPI object model with the `macros` feature (utoipa's only default feature).
@@ -33,6 +39,16 @@ url = "2.5.8"
 # macros-gated internal `crate::utoipa` module — so no member can use it truly
 # macro-free. Re-check whether `macros` can be dropped again on version bumps.
 utoipa = { version = "6.0.0", default-features = false, features = ["macros"] }
+wreq = { version = "0.16.1", default-features = false, features = [
+    "tokio-rt",
+    "webpki-roots",
+    "prefix-symbols",
+    "stream",
+    "gzip",
+    "brotli",
+    "deflate",
+    "zstd",
+] }
 
 [workspace.lints.clippy]
 all = "warn"

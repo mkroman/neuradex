@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "tracing"] }
+axum.workspace = true
 axum-extra = { version = "0.12.6", default-features = false, features = ["query"] }
 clap = { version = "4.5", features = ["derive"] }
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
@@ -26,16 +26,7 @@ url.workspace = true
 # its `macros` feature); this entry only opts the service package into the dependency.
 utoipa = { workspace = true, optional = true }
 utoipa-axum = { version = "0.3.0", optional = true }
-wreq = { version = "0.16.1", default-features = false, features = [
-    "tokio-rt",
-    "webpki-roots",
-    "prefix-symbols",
-    "stream",
-    "gzip",
-    "brotli",
-    "deflate",
-    "zstd",
-] }
+wreq.workspace = true
 wreq-util = "0.2.0"
 
 [features]
@@ -46,7 +37,11 @@ docs = ["utoipa", "dep:neuradex-docs"]
 utoipa = ["dep:utoipa", "dep:utoipa-axum"]
 
 [dev-dependencies]
-tower = { version = "0.5.2", features = ["util"] }
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
+test-support = { path = "../test-support", features = ["app"] }
+tower.workspace = true
 
 [lints]
 workspace = true

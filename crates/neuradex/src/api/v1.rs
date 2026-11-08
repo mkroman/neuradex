@@ -16,8 +16,6 @@ use std::time::Duration;
 
 #[cfg(feature = "utoipa")]
 use axum::Extension;
-use axum::Json;
-use axum::Router;
 #[cfg(feature = "utoipa")]
 use axum::body::Bytes;
 #[cfg(any(feature = "docs", feature = "utoipa"))]
@@ -25,9 +23,8 @@ use axum::http::header;
 use axum::http::{Method, StatusCode, Uri};
 #[cfg(feature = "utoipa")]
 use axum::response::IntoResponse;
-use axum::routing::get;
-#[cfg(not(feature = "utoipa"))]
-use axum::routing::post;
+use axum::routing;
+use axum::{Json, Router};
 use secrecy::SecretString;
 #[cfg(feature = "docs")]
 use std::sync::LazyLock;
@@ -87,11 +84,36 @@ impl AppState {
     /// # Errors
     ///
     /// Returns an error if the HTTP or Kagi clients fail to build.
-    pub fn new(
+    pub fn try_new(
         user_agent: &str,
         kagi_token: SecretString,
         timeout: Duration,
         max_sessions: usize,
+    ) -> Result<Self, BuildError> {
+        let kagi_client = kagi::Client::with_token_and_options(
+            kagi_token,
+            &kagi::ClientOptions {
+                max_sessions,
+                ..kagi::ClientOptions::default()
+            },
+        )?;
+
+        Self::try_new_with_kagi_client(user_agent, kagi_client, timeout)
+    }
+
+    /// Constructs the application state around an existing Kagi client.
+    ///
+    /// The page-fetching HTTP client is built with the same production configuration as
+    /// [`AppState::try_new`]. This is the injection point for a Kagi client pointed at another
+    /// endpoint, such as a local test server.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP client fails to build or a configured header is invalid.
+    pub fn try_new_with_kagi_client(
+        user_agent: &str,
+        kagi_client: kagi::Client,
+        timeout: Duration,
     ) -> Result<Self, BuildError> {
         let default_headers = default_headers(user_agent)?;
 
@@ -103,14 +125,6 @@ impl AppState {
             .redirect(Policy::none())
             .timeout(timeout)
             .build()?;
-
-        let kagi_client = kagi::Client::with_token_and_options(
-            kagi_token,
-            &kagi::ClientOptions {
-                max_sessions,
-                ..kagi::ClientOptions::default()
-            },
-        )?;
 
         Ok(Self {
             client,
@@ -161,13 +175,13 @@ fn api() -> (Router<Arc<AppState>>, utoipa::openapi::OpenApi) {
 #[cfg(not(feature = "utoipa"))]
 fn api() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/healthz", get(healthz))
-        .route("/v1/peek", get(peek::peek))
-        .route("/v1/fetch", get(fetch::fetch))
-        .route("/v1/search", get(search::search))
+        .route("/healthz", routing::get(healthz))
+        .route("/v1/peek", routing::get(peek::peek))
+        .route("/v1/fetch", routing::get(fetch::fetch))
+        .route("/v1/search", routing::get(search::search))
         .route(
             "/v1/openwebui_search",
-            post(openwebui_search::openwebui_search),
+            routing::post(openwebui_search::openwebui_search),
         )
 }
 
@@ -206,15 +220,15 @@ pub fn router(state: AppState) -> Router {
 
         router.route(
             "/openapi.json",
-            get(serve_openapi).layer(Extension(Bytes::from(document))),
+            routing::get(serve_openapi).layer(Extension(Bytes::from(document))),
         )
     };
 
     #[cfg(feature = "docs")]
     let router = router
-        .route("/docs", get(docs))
-        .route("/swagger-ui", get(swagger_ui_redirect))
-        .route("/swagger-ui/", get(swagger_ui_redirect));
+        .route("/docs", routing::get(docs))
+        .route("/swagger-ui", routing::get(swagger_ui_redirect))
+        .route("/swagger-ui/", routing::get(swagger_ui_redirect));
 
     router
         .fallback(not_found)
@@ -307,7 +321,7 @@ mod tests {
 
     /// Builds a router around a state constructed with test settings.
     fn router_for_test() -> Router {
-        let state = AppState::new(
+        let state = AppState::try_new(
             "test-agent",
             SecretString::from("test-token"),
             Duration::from_secs(30),
@@ -384,15 +398,12 @@ mod tests {
             .expect("body");
         let document: Value = serde_json::from_slice(&body).expect("valid json");
 
-        for path in [
-            "/healthz",
-            "/v1/fetch",
-            "/v1/peek",
-            "/v1/search",
-            "/v1/openwebui_search",
-        ] {
-            assert!(document["paths"].get(path).is_some(), "missing {path}");
-        }
+        assert!(
+            document["paths"]
+                .as_object()
+                .is_some_and(|paths| !paths.is_empty()),
+            "the served document has no paths"
+        );
     }
 
     #[cfg(feature = "docs")]

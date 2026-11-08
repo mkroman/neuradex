@@ -16,5 +16,8 @@ tracing.workspace = true
 # proc-macro stack. Must move in lockstep with the service crate's utoipa version.
 utoipa = { workspace = true }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

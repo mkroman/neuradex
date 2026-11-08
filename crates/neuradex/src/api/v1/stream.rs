@@ -5,7 +5,8 @@
 //! download is throttled — once the parser falls behind. Parsing stops as soon as the document
 //! head has been received, aborting the rest of the download.
 
-use std::collections::{BTreeMap, btree_map::Entry};
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 
 use axum::body::Bytes;
 use futures::StreamExt;
@@ -220,6 +221,8 @@ pub(crate) fn headers_to_json(headers: &HeaderMap) -> BTreeMap<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+
     use wreq::header::CONTENT_LENGTH;
 
     use super::*;
@@ -244,18 +247,18 @@ mod tests {
         assert!(ensure_text_content(Some("text/html")).is_ok());
         assert!(ensure_text_content(None).is_ok());
         assert!(ensure_text_content(Some("")).is_ok());
-        assert!(matches!(
+        assert_matches!(
             ensure_text_content(Some("image/png")),
             Err(ApiError::UnsupportedMediaType(_))
-        ));
+        );
     }
 
     #[test]
     fn joins_repeated_header_values() {
         let mut headers = HeaderMap::new();
-        headers.insert("set-cookie", "a=1".parse().unwrap());
-        headers.append("set-cookie", "b=2".parse().unwrap());
-        headers.insert(CONTENT_LENGTH, "42".parse().unwrap());
+        headers.insert("set-cookie", "a=1".parse().expect("a valid header value"));
+        headers.append("set-cookie", "b=2".parse().expect("a valid header value"));
+        headers.insert(CONTENT_LENGTH, "42".parse().expect("a valid header value"));
 
         let json = headers_to_json(&headers);
 

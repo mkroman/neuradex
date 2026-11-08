@@ -7,13 +7,13 @@
 //! children) are interpolated with `|safe`. The markup and class names are the ones
 //! the theme's stylesheet and behavior script expect.
 
-use htmlize::escape_all_quotes;
 use serde_json::Value;
 
 use askama::Template;
 
-use crate::html::{field, prose, push_escaped, ref_name, str_field};
-use crate::model::{Anno, common_anns};
+use crate::html;
+use crate::model;
+use crate::model::Anno;
 
 /// The maximum nesting depth expanded inline; deeper branches point at the schema appendix.
 const MAX_DEPTH: usize = 4;
@@ -109,8 +109,8 @@ fn node(
     open: bool,
     required: bool,
 ) -> SchemaNode {
-    let reference = str_field(schema, "$ref");
-    let ref_target = reference.map(|r| ref_name(r).to_owned());
+    let reference = html::str_field(schema, "$ref");
+    let ref_target = reference.map(|r| html::ref_name(r).to_owned());
     let target = reference.map_or(Some(schema), |reference| {
         // Only local `#/...` references are resolved.
         reference
@@ -152,7 +152,7 @@ fn node(
 /// The first line of the target's description, backticks stripped — the one-line
 /// summary shown in the node's summary row.
 fn brief(target: Option<&Value>) -> Option<String> {
-    let text = str_field(target?, "description")?;
+    let text = html::str_field(target?, "description")?;
     let line = text.lines().next().unwrap_or_default().replace('`', "");
     (!line.is_empty()).then_some(line)
 }
@@ -166,17 +166,18 @@ fn resolved_body(
     depth: usize,
     stack: &mut Vec<String>,
 ) -> ResolvedBody {
-    let description_html = str_field(target, "description").map_or_else(String::new, prose);
+    let description_html =
+        html::str_field(target, "description").map_or_else(String::new, html::prose);
     let anns = schema_anns(target);
 
-    let required_names: Vec<&str> = field(target, "required")
+    let required_names: Vec<&str> = html::field(target, "required")
         .and_then(Value::as_array)
         .map(|names| names.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
 
-    let properties = field(target, "properties").and_then(Value::as_object);
-    let items = (str_field(target, "type") == Some("array"))
-        .then(|| field(target, "items"))
+    let properties = html::field(target, "properties").and_then(Value::as_object);
+    let items = (html::str_field(target, "type") == Some("array"))
+        .then(|| html::field(target, "items"))
         .flatten();
 
     // The recursion-guard key is the `$ref` target when the node has one, its name otherwise.
@@ -245,19 +246,20 @@ fn property_row(name: &str, property: &Value, required_names: &[&str]) -> Schema
         type_label,
         type_is_ref,
         required: required_names.contains(&name),
-        description_html: str_field(property, "description").map_or_else(String::new, prose),
+        description_html: html::str_field(property, "description")
+            .map_or_else(String::new, html::prose),
         anns: schema_anns(property),
     }
 }
 
 /// The `(label, is_ref)` of a schema's type pill.
 fn type_info(schema: &Value) -> (String, bool) {
-    if let Some(reference) = str_field(schema, "$ref") {
-        return (ref_name(reference).to_owned(), true);
+    if let Some(reference) = html::str_field(schema, "$ref") {
+        return (html::ref_name(reference).to_owned(), true);
     }
-    match field(schema, "type") {
+    match html::field(schema, "type") {
         Some(Value::String(t)) if t == "array" => {
-            let (items, _) = type_info(field(schema, "items").unwrap_or(&Value::Null));
+            let (items, _) = type_info(html::field(schema, "items").unwrap_or(&Value::Null));
             (format!("array<{items}>"), false)
         }
         Some(Value::String(t)) => (t.clone(), false),
@@ -269,7 +271,7 @@ fn type_info(schema: &Value) -> (String, bool) {
                 .join(" | "),
             false,
         ),
-        _ if field(schema, "properties").is_some() => ("object".to_owned(), false),
+        _ if html::field(schema, "properties").is_some() => ("object".to_owned(), false),
         _ => ("any".to_owned(), false),
     }
 }
@@ -279,15 +281,17 @@ fn is_branch(schema: &Value) -> bool {
     if schema.get("$ref").is_some() {
         return true;
     }
-    if str_field(schema, "type") == Some("object") && field(schema, "properties").is_some() {
+    if html::str_field(schema, "type") == Some("object")
+        && html::field(schema, "properties").is_some()
+    {
         return true;
     }
-    if str_field(schema, "type") == Some("array")
-        && let Some(items) = field(schema, "items")
+    if html::str_field(schema, "type") == Some("array")
+        && let Some(items) = html::field(schema, "items")
     {
         return items.get("$ref").is_some()
-            || field(items, "properties").is_some()
-            || str_field(items, "type") == Some("array");
+            || html::field(items, "properties").is_some()
+            || html::str_field(items, "type") == Some("array");
     }
     false
 }
@@ -296,18 +300,18 @@ fn is_branch(schema: &Value) -> bool {
 /// `pattern`, and `enum`, in that order.
 fn schema_anns(schema: &Value) -> Vec<Anno> {
     let mut anns = Vec::new();
-    common_anns(&mut anns, schema);
+    model::common_anns(&mut anns, schema);
 
-    if let Some(min_length) = field(schema, "minLength") {
+    if let Some(min_length) = html::field(schema, "minLength") {
         anns.push(Anno::new("min length", min_length.to_string()));
     }
-    if let Some(max_length) = field(schema, "maxLength") {
+    if let Some(max_length) = html::field(schema, "maxLength") {
         anns.push(Anno::new("max length", max_length.to_string()));
     }
-    if let Some(pattern) = str_field(schema, "pattern") {
+    if let Some(pattern) = html::str_field(schema, "pattern") {
         anns.push(Anno::new("pattern", pattern.to_owned()));
     }
-    if let Some(Value::Array(values)) = field(schema, "enum") {
+    if let Some(Value::Array(values)) = html::field(schema, "enum") {
         anns.push(Anno::new(
             "enum",
             values
@@ -325,11 +329,11 @@ fn schema_anns(schema: &Value) -> Vec<Anno> {
 /// Named Example Objects (the object form of `examples`) are unwrapped to their
 /// `value` payload when present, so the summary fields of the wrapper are not shown.
 fn example_values(schema: &Value) -> Vec<&Value> {
-    match field(schema, "examples") {
+    match html::field(schema, "examples") {
         Some(Value::Array(items)) => items.iter().collect(),
         Some(Value::Object(map)) => map
             .values()
-            .map(|example| field(example, "value").unwrap_or(example))
+            .map(|example| html::field(example, "value").unwrap_or(example))
             .collect(),
         Some(other) => vec![other],
         None => Vec::new(),
@@ -340,7 +344,7 @@ fn example_values(schema: &Value) -> Vec<&Value> {
 /// runtime highlighter (keys, strings, numbers, booleans/null).
 fn highlight_json(value: &Value, cap: usize) -> String {
     let Ok(text) = serde_json::to_string_pretty(value) else {
-        return escape_all_quotes(value.to_string()).into_owned();
+        return htmlize::escape_all_quotes(value.to_string()).into_owned();
     };
     highlight_text(&text, cap)
 }
@@ -381,11 +385,11 @@ fn highlight_text(text: &str, cap: usize) -> String {
                     k += 1;
                 }
                 if k < bytes.len() && bytes[k] == b':' {
-                    push_escaped(&mut out, &slice[last..i]);
+                    html::push_escaped(&mut out, &slice[last..i]);
                     out.push_str("<span class=\"j-key\">");
-                    push_escaped(&mut out, &slice[i..j]);
+                    html::push_escaped(&mut out, &slice[i..j]);
                     out.push_str("</span>");
-                    push_escaped(&mut out, &slice[j..=k]);
+                    html::push_escaped(&mut out, &slice[j..=k]);
                     i = k + 1;
                     last = i;
                     continue;
@@ -409,16 +413,16 @@ fn highlight_text(text: &str, cap: usize) -> String {
                 continue;
             }
         };
-        push_escaped(&mut out, &slice[last..i]);
+        html::push_escaped(&mut out, &slice[last..i]);
         out.push_str("<span class=\"");
         out.push_str(class);
         out.push_str("\">");
-        push_escaped(&mut out, &slice[i..end]);
+        html::push_escaped(&mut out, &slice[i..end]);
         out.push_str("</span>");
         i = end;
         last = i;
     }
-    push_escaped(&mut out, &slice[last..]);
+    html::push_escaped(&mut out, &slice[last..]);
     if truncated {
         out.push_str("\n… truncated for display");
     }

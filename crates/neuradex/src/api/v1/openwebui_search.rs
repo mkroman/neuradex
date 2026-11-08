@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::api::v1::AppState;
 use crate::api::v1::error::ApiError;
 use crate::api::v1::extract::ApiJson;
-use crate::api::v1::search::run_queued_search;
+use crate::api::v1::search;
 
 /// The number of results returned when the request carries no `count`.
 pub(crate) const DEFAULT_COUNT: usize = 5;
@@ -133,7 +133,7 @@ pub(crate) async fn openwebui_search(
     request.validate()?;
 
     let count = request.count();
-    let (_, results) = run_queued_search(&state, &request.query, None).await?;
+    let (_, results) = search::run_queued_search(&state, &request.query, None).await?;
     let results = results
         .into_iter()
         .take(count)
@@ -141,58 +141,4 @@ pub(crate) async fn openwebui_search(
         .collect();
 
     Ok(Json(results))
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::{Value, json};
-
-    use super::*;
-
-    #[test]
-    fn maps_kagi_results_to_the_openwebui_shape() {
-        let result = OpenWebUiSearchResult::from(kagi::SearchResult {
-            title: "The Rust Programming Language".to_owned(),
-            url: "https://doc.rust-lang.org/book/".to_owned(),
-            description: "Learn Rust with an official book.".to_owned(),
-        });
-
-        assert_eq!(result.link, "https://doc.rust-lang.org/book/");
-        assert_eq!(result.title, "The Rust Programming Language");
-        assert_eq!(result.snippet, "Learn Rust with an official book.");
-    }
-
-    #[test]
-    fn serializes_results_with_the_documented_field_names() {
-        let rendered: Value = serde_json::to_value(OpenWebUiSearchResult {
-            link: "https://example.com/".to_owned(),
-            title: "example".to_owned(),
-            snippet: "an example".to_owned(),
-        })
-        .expect("serializes");
-
-        assert_eq!(
-            rendered,
-            json!({
-                "link": "https://example.com/",
-                "title": "example",
-                "snippet": "an example",
-            })
-        );
-    }
-
-    #[test]
-    fn parses_the_request_body() {
-        let request: OpenWebUiSearchRequest =
-            serde_json::from_value(json!({"query": "rust programming", "count": 3}))
-                .expect("valid body");
-
-        assert_eq!(request.query, "rust programming");
-        assert_eq!(request.count(), 3);
-
-        let request: OpenWebUiSearchRequest =
-            serde_json::from_value(json!({"query": "rust programming"})).expect("valid body");
-
-        assert_eq!(request.count(), DEFAULT_COUNT);
-    }
 }

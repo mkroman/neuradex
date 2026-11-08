@@ -33,6 +33,9 @@ pub enum Error {
     /// A configured header value is invalid.
     #[error("invalid header value: {0}")]
     InvalidHeader(#[from] reqwest::header::InvalidHeaderValue),
+    /// A configured base URL is invalid.
+    #[error("invalid base url: {0}")]
+    InvalidBaseUrl(String),
     /// The HTTP client could not be built.
     #[error("could not build http client")]
     BuildClient(#[source] reqwest::Error),
