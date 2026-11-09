@@ -16,25 +16,23 @@ kagi = { path = "../kagi", default-features = false, features = ["rustls"] }
 neuradex-docs = { path = "../neuradex-docs", optional = true }
 secrecy.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["signal", "net"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 url.workspace = true
-# The derive macros come from the workspace table (utoipa 6.0.0 cannot compile without
-# its `macros` feature); this entry only opts the service package into the dependency.
-utoipa = { workspace = true, optional = true }
-utoipa-axum = { version = "0.3.0", optional = true }
+# utoipa 6.0.0 cannot compile without its `macros` feature; the service always uses the
+# derives for its OpenAPI document.
+utoipa.workspace = true
+utoipa-axum = "0.3.0"
 wreq.workspace = true
 wreq-util = "0.2.0"
 
 [features]
 default = ["docs"]
-# The documentation page at /docs; implies OpenAPI generation (the page renders from it).
-docs = ["utoipa", "dep:neuradex-docs"]
-# OpenAPI document generation and the /openapi.json endpoint.
-utoipa = ["dep:utoipa", "dep:utoipa-axum"]
+# The documentation page at /docs; the OpenAPI document and /openapi.json are always built.
+docs = ["dep:neuradex-docs"]
 
 [dev-dependencies]
 assert_cmd.workspace = true

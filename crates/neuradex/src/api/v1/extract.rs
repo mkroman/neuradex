@@ -69,54 +69,40 @@ pub(crate) const FETCH_INCLUDES: &[Include] = &[Include::Redirects, Include::Hea
 
 /// The query parameters of the page-fetching endpoints (`/v1/fetch` and `/v1/peek`), as they
 /// arrive on the wire.
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::IntoParams))]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "utoipa", into_params(parameter_in = Query))]
+#[into_params(parameter_in = Query)]
 pub(crate) struct FetchParams {
     /// The absolute URL of the page to fetch.
-    #[cfg_attr(
-        feature = "utoipa",
-        param(example = "https://example.com", format = "uri")
-    )]
+    #[param(example = "https://example.com", format = "uri")]
     pub(crate) url: String,
     /// The maximum number of redirects to follow; defaults to 5.
-    #[cfg_attr(
-        feature = "utoipa",
-        param(minimum = 0, maximum = 5, default = 5, example = 2)
-    )]
+    #[param(minimum = 0, maximum = 5, default = 5, example = 2)]
     pub(crate) redirects: Option<u32>,
     /// The optional data to include in the response; may be repeated and comma-separated.
     #[serde(default)]
-    #[cfg_attr(
-        feature = "utoipa",
-        param(style = Form, explode = true, example = json!(["redirects"]))
-    )]
+    #[param(style = Form, explode = true, example = json!(["redirects"]))]
     pub(crate) include: Vec<String>,
 }
 
 /// The JSON request body of the search endpoint (`/v1/search`), as it arrives on the wire.
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-#[cfg_attr(
-    feature = "utoipa",
-    schema(examples(json!({
-        "query": "rust programming",
-        "limit": 10,
-        "timeout": 10
-    })))
-)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[schema(examples(json!({
+    "query": "rust programming",
+    "limit": 10,
+    "timeout": 10
+})))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SearchRequest {
     /// The search query.
-    #[cfg_attr(feature = "utoipa", schema(example = "rust programming"))]
+    #[schema(example = "rust programming")]
     pub(crate) query: String,
     /// The maximum number of results to return.
-    #[cfg_attr(feature = "utoipa", schema(example = 10))]
+    #[schema(example = 10)]
     pub(crate) limit: Option<usize>,
     /// The maximum time to wait for the search — the queue wait, the session wait, and the
     /// search itself — in whole seconds.
-    #[cfg_attr(feature = "utoipa", schema(minimum = 1, maximum = 30, example = 10))]
+    #[schema(minimum = 1, maximum = 30, example = 10)]
     pub(crate) timeout: Option<u64>,
 }
 

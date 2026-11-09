@@ -3,24 +3,19 @@
 use serde::Serialize;
 
 /// A single intermediate redirect hop.
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-#[cfg_attr(
-    feature = "utoipa",
-    schema(examples(json!({"status": 301, "url": "https://example.com/index.html"})))
-)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(examples(json!({"status": 301, "url": "https://example.com/index.html"})))]
 pub struct RedirectHop {
     /// The status code of the redirect response.
     pub status: u16,
     /// The URL that returned the redirect.
-    #[cfg_attr(feature = "utoipa", schema(format = "uri"))]
+    #[schema(format = "uri")]
     pub url: String,
 }
 
 /// Request metrics and stats for a fetched page.
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "utoipa", schema(examples(json!({
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(examples(json!({
     "status": 200,
     "final_url": "https://example.com/",
     "http_version": "HTTP/2",
@@ -32,18 +27,18 @@ pub struct RedirectHop {
     "redirects_followed": 0,
     "redirects": [],
     "truncated": false
-}))))]
+})))]
 pub struct Metrics {
     /// The status code of the final response.
     pub status: u16,
     /// The URL of the final response, after following redirects.
-    #[cfg_attr(feature = "utoipa", schema(format = "uri"))]
+    #[schema(format = "uri")]
     pub final_url: String,
     /// The HTTP version of the final response, e.g. `HTTP/1.1`.
-    #[cfg_attr(feature = "utoipa", schema(example = "HTTP/2"))]
+    #[schema(example = "HTTP/2")]
     pub http_version: String,
     /// The content type of the final response, without parameters.
-    #[cfg_attr(feature = "utoipa", schema(example = "text/html"))]
+    #[schema(example = "text/html")]
     pub content_type: Option<String>,
     /// The content length announced by the final response, if any.
     pub content_length: Option<u64>,
@@ -63,12 +58,8 @@ pub struct Metrics {
 }
 
 /// Request metrics and stats for a search.
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-#[cfg_attr(
-    feature = "utoipa",
-    schema(examples(json!({"queue_ms": 12, "total_ms": 340, "result_count": 10})))
-)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(examples(json!({"queue_ms": 12, "total_ms": 340, "result_count": 10})))]
 pub struct SearchMetrics {
     /// The time spent waiting for a search slot before the search started, in milliseconds.
     pub queue_ms: u64,

@@ -3,7 +3,6 @@
 pub mod error;
 pub mod extract;
 pub mod fetch;
-#[cfg(feature = "utoipa")]
 pub mod openapi;
 pub mod openwebui_search;
 pub mod peek;
@@ -14,23 +13,17 @@ pub mod stream;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(feature = "utoipa")]
 use axum::Extension;
-#[cfg(feature = "utoipa")]
 use axum::body::Bytes;
-#[cfg(any(feature = "docs", feature = "utoipa"))]
 use axum::http::header;
 use axum::http::{Method, StatusCode, Uri};
-#[cfg(feature = "utoipa")]
 use axum::response::IntoResponse;
 use axum::routing;
 use axum::{Json, Router};
 use secrecy::SecretString;
 #[cfg(feature = "docs")]
 use std::sync::LazyLock;
-#[cfg(feature = "utoipa")]
 use utoipa_axum::router::OpenApiRouter;
-#[cfg(feature = "utoipa")]
 use utoipa_axum::routes;
 use wreq::header::{ACCEPT_ENCODING, HeaderMap, HeaderValue, USER_AGENT};
 use wreq::redirect::Policy;
@@ -160,7 +153,6 @@ fn default_headers(user_agent: &str) -> Result<HeaderMap, BuildError> {
 /// The paths are collected from the `#[utoipa::path]` handlers at build time through
 /// [`utoipa_axum`], so the router and the document cannot drift apart; the document's metadata
 /// (info, tags, schemas) comes from [`openapi::base`].
-#[cfg(feature = "utoipa")]
 fn api() -> (Router<Arc<AppState>>, utoipa::openapi::OpenApi) {
     OpenApiRouter::with_openapi(openapi::base())
         .routes(routes!(healthz))
@@ -171,74 +163,48 @@ fn api() -> (Router<Arc<AppState>>, utoipa::openapi::OpenApi) {
         .split_for_parts()
 }
 
-/// Builds the v1 API router for builds without `utoipa`.
-///
-/// Without the `utoipa` feature there is no OpenAPI document, so the routes are registered by
-/// hand. The router-level tests are the drift pin: they assert that both router shapes register
-/// the same five paths.
-#[cfg(not(feature = "utoipa"))]
-fn api() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/healthz", routing::get(healthz))
-        .route("/v1/peek", routing::get(peek::peek))
-        .route("/v1/fetch", routing::get(fetch::fetch))
-        .route("/v1/search", routing::post(search::search))
-        .route(
-            "/v1/openwebui_search",
-            routing::post(openwebui_search::openwebui_search),
-        )
-}
-
 /// Returns the OpenAPI document derived from the API routes.
-#[cfg(feature = "utoipa")]
 #[must_use]
 pub fn openapi_document() -> utoipa::openapi::OpenApi {
     api().1
 }
 
-/// Returns the OpenAPI document as the JSON value `/docs` renders from.
+/// Returns the OpenAPI document as the JSON value `/docs` renders from and `export-docs --spec`
+/// writes.
 ///
 /// # Panics
 ///
 /// Panics if the OpenAPI document cannot be serialized to JSON, which cannot happen for a
 /// document derived by `utoipa`.
-#[cfg(feature = "docs")]
 #[must_use]
 pub fn openapi_spec() -> serde_json::Value {
     serde_json::to_value(openapi_document()).expect("the OpenAPI document is always serializable")
 }
 
-/// Builds the router for the whole service: the v1 API plus the documentation endpoints.
+/// Builds the router for the whole service: the v1 API plus the OpenAPI document and,
+/// with the `docs` feature, the documentation page.
 ///
 /// Every error response — including the router-level `404` and `405` fallbacks — renders the
-/// `{"error": {type, message}}` envelope. With the `utoipa` feature the API operations' routes
-/// come from `api` together with the document served at `/openapi.json`; with the `docs`
-/// feature the page at `/docs` and the legacy `/swagger-ui` redirect are added. These
-/// infrastructure endpoints are hand-registered like the fallbacks — they are not
-/// OpenAPI-documented operations.
+/// `{"error": {type, message}}` envelope. The API operations' routes come from `api()`
+/// together with the document served at `/openapi.json`; with the `docs` feature the page at
+/// `/docs` and the legacy `/swagger-ui` redirect are added. These infrastructure endpoints are
+/// hand-registered like the fallbacks — they are not OpenAPI-documented operations.
 ///
 /// # Panics
 ///
 /// Panics if the OpenAPI document cannot be serialized to JSON, which cannot happen for a
 /// document derived by `utoipa`.
 pub fn router(state: AppState) -> Router {
-    #[cfg(feature = "utoipa")]
     let (router, openapi) = api();
-    #[cfg(not(feature = "utoipa"))]
-    let router = api();
 
-    #[cfg(feature = "utoipa")]
-    let router = {
-        // Serialize once at startup: the document is static, and the extension clone per request
-        // is then just a refcount bump instead of a deep clone plus serialization.
-        let document =
-            serde_json::to_vec(&openapi).expect("the OpenAPI document is always serializable");
-
-        router.route(
-            "/openapi.json",
-            routing::get(serve_openapi).layer(Extension(Bytes::from(document))),
-        )
-    };
+    // Serialize once at startup: the document is static, and the extension clone per request
+    // is then just a refcount bump instead of a deep clone plus serialization.
+    let document =
+        serde_json::to_vec(&openapi).expect("the OpenAPI document is always serializable");
+    let router = router.route(
+        "/openapi.json",
+        routing::get(serve_openapi).layer(Extension(Bytes::from(document))),
+    );
 
     #[cfg(feature = "docs")]
     let router = router
@@ -277,9 +243,8 @@ async fn docs() -> impl IntoResponse {
 
 /// Serves the OpenAPI document as JSON at `GET /openapi.json`.
 ///
-/// The document is the one [`api`] derives from the routes, serialized once when the router is
+/// The document is the one `api()` derives from the routes, serialized once when the router is
 /// built and injected as an extension, so what is served cannot drift from the API operations.
-#[cfg(feature = "utoipa")]
 async fn serve_openapi(Extension(document): Extension<Bytes>) -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "application/json")], document)
 }
@@ -291,16 +256,13 @@ async fn swagger_ui_redirect() -> impl IntoResponse {
 }
 
 /// Handles `GET /healthz`.
-#[cfg_attr(
-    feature = "utoipa",
-    utoipa::path(
-        get,
-        path = "/healthz",
-        tag = "healthz",
-        summary = "Check the service health.",
-        description = "Returns `204 No Content` when the service is up. Used as the liveness probe.",
-        responses((status = 204, description = "The service is healthy."))
-    )
+#[utoipa::path(
+    get,
+    path = "/healthz",
+    tag = "healthz",
+    summary = "Check the service health.",
+    description = "Returns `204 No Content` when the service is up. Used as the liveness probe.",
+    responses((status = 204, description = "The service is healthy."))
 )]
 pub(crate) async fn healthz() -> StatusCode {
     StatusCode::NO_CONTENT
@@ -444,7 +406,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "utoipa")]
     #[tokio::test]
     async fn serves_the_openapi_document() {
         let response = send(router_for_test(), "GET", "/openapi.json").await;

@@ -23,19 +23,15 @@ use crate::api::v1::search;
 pub(crate) const DEFAULT_COUNT: usize = 5;
 
 /// The request body of the Open WebUI external search endpoint, as it arrives on the wire.
-#[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-#[cfg_attr(
-    feature = "utoipa",
-    schema(examples(json!({"query": "rust programming", "count": 5})))
-)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[schema(examples(json!({"query": "rust programming", "count": 5})))]
 #[serde(deny_unknown_fields)]
 pub struct OpenWebUiSearchRequest {
     /// The user's search query string.
-    #[cfg_attr(feature = "utoipa", schema(example = "rust programming"))]
+    #[schema(example = "rust programming")]
     pub query: String,
     /// The suggested maximum number of results; defaults to `DEFAULT_COUNT` when omitted.
-    #[cfg_attr(feature = "utoipa", schema(default = 5, example = 5))]
+    #[schema(default = 5, example = 5)]
     pub count: Option<usize>,
 }
 
@@ -60,16 +56,15 @@ impl OpenWebUiSearchRequest {
 }
 
 /// A single search result, in the shape Open WebUI expects.
-#[derive(Clone, Debug, Serialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "utoipa", schema(examples(json!({
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
+#[schema(examples(json!({
     "link": "https://doc.rust-lang.org/book/",
     "title": "The Rust Programming Language",
     "snippet": "Learn Rust with an official book."
-}))))]
+})))]
 pub struct OpenWebUiSearchResult {
     /// The direct URL to the search result.
-    #[cfg_attr(feature = "utoipa", schema(format = "uri"))]
+    #[schema(format = "uri")]
     pub link: String,
     /// The title of the web page.
     pub title: String,
@@ -99,31 +94,28 @@ impl From<kagi::SearchResult> for OpenWebUiSearchResult {
 ///
 /// Returns an error for an invalid request body and failed searches. A search that simply
 /// finds nothing is not an error: it renders as the empty array the specification recommends.
-#[cfg_attr(
-    feature = "utoipa",
-    utoipa::path(
-        post,
-        path = "/v1/openwebui_search",
-        tag = "search",
-        summary = "Search the web for Open WebUI.",
-        description = "Searches the web through Kagi and answers in the shape Open WebUI's \
-                       `external` web search engine expects: a bare JSON array of \
-                       `{link, title, snippet}` objects, truncated to `count`. Searches are \
-                       queued: at most two run at once, and the request blocks until a slot \
-                       and the results are ready.",
-        request_body(
-            content = OpenWebUiSearchRequest,
-            content_type = "application/json",
-            description = "The query to search for and the suggested maximum number of results.",
+#[utoipa::path(
+    post,
+    path = "/v1/openwebui_search",
+    tag = "search",
+    summary = "Search the web for Open WebUI.",
+    description = "Searches the web through Kagi and answers in the shape Open WebUI's \
+                   `external` web search engine expects: a bare JSON array of \
+                   `{link, title, snippet}` objects, truncated to `count`. Searches are \
+                   queued: at most two run at once, and the request blocks until a slot \
+                   and the results are ready.",
+    request_body(
+        content = OpenWebUiSearchRequest,
+        content_type = "application/json",
+        description = "The query to search for and the suggested maximum number of results.",
+    ),
+    responses(
+        (
+            status = 200,
+            description = "The search completed; an empty array means no results.",
+            body = [OpenWebUiSearchResult],
         ),
-        responses(
-            (
-                status = 200,
-                description = "The search completed; an empty array means no results.",
-                body = [OpenWebUiSearchResult],
-            ),
-            ApiError,
-        )
+        ApiError,
     )
 )]
 pub(crate) async fn openwebui_search(

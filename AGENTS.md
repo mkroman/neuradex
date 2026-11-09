@@ -1,6 +1,6 @@
 # AGENTS.md
 
-axum 0.8 HTTP service exposing LLM-agent tools as JSON: `GET /v1/{fetch,peek}`, `POST /v1/search` (`{"query","limit","timeout"}` in, `SearchResponse` out), `POST /v1/openwebui_search` (Open WebUI `external` search shape: `{"query","count"}` in, bare `[{link,title,snippet}]` out), `GET /healthz` (204). Feature-gated: `/openapi.json` (`utoipa`) and the `/docs` page (`docs`; legacy `/swagger-ui[/]` 302 there).
+axum 0.8 HTTP service exposing LLM-agent tools as JSON: `GET /v1/{fetch,peek}`, `POST /v1/search` (`{"query","limit","timeout"}` in, `SearchResponse` out), `POST /v1/openwebui_search` (Open WebUI `external` search shape: `{"query","count"}` in, bare `[{link,title,snippet}]` out), `GET /healthz` (204). `/openapi.json` is always served; the `/docs` page is feature-gated (`docs`; legacy `/swagger-ui[/]` 302 there).
 
 ## Workspace
 
@@ -20,9 +20,8 @@ Build needs `cmake`, `clang` and `libclang-dev` (wreq compiles BoringSSL). Full 
 1. `cargo fmt`
 2. `cargo clippy --all-targets --workspace -- -D warnings` (warnings are must-fix)
 3. `cargo test --workspace`
-4. Feature matrix (CI runs all three; use `cargo test`, not `check`, so router tests run in both router shapes). Keep `-p neuradex`: combining `--no-default-features` with `--workspace` also strips the other members' defaults.
-   - `cargo test -p neuradex --no-default-features` (no utoipa at all)
-   - `cargo test -p neuradex --no-default-features --features utoipa`
+4. Feature matrix (CI runs both; use `cargo test`, not `check`, so router tests run). Keep `-p neuradex`: combining `--no-default-features` with `--workspace` also strips the other members' defaults.
+   - `cargo test -p neuradex --no-default-features` (OpenAPI without the docs page)
 
 Also in CI: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features` (all-features pulls in kagi's native-tls/OpenSSL), `shellcheck hack/*.sh`, `cargo-deny ... check advisories` (only advisories gate). Tests are offline: unit tests are inline `#[cfg(test)]` modules; HTTP integration tests use the `test-support` harness against local `httpmock` servers. Kagi fixtures live in `crates/test-support/fixtures/kagi` and are read through `test_support::kagi::fixture`/`read_fixture`.
 
@@ -35,8 +34,7 @@ Also in CI: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-fe
 
 ## Non-obvious rules
 
-- **Routes and OpenAPI come from one place**: register `#[cfg_attr(feature = "utoipa", utoipa::path(...))]` handlers via `routes!` in `api()` (`src/api/v1.rs`). Never use `.route(...)` for them or hand-list paths. Exceptions:
-  - The `#[cfg(not(feature = "utoipa"))]` `api()` must hand-register the same five paths. The unconditional router tests catch drift.
+- **Routes and OpenAPI come from one place**: register `#[utoipa::path(...)]` handlers via `routes!` in `api()` (`src/api/v1.rs`). Never use `.route(...)` for them or hand-list paths. Exceptions:
   - `/docs`, `/openapi.json`, `/swagger-ui` and the 404/405 fallbacks are hand-registered in `router()`.
 - **Every error is `{"error": {type, message}}`**, including the router 404/405 fallbacks. 5xx bodies are generic; details go to tracing only. A new error path needs two tests: a router oneshot test in `src/api/v1.rs` and a variant mapping test in `src/api/v1/error.rs`. `ErrorBody` must stay in `components(schemas(...))` in `openapi.rs`, because the manual `IntoResponses` impl is invisible to utoipa. That impl (`error.rs`) hand-lists the documented statuses (400/415/500/502): a new status must be added there, and new handlers list `ApiError` in their `utoipa::path` responses, or the error is missing from `/openapi.json`.
 - **Never extract `Query<T>`/`Json<T>` directly.** Use `ApiQuery<T>`/`ApiJson<T>` (`extract.rs`), which turn rejections into the JSON envelope. `ApiQuery` wraps `axum_extra::extract::Query` (serde_html_form) so repeated keys work. Optional lists are `Vec<T>` + `#[serde(default)]`, never `Option<Vec<T>>`.

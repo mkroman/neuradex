@@ -3,16 +3,13 @@
 //! Every error is rendered as a JSON body of the shape
 //! `{"error": {"type": "...", "message": "..."}}` with an appropriate status code.
 
-#[cfg(feature = "utoipa")]
 use std::collections::BTreeMap;
 
 use axum::Json;
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
-#[cfg(feature = "utoipa")]
 use utoipa::openapi::{Content, RefOr, ResponseBuilder, ResponsesBuilder};
-#[cfg(feature = "utoipa")]
 use utoipa::{IntoResponses, PartialSchema};
 
 /// An error produced while serving an API request.
@@ -36,17 +33,13 @@ pub enum ApiError {
 }
 
 /// The JSON body of an error response.
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-#[cfg_attr(
-    feature = "utoipa",
-    schema(examples(json!({
-        "error": {
-            "type": "invalid_param",
-            "message": "the timeout must be between 1 and 30 seconds"
-        }
-    })))
-)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(examples(json!({
+    "error": {
+        "type": "invalid_param",
+        "message": "the timeout must be between 1 and 30 seconds"
+    }
+})))]
 pub(crate) struct ErrorBody {
     /// The error details.
     error: ErrorDetail,
@@ -75,19 +68,17 @@ impl ErrorBody {
 }
 
 /// The details of an error response.
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 struct ErrorDetail {
     /// The machine-readable error type.
     #[serde(rename = "type")]
-    #[cfg_attr(feature = "utoipa", schema(value_type = String))]
+    #[schema(value_type = String)]
     kind: &'static str,
     /// The human-readable error message.
     message: String,
 }
 
 /// Builds the shared JSON error response with the given description.
-#[cfg(feature = "utoipa")]
 fn error_response(description: &'static str) -> ResponseBuilder {
     ResponseBuilder::new().description(description).content(
         "application/json",
@@ -95,7 +86,6 @@ fn error_response(description: &'static str) -> ResponseBuilder {
     )
 }
 
-#[cfg(feature = "utoipa")]
 impl IntoResponses for ApiError {
     fn responses() -> BTreeMap<String, RefOr<utoipa::openapi::Response>> {
         ResponsesBuilder::new()

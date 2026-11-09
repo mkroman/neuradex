@@ -23,11 +23,10 @@ jobs:
       contents: read
     uses: $/.github/workflows/lint.yaml
 
-  # The feature matrix from AGENTS.md: `default` is the full service, the lean
-  # build has no utoipa at all, and `lean + utoipa` serves the OpenAPI JSON
-  # without the documentation page. The lean jobs name the service package
-  # explicitly; `default-members` already selects it, but naming it keeps the
-  # command correct if the default members change.
+  # The feature matrix from AGENTS.md: `default` is the full service and the
+  # lean build serves the OpenAPI JSON without the documentation page. The lean
+  # job names the service package explicitly; `default-members` already selects
+  # it, but naming it keeps the command correct if the default members change.
   test:
     name: Test (${{ matrix.name }})
     permissions:
@@ -42,9 +41,6 @@ jobs:
           - name: no default features
             args: -p neuradex --no-default-features
             cache-key: ci-stable-lean
-          - name: lean + utoipa
-            args: -p neuradex --no-default-features --features utoipa
-            cache-key: ci-stable-lean-utoipa
     uses: $/.github/workflows/test.yaml
     with:
       test-args: ${{ matrix.args }}
