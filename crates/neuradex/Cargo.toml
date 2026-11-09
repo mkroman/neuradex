@@ -5,6 +5,17 @@ edition.workspace = true
 description = "A small API service implementing tools for LLM agents."
 license.workspace = true
 publish = false
+# The shared benchmark helper lives next to the benchmark targets; it is a module, not a
+# benchmark target of its own.
+autobenches = false
+
+[lib]
+bench = false
+
+[[bin]]
+name = "neuradex"
+path = "src/main.rs"
+bench = false
 
 [dependencies]
 axum.workspace = true
@@ -52,10 +63,20 @@ docs = ["dep:neuradex-docs"]
 
 [dev-dependencies]
 assert_cmd.workspace = true
+criterion.workspace = true
 predicates.workspace = true
+scraper.workspace = true
 tempfile.workspace = true
 test-support = { path = "../test-support", features = ["app"] }
 tower.workspace = true
+
+[[bench]]
+name = "parsers"
+harness = false
+
+[[bench]]
+name = "http-stack"
+harness = false
 
 [lints]
 workspace = true
