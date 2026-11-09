@@ -11,11 +11,11 @@ use clap::{Args, Parser, Subcommand};
 
 #[cfg(feature = "docs")]
 mod export;
-mod otel;
 
 use neuradex::config::Config;
 use neuradex::http;
 use neuradex::state::AppState;
+use neuradex::telemetry;
 
 /// The duration before an HTTP request times out, shared with the Kagi client.
 const REQUEST_TIMEOUT: Duration = kagi::HTTP_TIMEOUT;
@@ -78,19 +78,6 @@ fn export_docs(_arguments: &ExportDocsArgs) -> Result<(), Box<dyn std::error::Er
     Err("this binary was built without the docs feature; rebuild with --features docs".into())
 }
 
-#[cfg(test)]
-mod log_format_tests {
-    use super::is_json_format;
-
-    #[test]
-    fn selects_json_logs() {
-        assert!(is_json_format(Some("json")));
-        assert!(is_json_format(Some(" JSON ")));
-        assert!(!is_json_format(Some("text")));
-        assert!(!is_json_format(None));
-    }
-}
-
 #[cfg(all(test, feature = "docs"))]
 mod tests {
     use super::*;
@@ -132,7 +119,7 @@ fn is_json_format(value: Option<&str>) -> bool {
 /// The telemetry providers are shut down on every path after initialization, including
 /// configuration and state-build failures, so buffered records are flushed.
 fn serve() -> Result<(), Box<dyn std::error::Error>> {
-    let telemetry = otel::init(json_logs())?;
+    let telemetry = telemetry::init(json_logs())?;
     let result = run_service();
 
     telemetry.shutdown();
@@ -171,4 +158,17 @@ fn run_service() -> Result<(), Box<dyn std::error::Error>> {
     let served = runtime.block_on(http::serve(state, config.listen_addr));
 
     Ok(served?)
+}
+
+#[cfg(test)]
+mod log_format_tests {
+    use super::is_json_format;
+
+    #[test]
+    fn selects_json_logs() {
+        assert!(is_json_format(Some("json")));
+        assert!(is_json_format(Some(" JSON ")));
+        assert!(!is_json_format(Some("text")));
+        assert!(!is_json_format(None));
+    }
 }

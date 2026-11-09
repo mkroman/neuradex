@@ -19,7 +19,7 @@ use crate::api::v1::error::ApiError;
 use crate::metadata::{HeadParser, PageMetadata};
 
 /// The maximum size of a response consumed while extracting document head metadata.
-pub(crate) const HEAD_MAX_BYTES: u64 = 2 * 1024 * 1024;
+pub const HEAD_MAX_BYTES: u64 = 2 * 1024 * 1024;
 
 /// The largest body buffer reserved from a `Content-Length` hint.
 ///
@@ -46,7 +46,7 @@ const TEXT_MEDIA_TYPES: &[&str] = &[
 
 /// How a response body should be consumed.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum BodyMode {
+pub enum BodyMode {
     /// Stop as soon as the document head has been parsed.
     Head,
     /// Read the full body, up to a maximum number of bytes.
@@ -54,7 +54,7 @@ pub(crate) enum BodyMode {
 }
 
 /// The outcome of streaming a response through the head parser.
-pub(crate) struct StreamedBody {
+pub struct StreamedBody {
     /// The metadata captured from the document head.
     pub metadata: PageMetadata,
     /// The body bytes read, when collecting the full body.
@@ -99,7 +99,7 @@ fn initial_body_capacity(content_length: Option<u64>, max_bytes: u64) -> usize {
 /// # Errors
 ///
 /// Returns an error when the response body cannot be read or the parsing task fails.
-pub(crate) async fn read_body(
+pub async fn read_body(
     response: wreq::Response,
     mode: BodyMode,
     content_length: Option<u64>,
@@ -291,7 +291,7 @@ fn is_text_media_type(media: &str) -> bool {
 /// # Errors
 ///
 /// Returns [`ApiError::UnsupportedMediaType`] for binary content types.
-pub(crate) fn ensure_text_content(content_type: Option<&str>) -> Result<(), ApiError> {
+pub fn ensure_text_content(content_type: Option<&str>) -> Result<(), ApiError> {
     let Some(media) = content_type else {
         return Ok(());
     };
@@ -307,7 +307,7 @@ pub(crate) fn ensure_text_content(content_type: Option<&str>) -> Result<(), ApiE
 
 /// Converts a header map into a JSON-friendly map, joining repeated values with `, `.
 #[must_use]
-pub(crate) fn headers_to_json(headers: &HeaderMap) -> BTreeMap<String, String> {
+pub fn headers_to_json(headers: &HeaderMap) -> BTreeMap<String, String> {
     let mut map: BTreeMap<String, String> = BTreeMap::new();
 
     for (name, value) in headers {

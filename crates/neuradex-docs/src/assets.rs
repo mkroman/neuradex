@@ -2,10 +2,12 @@
 //!
 //! The lists below are the single source of truth for the bundling order — templates and
 //! scripts may rely on it (the behavior scripts must run after `helpers.js` creates
-//! `window.docsUI`). Release builds embed everything; debug builds re-read the files from
-//! disk on every call so local edits show up on browser refresh without recompiling,
-//! falling back to the embedded copies when a file cannot be read.
+//! `window.docsUI`). Release builds embed everything and cache each concatenated list;
+//! debug builds re-read the files from disk on every call so local edits show up on
+//! browser refresh without recompiling, falling back to the embedded copies when a file
+//! cannot be read.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -98,14 +100,28 @@ pub fn style_raw() -> String {
     source_text(STYLES)
 }
 
-/// Concatenates the behavior scripts in canonical order.
-pub fn behavior_raw() -> String {
-    source_text(SCRIPTS)
+/// Concatenates the behavior scripts in canonical order: re-read and joined per call in
+/// debug builds, borrowed from a process-wide cache in release builds.
+pub fn behavior_raw() -> Cow<'static, str> {
+    if crate::RELOAD_SOURCES {
+        Cow::Owned(source_text(SCRIPTS))
+    } else {
+        static BUNDLED: LazyLock<String> = LazyLock::new(|| source_text(SCRIPTS));
+
+        Cow::Borrowed(BUNDLED.as_str())
+    }
 }
 
-/// The pre-paint theme bootstrap.
-pub fn bootstrap_raw() -> String {
-    source_text(BOOTSTRAP)
+/// The pre-paint theme bootstrap: re-read per call in debug builds, borrowed from a
+/// process-wide cache in release builds.
+pub fn bootstrap_raw() -> Cow<'static, str> {
+    if crate::RELOAD_SOURCES {
+        Cow::Owned(source_text(BOOTSTRAP))
+    } else {
+        static BUNDLED: LazyLock<String> = LazyLock::new(|| source_text(BOOTSTRAP));
+
+        Cow::Borrowed(BUNDLED.as_str())
+    }
 }
 
 /// The theme directory the debug builds re-read from.

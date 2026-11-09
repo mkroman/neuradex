@@ -98,7 +98,7 @@ impl From<kagi::SearchResult> for SearchResult {
         ApiError,
     )
 )]
-pub(crate) async fn search(
+pub async fn search(
     State(state): State<Arc<AppState>>,
     ApiJson(request): ApiJson<SearchRequest>,
 ) -> Result<Json<SearchResponse>, ApiError> {
@@ -128,7 +128,7 @@ pub(crate) async fn search(
 }
 
 /// A completed search and the time it waited for a slot.
-pub(crate) struct QueuedSearch {
+pub struct QueuedSearch {
     /// The time spent waiting for a search slot before the search started, in milliseconds.
     pub queue_ms: u64,
     /// The raw results returned by Kagi.
@@ -140,7 +140,7 @@ pub(crate) struct QueuedSearch {
 /// The gate blocks while all slots are busy, in FIFO order. Dropping the permit — including when
 /// the surrounding timeout cancels the future mid-search — releases the slot. The optional
 /// `timeout` covers the queue wait, the session wait, and the search itself.
-pub(crate) async fn queued_search(
+pub async fn queued_search(
     state: &AppState,
     query: &str,
     timeout: Option<Duration>,
@@ -203,7 +203,7 @@ pub(crate) async fn queued_search(
         }
     }
 
-    let authentication = if state.kagi_client().privacy_pass().is_some() {
+    let authentication = if state.kagi_client.privacy_pass().is_some() {
         "privacy_pass"
     } else {
         "session"

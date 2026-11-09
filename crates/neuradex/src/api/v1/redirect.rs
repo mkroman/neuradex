@@ -11,11 +11,11 @@ use wreq::StatusCode;
 use wreq::header::{CONTENT_LENGTH, CONTENT_TYPE, LOCATION};
 
 use crate::api::v1::error::ApiError;
-use crate::metrics::{FetchMetrics, RedirectHop, duration_ms};
+use crate::metrics::{PageMetrics, RedirectHop, duration_ms};
 use crate::telemetry;
 
 /// The facts of the final response, captured before the body is consumed.
-pub(crate) struct ResponseInfo {
+pub struct ResponseInfo {
     /// The status code of the final response.
     pub status: u16,
     /// The HTTP version of the final response, e.g. `HTTP/1.1`.
@@ -51,7 +51,7 @@ impl ResponseInfo {
 
 /// Returns the media type — the first, lowercased parameter-free segment — of a content type.
 #[must_use]
-pub(crate) fn media_type(content_type: &str) -> String {
+pub fn media_type(content_type: &str) -> String {
     let media = content_type
         .split_once(';')
         .map_or(content_type, |(media, _)| media);
@@ -60,7 +60,7 @@ pub(crate) fn media_type(content_type: &str) -> String {
 }
 
 /// The outcome of a fetch with redirects followed manually.
-pub(crate) struct FetchOutcome {
+pub struct FetchOutcome {
     /// The URL of the final response, after following redirects.
     pub url: Url,
     /// The number of redirects followed.
@@ -81,8 +81,8 @@ impl FetchOutcome {
         bytes_read: u64,
         truncated: bool,
         started: Instant,
-    ) -> FetchMetrics {
-        FetchMetrics {
+    ) -> PageMetrics {
+        PageMetrics {
             status: self.info.status,
             final_url: self.url.to_string(),
             http_version: self.info.http_version,
@@ -104,7 +104,7 @@ impl FetchOutcome {
 /// response: `followed == max_redirects` together with a 3xx status identifies it. Intermediate
 /// hops are only recorded when `collect_hops` is set; `followed` always counts them. Only
 /// redirects to `http` or `https` URLs are followed, so the final response may be a redirect.
-pub(crate) async fn fetch_with_redirects(
+pub async fn fetch_with_redirects(
     client: &wreq::Client,
     url: Url,
     max_redirects: u32,

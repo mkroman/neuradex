@@ -6,7 +6,7 @@ use serde::Serialize;
 
 /// Converts a duration to whole milliseconds.
 #[must_use]
-pub(crate) fn duration_ms(duration: Duration) -> u64 {
+pub fn duration_ms(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
@@ -35,7 +35,7 @@ pub struct RedirectHop {
     "redirects_followed": 0,
     "truncated": false
 })))]
-pub struct FetchMetrics {
+pub struct PageMetrics {
     /// The status code of the final response.
     pub status: u16,
     /// The URL of the final response, after following redirects.

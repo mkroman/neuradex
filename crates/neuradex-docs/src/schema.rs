@@ -157,3 +157,77 @@ pub fn flat_value(value: &Value) -> String {
         other => other.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn body_example_reads_singular_and_array_examples_only() {
+        let singular = json!({"example": "one"});
+        assert_eq!(body_example(&singular).and_then(Value::as_str), Some("one"));
+
+        let array = json!({"examples": ["first", "second"]});
+        assert_eq!(body_example(&array).and_then(Value::as_str), Some("first"));
+
+        // Named Example Objects are only unwrapped by `example`.
+        let named = json!({"examples": {"first": {"value": "one"}}});
+        assert_eq!(body_example(&named), None);
+
+        assert_eq!(body_example(&json!({})), None);
+    }
+
+    #[test]
+    fn example_unwraps_named_examples() {
+        let singular = json!({"example": "one"});
+        assert_eq!(example(&singular).and_then(Value::as_str), Some("one"));
+
+        let named = json!({"examples": {
+            "first": {"summary": "metadata", "value": "one"},
+            "second": {"value": "two"}
+        }});
+        assert_eq!(example(&named).and_then(Value::as_str), Some("one"));
+    }
+
+    #[test]
+    fn example_values_wraps_a_scalar_example() {
+        let schema = json!({"examples": "only"});
+        let values = example_values(&schema);
+
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0], &json!("only"));
+    }
+
+    #[test]
+    fn push_type_annotation_falls_back_for_unknown_array_items() {
+        let mut anns = Vec::new();
+        push_type_annotation(&mut anns, Some(&json!({"type": "array"})), Some("array"));
+        push_type_annotation(
+            &mut anns,
+            Some(&json!({"type": "array", "items": {}})),
+            Some("array"),
+        );
+        push_type_annotation(
+            &mut anns,
+            Some(&json!({"type": "array", "items": {"type": "string"}})),
+            Some("array"),
+        );
+
+        assert_eq!(anns.len(), 3);
+        assert!(
+            anns[..2]
+                .iter()
+                .all(|annotation| annotation.key == "type" && annotation.value == "array")
+        );
+        assert_eq!(anns[2].value, "array<string>");
+    }
+
+    #[test]
+    fn flat_value_formats_arrays_strings_and_other_values() {
+        assert_eq!(flat_value(&json!(["a", 2, true])), "a, 2, true");
+        assert_eq!(flat_value(&json!("raw")), "raw");
+        assert_eq!(flat_value(&json!({"a": 1})), r#"{"a":1}"#);
+    }
+}

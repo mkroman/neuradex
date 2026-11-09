@@ -47,7 +47,7 @@ struct MessageError(String);
         "message": "the timeout must be between 1 and 30 seconds"
     }
 })))]
-pub(crate) struct ErrorBody {
+pub struct ErrorBody {
     /// The error details.
     error: ErrorDetail,
 }
@@ -80,7 +80,7 @@ impl ErrorBody {
 /// the 404 and 405 fallbacks produce them too.
 #[derive(Clone, Copy, Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ErrorKind {
+pub enum ErrorKind {
     /// A request parameter is missing, malformed, or out of range.
     InvalidParam,
     /// The request body or target response has an unsupported content type.

@@ -1,3 +1,4 @@
+{% import "partials/macros.html" as ui -%}
 <div class="prop-row">
   <div class="prop-head">
     <span class="schema-name">{{ row.name }}</span>
@@ -7,11 +8,5 @@
   {%- if !row.description_html.is_empty() %}
   <p class="prop-desc">{{ row.description_html|safe }}</p>
   {%- endif %}
-  {%- if !row.anns.is_empty() %}
-  <span class="ann-list prop-anns">
-    {%- for ann in row.anns -%}
-    <span class="ann"><span class="ann-k">{{ ann.key }}</span> <span class="ann-v">{{ ann.value }}</span></span>
-    {%- endfor -%}
-  </span>
-  {%- endif %}
+  {{ ui::annotation_list(row.anns, "ann-list prop-anns") }}
 </div>

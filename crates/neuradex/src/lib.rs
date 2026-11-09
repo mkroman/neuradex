@@ -8,6 +8,6 @@ pub mod api;
 pub mod config;
 pub mod http;
 pub mod metadata;
-pub mod metrics;
+pub(crate) mod metrics;
 pub mod state;
-mod telemetry;
+pub mod telemetry;

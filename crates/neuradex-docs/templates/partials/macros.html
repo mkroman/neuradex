@@ -1,0 +1,69 @@
+{# Reusable markup shared by the page partials. Import with:
+   {% import "partials/macros.html" as ui %}
+   Askama imports do not propagate through includes, so every partial that calls these
+   macros imports this file itself. #}
+
+{# The constraint annotation list. `css_class` lets each call site keep its own styling
+   class while the item markup stays in one place. #}
+{% macro annotation_list(anns, css_class="ann-list") -%}
+{%- if !anns.is_empty() %}
+<span class="{{ css_class }}">
+  {%- for anno in anns.iter() -%}
+  <span class="ann"><span class="ann-k">{{ anno.key }}</span> <span class="ann-v">{{ anno.value }}</span></span>
+  {%- endfor -%}
+</span>
+{%- endif -%}
+{%- endmacro %}
+
+{# A parameter table section, shared by query parameters and request-body fields (both
+   are `Vec<Param>`). `media_type` and `description_html` are optional extras used by the
+   request-body table; `description_html` is pre-rendered and therefore safe. #}
+{% macro param_table(title, aria_label, empty_text, rows, media_type="", description_html="") -%}
+<section class="widget" aria-label="{{ aria_label }}">
+  <h3 class="widget-label">{{ title }}{% if !media_type.is_empty() %} <span class="ann-k">{{ media_type }}</span>{% endif %}</h3>
+  {%- if !description_html.is_empty() %}
+  <p class="param-desc">{{ description_html|safe }}</p>
+  {%- endif %}
+  {%- if rows.is_empty() %}
+  <p class="widget-empty">{{ empty_text }}</p>
+  {%- else %}
+  <table class="params">
+    <thead>
+      <tr>
+        <th scope="col">name</th>
+        <th scope="col">description</th>
+        <th scope="col">value</th>
+      </tr>
+    </thead>
+    <tbody>
+      {%- for row in rows.iter() %}
+      <tr>
+        <td>
+          <div class="param-name-wrap"><span class="param-name">{{ row.name }}</span>{% if row.required %}<span class="req">*</span>{% else %}<span class="opt">optional</span>{% endif %}</div>
+        </td>
+        <td class="param-desc">{{ row.description_html|safe }}</td>
+        <td>
+          {{ annotation_list(row.anns) }}
+        </td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  {%- endif %}
+</section>
+{%- endmacro %}
+
+{# The request builder's inputs for one location (`query` or `body`); `aria_suffix` is
+   `parameter` or `field`, matching the label each input gets. #}
+{% macro tryit_fields(rows, location, endpoint_id, aria_suffix) -%}
+{%- for row in rows.iter() %}
+<div class="field">
+  <label class="field-label" for="field-{{ endpoint_id }}-{{ location }}-{{ row.name }}">
+    <span class="param-name">{{ row.name }}</span>
+    {%- if row.required %}<span class="req">*</span>{% else %}<span class="opt">optional</span>{% endif %}
+  </label>
+  <input id="field-{{ endpoint_id }}-{{ location }}-{{ row.name }}" type="text" value="{{ row.seed }}" data-name="{{ row.name }}" data-location="{{ location }}" data-type="{{ row.schema_type.as_deref().unwrap_or("string") }}"{% if row.is_array %} data-array="true"{% endif %} spellcheck="false" autocomplete="off" aria-label="{{ row.name }} {{ aria_suffix }}">
+  {{ annotation_list(row.anns, "ann-list field-hint") }}
+</div>
+{%- endfor %}
+{%- endmacro %}

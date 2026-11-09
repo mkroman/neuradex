@@ -18,14 +18,16 @@ use serde::de::DeserializeOwned;
 use url::Url;
 
 use crate::api::v1::error::ApiError;
-use crate::api::v1::{MAX_REDIRECTS, MAX_SEARCH_TIMEOUT_SECS};
 
-/// The default number of redirects to follow when none is requested.
-pub const DEFAULT_REDIRECTS: u32 = MAX_REDIRECTS;
+/// The maximum number of redirects the fetch endpoints will follow.
+pub const MAX_REDIRECTS: u32 = 5;
+
+/// The maximum value accepted by the search endpoint's `timeout` parameter, in seconds.
+pub const MAX_SEARCH_TIMEOUT_SECS: u64 = 30;
 
 /// A response section that an endpoint may include.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Include {
+pub enum Include {
     /// The chain of intermediate redirect hops in the metrics.
     Redirects,
     /// The request and response headers of the fetched page.
@@ -62,17 +64,17 @@ impl Include {
 }
 
 /// The `include` values accepted by the peek endpoint.
-pub(crate) const PEEK_INCLUDES: &[Include] = &[Include::Redirects];
+pub const PEEK_INCLUDES: &[Include] = &[Include::Redirects];
 
 /// The `include` values accepted by the fetch endpoint.
-pub(crate) const FETCH_INCLUDES: &[Include] = &[Include::Redirects, Include::Headers];
+pub const FETCH_INCLUDES: &[Include] = &[Include::Redirects, Include::Headers];
 
 /// The query parameters shared by the page-fetching endpoints (`/v1/fetch` and `/v1/peek`), as
 /// they arrive on the wire.
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[serde(deny_unknown_fields)]
 #[into_params(parameter_in = Query)]
-pub(crate) struct PageParams {
+pub struct PageParams {
     /// The absolute URL of the page to fetch.
     #[param(example = "https://example.com", format = "uri")]
     pub(crate) url: String,
@@ -93,7 +95,7 @@ pub(crate) struct PageParams {
     "timeout": 10
 })))]
 #[serde(deny_unknown_fields)]
-pub(crate) struct SearchRequest {
+pub struct SearchRequest {
     /// The search query.
     #[schema(example = "rust programming")]
     pub(crate) query: String,
@@ -106,6 +108,38 @@ pub(crate) struct SearchRequest {
     pub(crate) timeout: Option<u64>,
 }
 
+/// The number of results returned when the request carries no `count`.
+pub const DEFAULT_COUNT: usize = 5;
+
+/// The request body of the Open WebUI external search endpoint, as it arrives on the wire.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[schema(examples(json!({"query": "rust programming", "count": 5})))]
+#[serde(deny_unknown_fields)]
+pub struct OpenWebUiSearchRequest {
+    /// The user's search query string.
+    #[schema(example = "rust programming")]
+    pub query: String,
+    /// The suggested maximum number of results; defaults to `DEFAULT_COUNT` when omitted.
+    #[schema(default = 5, example = 5)]
+    pub count: Option<usize>,
+}
+
+impl OpenWebUiSearchRequest {
+    /// Resolves the requested result count, defaulting to [`DEFAULT_COUNT`].
+    pub(crate) fn count(&self) -> usize {
+        self.count.unwrap_or(DEFAULT_COUNT)
+    }
+
+    /// Validates the request body.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the query is empty.
+    pub(crate) fn validate(&self) -> Result<(), ApiError> {
+        validate_query(&self.query)
+    }
+}
+
 /// Extracts the query parameters of an endpoint into its wire type.
 ///
 /// A thin wrapper over [`axum_extra::extract::Query`] whose rejection is [`ApiError`], so a
@@ -114,7 +148,7 @@ pub(crate) struct SearchRequest {
 /// guarantees: endpoint-specific validation is applied by the handlers on the extracted value,
 /// not here.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct ApiQuery<T>(pub(crate) T);
+pub struct ApiQuery<T>(pub(crate) T);
 
 impl<S, T> FromRequestParts<S> for ApiQuery<T>
 where
@@ -143,7 +177,7 @@ where
 /// guarantees: endpoint-specific validation is applied by the handlers on the extracted value,
 /// not here.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct ApiJson<T>(pub(crate) T);
+pub struct ApiJson<T>(pub(crate) T);
 
 impl<S, T> FromRequest<S> for ApiJson<T>
 where
@@ -214,6 +248,17 @@ impl IncludeSet {
     }
 }
 
+/// A validated page request, ready for the redirect-following layer.
+#[derive(Debug)]
+pub struct PageRequest {
+    /// The absolute URL of the page to fetch.
+    pub url: Url,
+    /// The maximum number of redirects to follow.
+    pub redirects: u32,
+    /// The optional response sections selected by the `include` parameter.
+    pub includes: IncludeSet,
+}
+
 impl PageParams {
     /// Parses and validates the `url` parameter.
     ///
@@ -235,13 +280,13 @@ impl PageParams {
         Ok(url)
     }
 
-    /// Resolves the number of redirects to follow, defaulting to [`DEFAULT_REDIRECTS`].
+    /// Resolves the number of redirects to follow, defaulting to [`MAX_REDIRECTS`].
     ///
     /// # Errors
     ///
     /// Returns an error when the value exceeds [`MAX_REDIRECTS`].
     pub(crate) fn redirects(&self) -> Result<u32, ApiError> {
-        let redirects = self.redirects.unwrap_or(DEFAULT_REDIRECTS);
+        let redirects = self.redirects.unwrap_or(MAX_REDIRECTS);
 
         if redirects > MAX_REDIRECTS {
             return Err(ApiError::invalid_param(format!(
@@ -260,6 +305,40 @@ impl PageParams {
     pub(crate) fn includes(&self, allowed: &[Include]) -> Result<IncludeSet, ApiError> {
         IncludeSet::parse(&self.include, allowed)
     }
+
+    /// Validates the page parameters against the endpoint's `allowed` includes.
+    ///
+    /// The parameters are validated in the order the handlers report them — URL, redirects,
+    /// includes — so the first invalid parameter is the one reported.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error from [`PageParams::url`], [`PageParams::redirects`], or
+    /// [`PageParams::includes`].
+    pub(crate) fn validate(&self, allowed: &[Include]) -> Result<PageRequest, ApiError> {
+        let url = self.url()?;
+        let redirects = self.redirects()?;
+        let includes = self.includes(allowed)?;
+
+        Ok(PageRequest {
+            url,
+            redirects,
+            includes,
+        })
+    }
+}
+
+/// Validates a search query.
+///
+/// # Errors
+///
+/// Returns an error when the query is empty.
+fn validate_query(query: &str) -> Result<(), ApiError> {
+    if query.is_empty() {
+        return Err(ApiError::invalid_param("the query is empty"));
+    }
+
+    Ok(())
 }
 
 impl SearchRequest {
@@ -269,9 +348,7 @@ impl SearchRequest {
     ///
     /// Returns an error when the query is empty or the timeout is out of range.
     pub(crate) fn validate(&self) -> Result<(), ApiError> {
-        if self.query.is_empty() {
-            return Err(ApiError::invalid_param("the query is empty"));
-        }
+        validate_query(&self.query)?;
 
         if self.timeout == Some(0) {
             return Err(ApiError::invalid_param(
@@ -337,11 +414,30 @@ mod tests {
     fn parses_page_params() {
         let query =
             page_params("url=https://example.com&redirects=2&include=redirects").expect("valid");
+        let request = query.validate(FETCH_INCLUDES).expect("valid");
 
-        assert_eq!(query.url().expect("valid").as_str(), "https://example.com/");
-        assert_eq!(query.redirects().expect("valid"), 2);
-        assert!(query.includes(FETCH_INCLUDES).expect("valid").redirects);
-        assert!(!query.includes(FETCH_INCLUDES).expect("valid").headers);
+        assert_eq!(request.url.as_str(), "https://example.com/");
+        assert_eq!(request.redirects, 2);
+        assert!(request.includes.redirects);
+        assert!(!request.includes.headers);
+    }
+
+    #[test]
+    fn validates_page_params_in_url_redirects_includes_order() {
+        // An invalid URL takes precedence over the out-of-range redirects and the unknown
+        // include, so the router reports the same parameter it always did.
+        let query = page_params("url=not%20a%20url&redirects=6&include=nope").expect("valid");
+        assert_matches!(
+            query.validate(FETCH_INCLUDES),
+            Err(ApiError::InvalidParam(message)) if message.starts_with("invalid url:")
+        );
+
+        // Out-of-range redirects take precedence over the unknown include.
+        let query = page_params("url=https://example.com&redirects=6&include=nope").expect("valid");
+        assert_matches!(
+            query.validate(FETCH_INCLUDES),
+            Err(ApiError::InvalidParam(message)) if message.starts_with("redirects must be")
+        );
     }
 
     #[test]
@@ -358,7 +454,7 @@ mod tests {
     fn defaults_redirects() {
         let query = page_params("url=https://example.com").expect("valid");
 
-        assert_eq!(query.redirects().expect("valid"), DEFAULT_REDIRECTS);
+        assert_eq!(query.redirects().expect("valid"), MAX_REDIRECTS);
         assert_eq!(
             query.includes(FETCH_INCLUDES).expect("valid"),
             IncludeSet::default()
@@ -493,5 +589,16 @@ mod tests {
             Json::<SearchRequest>::from_bytes(br#"{"query":""}"#).expect("valid body");
 
         assert_matches!(request.validate(), Err(ApiError::InvalidParam(_)));
+    }
+
+    #[test]
+    fn extracts_openwebui_search_requests_through_the_real_json_extractor() {
+        let Json(request) =
+            Json::<OpenWebUiSearchRequest>::from_bytes(br#"{"query":"rust programming"}"#)
+                .expect("valid body");
+
+        assert!(request.validate().is_ok());
+        assert_eq!(request.query, "rust programming");
+        assert_eq!(request.count(), DEFAULT_COUNT);
     }
 }

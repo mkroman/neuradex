@@ -1,16 +1,6 @@
 //! OpenTelemetry-compatible spans for outbound HTTP requests.
 //!
-//! The spans use the stable HTTP client semantic conventions, so a `tracing-opentelemetry`
-//! layer can export them without translation. The plain-text subscriber prints the same
-//! fields, and the `otel.*` fields keep the span kind and status meaningful in either sink.
-//!
-//! `url.full` is sanitized before it reaches telemetry: userinfo, fragments, and query values
-//! are redacted, while query keys remain to identify the request shape.
-//!
-//! The HTTP fields are declared only in [`http_client_span`], [`record_response`], and
-//! [`record_error`]. Keep it that way: `tracing` permits duplicate field names on one span,
-//! while OpenTelemetry attribute keys must be unique, so callers must not redeclare these
-//! fields on the same span.
+//! See the parent module for the conventions these helpers follow.
 
 use tracing::{Span, field, info_span};
 use url::Url;
@@ -20,11 +10,7 @@ use url::Url;
 /// The span name sent to OpenTelemetry exporters is just the method: a fetched page has no
 /// low-cardinality target, and the HTTP conventions forbid using its path as the span name.
 /// The sanitized URL is still recorded in `url.full`.
-#[expect(
-    clippy::redundant_pub_crate,
-    reason = "the telemetry module is private, so pub(crate) states the effective reachability"
-)]
-pub(crate) fn http_client_span(method: &'static str, url: &Url, resend_count: u32) -> Span {
+pub fn http_client_span(method: &'static str, url: &Url, resend_count: u32) -> Span {
     // Outbound requests are part of the service's normal operation, so they are visible
     // at the default INFO level. The Kagi library keeps its per-request spans at DEBUG.
     let span = info_span!(
@@ -63,11 +49,7 @@ pub(crate) fn http_client_span(method: &'static str, url: &Url, resend_count: u3
 ///
 /// A 4xx or 5xx status marks the span as failed for a client, as the stable HTTP semantic
 /// conventions require; 1xx–3xx leave the status unset.
-#[expect(
-    clippy::redundant_pub_crate,
-    reason = "the telemetry module is private, so pub(crate) states the effective reachability"
-)]
-pub(crate) fn record_response(span: &Span, response: &wreq::Response) {
+pub fn record_response(span: &Span, response: &wreq::Response) {
     let status = response.status();
     span.record("http.response.status_code", status.as_u16());
 
@@ -82,11 +64,7 @@ pub(crate) fn record_response(span: &Span, response: &wreq::Response) {
 }
 
 /// Records a failed request on its HTTP client span.
-#[expect(
-    clippy::redundant_pub_crate,
-    reason = "the telemetry module is private, so pub(crate) states the effective reachability"
-)]
-pub(crate) fn record_error(span: &Span, error: &wreq::Error) {
+pub fn record_error(span: &Span, error: &wreq::Error) {
     if let Some(status) = error.status() {
         span.record("http.response.status_code", status.as_u16());
         span.record("error.type", field::display(status.as_u16()));

@@ -11,10 +11,10 @@ use axum::extract::State;
 use serde::Serialize;
 
 use crate::api::v1::error::ApiError;
-use crate::api::v1::extract::{ApiQuery, PEEK_INCLUDES, PageParams};
+use crate::api::v1::extract::{ApiQuery, PEEK_INCLUDES, PageParams, PageRequest};
 use crate::api::v1::{redirect, stream};
 use crate::metadata::PageMetadata;
-use crate::metrics::FetchMetrics;
+use crate::metrics::PageMetrics;
 use crate::state::AppState;
 
 /// The response of the peek endpoint.
@@ -49,7 +49,7 @@ pub struct PeekResponse {
     /// The metadata extracted from the document head.
     pub metadata: PageMetadata,
     /// The request metrics and stats.
-    pub metrics: FetchMetrics,
+    pub metrics: PageMetrics,
 }
 
 /// Fetches a page and returns its document head metadata.
@@ -78,13 +78,15 @@ pub struct PeekResponse {
         ApiError,
     )
 )]
-pub(crate) async fn peek(
+pub async fn peek(
     State(state): State<Arc<AppState>>,
     ApiQuery(params): ApiQuery<PageParams>,
 ) -> Result<Json<PeekResponse>, ApiError> {
-    let url = params.url()?;
-    let redirects = params.redirects()?;
-    let includes = params.includes(PEEK_INCLUDES)?;
+    let PageRequest {
+        url,
+        redirects,
+        includes,
+    } = params.validate(PEEK_INCLUDES)?;
     let requested = url.to_string();
 
     let started = Instant::now();

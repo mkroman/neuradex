@@ -1,40 +1,11 @@
+{% import "partials/macros.html" as ui -%}
 <section class="widget tryit" aria-label="Request builder" data-path="{{ endpoint.path }}" data-method="{{ endpoint.method }}">
   <h3 class="widget-label">Try it</h3>
   <div class="tryit-fields">
-    {%- for param in endpoint.params %}
-    <div class="field">
-      <label class="field-label" for="field-{{ endpoint.id }}-query-{{ param.name }}">
-        <span class="param-name">{{ param.name }}</span>
-        {%- if param.required %}<span class="req">*</span>{% else %}<span class="opt">optional</span>{% endif %}
-      </label>
-      <input id="field-{{ endpoint.id }}-query-{{ param.name }}" type="text" value="{{ param.seed }}" data-name="{{ param.name }}" data-location="query" data-type="{{ param.schema_type.as_deref().unwrap_or("string") }}"{% if param.is_array %} data-array="true"{% endif %} spellcheck="false" autocomplete="off" aria-label="{{ param.name }} parameter">
-      {%- if !param.anns.is_empty() %}
-      <span class="ann-list field-hint">
-        {%- for anno in param.anns -%}
-        <span class="ann"><span class="ann-k">{{ anno.key }}</span> <span class="ann-v">{{ anno.value }}</span></span>
-        {%- endfor -%}
-      </span>
-      {%- endif %}
-    </div>
-    {%- endfor %}
+    {{ ui::tryit_fields(endpoint.params, "query", endpoint.id, "parameter") }}
     {%- match endpoint.body %}
     {%- when Some(body) %}
-    {%- for field in body.fields %}
-    <div class="field">
-      <label class="field-label" for="field-{{ endpoint.id }}-body-{{ field.name }}">
-        <span class="param-name">{{ field.name }}</span>
-        {%- if field.required %}<span class="req">*</span>{% else %}<span class="opt">optional</span>{% endif %}
-      </label>
-      <input id="field-{{ endpoint.id }}-body-{{ field.name }}" type="text" value="{{ field.seed }}" data-name="{{ field.name }}" data-location="body" data-type="{{ field.schema_type.as_deref().unwrap_or("string") }}"{% if field.is_array %} data-array="true"{% endif %} spellcheck="false" autocomplete="off" aria-label="{{ field.name }} field">
-      {%- if !field.anns.is_empty() %}
-      <span class="ann-list field-hint">
-        {%- for anno in field.anns -%}
-        <span class="ann"><span class="ann-k">{{ anno.key }}</span> <span class="ann-v">{{ anno.value }}</span></span>
-        {%- endfor -%}
-      </span>
-      {%- endif %}
-    </div>
-    {%- endfor %}
+    {{ ui::tryit_fields(body.fields, "body", endpoint.id, "field") }}
     {%- when None %}
     {%- endmatch %}
   </div>

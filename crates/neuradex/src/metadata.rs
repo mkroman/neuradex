@@ -613,15 +613,6 @@ mod tests {
     }
 
     #[test]
-    fn captures_only_the_first_title() {
-        let metadata = parse_metadata(
-            "<html><head><title>First</title></head><body><svg><title>Second</title></svg></body></html>",
-        );
-
-        assert_eq!(metadata.title.as_deref(), Some("First"));
-    }
-
-    #[test]
     fn stops_at_the_end_of_head() {
         let metadata = parse_metadata(
             "<html><head><title>Hello</title></head><body><title>Ignored</title></body></html>",

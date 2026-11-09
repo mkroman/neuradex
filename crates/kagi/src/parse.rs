@@ -205,7 +205,7 @@ fn payload_content(message: &KagiMessage) -> Option<&str> {
 fn parse_structured_results(payload: &Value) -> Result<SearchResultsJson, serde_json::Error> {
     match payload {
         Value::String(json) => serde_json::from_str(json),
-        payload => serde_json::from_value(payload.clone()),
+        payload => SearchResultsJson::deserialize(payload),
     }
 }
 
@@ -608,6 +608,23 @@ mod tests {
 
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].tag, "search");
+    }
+
+    #[test]
+    fn drops_malformed_sse_events_and_keeps_later_ones() {
+        let html = r#"<div class="search-result"><h3 class="__sri-title-box"><a class="__sri_title_link" href="https://example.com">Example</a></h3><div class="__sri-desc"><div>A description</div></div></div>"#;
+        let body = format!(
+            "data: not-json\ndata: [{{\"tag\":\"search\",\"payload\":{}}}]\n\n",
+            serde_json::to_string(html).expect("the HTML fixture serializes")
+        );
+
+        let messages = parse_stream(&body);
+        let results = parse_search_result_messages(&messages);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Example");
+        assert_eq!(results[0].url, "https://example.com");
+        assert_eq!(results[0].description, "A description");
     }
 
     #[test]

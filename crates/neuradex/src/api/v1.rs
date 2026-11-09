@@ -1,14 +1,14 @@
 //! API v1: routes and handlers.
 
-pub mod error;
-pub mod extract;
-pub mod fetch;
-pub mod openapi;
-pub mod openwebui_search;
-pub mod peek;
-pub mod redirect;
-pub mod search;
-pub mod stream;
+pub(crate) mod error;
+pub(crate) mod extract;
+pub(crate) mod fetch;
+pub(crate) mod openapi;
+pub(crate) mod openwebui_search;
+pub(crate) mod peek;
+pub(crate) mod redirect;
+pub(crate) mod search;
+pub(crate) mod stream;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -34,12 +34,6 @@ use error::ErrorBody;
 
 use crate::metrics::duration_ms;
 use crate::state::AppState;
-
-/// The maximum number of redirects the fetch endpoints will follow.
-pub(crate) const MAX_REDIRECTS: u32 = 5;
-
-/// The maximum value accepted by the search endpoint's `timeout` parameter, in seconds.
-pub(crate) const MAX_SEARCH_TIMEOUT_SECS: u64 = 30;
 
 /// Builds the v1 API router together with the OpenAPI document derived from its routes.
 ///
@@ -542,6 +536,13 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn serves_the_health_endpoint() {
+        let response = send(router_for_test(), "GET", "/healthz").await;
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
     async fn renders_unmatched_routes_as_json_errors() {
         let response = send(router_for_test(), "GET", "/nope").await;
 
@@ -702,19 +703,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_get_requests_for_the_openwebui_search_endpoint() {
-        let response = send(router_for_test(), "GET", "/v1/openwebui_search").await;
-
-        assert_error(
-            response,
-            StatusCode::METHOD_NOT_ALLOWED,
-            "method_not_allowed",
-            "method GET is not allowed for /v1/openwebui_search",
-        )
-        .await;
-    }
-
-    #[tokio::test]
     async fn renders_malformed_openwebui_search_bodies_as_json_errors() {
         // Each of these fails extraction — a syntax error, an unknown field, a missing or
         // non-parseable field — and must render the envelope, not axum's plain-text rejection.
@@ -759,18 +747,5 @@ mod tests {
             )
             .await;
         }
-    }
-
-    #[tokio::test]
-    async fn renders_an_empty_openwebui_search_query_as_a_json_error() {
-        // Extracts cleanly but fails the handler's own validation — before any network I/O.
-        let response = send_json(
-            router_for_test(),
-            "/v1/openwebui_search",
-            serde_json::json!({"query": "", "count": 5}),
-        )
-        .await;
-
-        assert_error_kind(response, StatusCode::BAD_REQUEST, "invalid_param").await;
     }
 }

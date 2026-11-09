@@ -163,7 +163,7 @@ impl KagiHarness {
 
     /// Mocks the search document with an arbitrary body, delaying its response by `delay`.
     #[must_use]
-    pub fn mock_nonce_body_delayed(&self, body: &str, delay: Duration) -> Mock<'_> {
+    fn mock_nonce_body_delayed(&self, body: &str, delay: Duration) -> Mock<'_> {
         self.mock_document_nonce("search", QUERY, body, delay)
     }
 
@@ -214,7 +214,7 @@ impl KagiHarness {
 
     /// Mocks a search stream for `query`, asserting whether the first-request nonce is present.
     #[must_use]
-    pub(crate) fn mock_search_stream_for(
+    fn mock_search_stream_for(
         &self,
         query: &str,
         nonce: Option<&str>,

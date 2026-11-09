@@ -10,7 +10,7 @@ use wreq_util::Emulation;
 /// Errors that can occur while constructing the application state.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum BuildError {
+pub enum AppStateError {
     /// A configured header value is invalid.
     #[error("invalid header value: {0}")]
     InvalidHeader(#[from] wreq::header::InvalidHeaderValue),
@@ -55,7 +55,7 @@ impl AppState {
         timeout: Duration,
         max_sessions: usize,
         privacy_pass: bool,
-    ) -> Result<Self, BuildError> {
+    ) -> Result<Self, AppStateError> {
         let max_sessions = max_sessions.clamp(1, crate::config::MAX_SEARCH_SESSIONS);
         let kagi_client = kagi::Client::with_token_and_options(
             kagi_token,
@@ -88,7 +88,7 @@ impl AppState {
         user_agent: &str,
         kagi_client: kagi::Client,
         timeout: Duration,
-    ) -> Result<Self, BuildError> {
+    ) -> Result<Self, AppStateError> {
         let default_headers = default_headers(user_agent)?;
         let max_sessions = kagi_client
             .max_sessions()
@@ -112,19 +112,13 @@ impl AppState {
             default_headers,
         })
     }
-
-    /// Returns the Kagi client used for searches.
-    #[must_use]
-    pub const fn kagi_client(&self) -> &kagi::Client {
-        &self.kagi_client
-    }
 }
 
 /// Returns the request headers layered on top of the emulated browser profile.
 ///
 /// `Accept-Encoding` must be set explicitly: like reqwest, wreq does not advertise the header
 /// itself even though it decompresses responses — and its absence is enough to get flagged.
-fn default_headers(user_agent: &str) -> Result<HeaderMap, BuildError> {
+fn default_headers(user_agent: &str) -> Result<HeaderMap, AppStateError> {
     let mut headers = HeaderMap::new();
 
     headers.insert(
@@ -159,7 +153,7 @@ mod tests {
     fn sizes_the_search_gate_from_the_client_limit() {
         let state = state_with_max_sessions(3);
 
-        assert_eq!(state.kagi_client().max_sessions(), 3);
+        assert_eq!(state.kagi_client.max_sessions(), 3);
         assert_eq!(state.search_gate.available_permits(), 3);
     }
 
@@ -168,7 +162,7 @@ mod tests {
         // The Kagi client normalizes an invalid zero limit to one session.
         let state = state_with_max_sessions(0);
 
-        assert_eq!(state.kagi_client().max_sessions(), 1);
+        assert_eq!(state.kagi_client.max_sessions(), 1);
         assert_eq!(state.search_gate.available_permits(), 1);
     }
 
@@ -177,7 +171,7 @@ mod tests {
         let state = state_with_max_sessions(crate::config::MAX_SEARCH_SESSIONS + 1);
 
         assert_eq!(
-            state.kagi_client().max_sessions(),
+            state.kagi_client.max_sessions(),
             crate::config::MAX_SEARCH_SESSIONS + 1
         );
         assert_eq!(
@@ -196,7 +190,7 @@ mod tests {
             false,
         )
         .expect("valid state");
-        assert!(session.kagi_client().privacy_pass().is_none());
+        assert!(session.kagi_client.privacy_pass().is_none());
 
         let privacy_pass = AppState::try_new(
             "test-agent",
@@ -206,7 +200,7 @@ mod tests {
             true,
         )
         .expect("valid state");
-        assert!(privacy_pass.kagi_client().privacy_pass().is_some());
+        assert!(privacy_pass.kagi_client.privacy_pass().is_some());
     }
 
     #[test]
@@ -231,6 +225,6 @@ mod tests {
     fn rejects_invalid_user_agents() {
         let error = default_headers("bad\nagent").expect_err("invalid header value");
 
-        assert!(matches!(error, BuildError::InvalidHeader(_)));
+        assert!(matches!(error, AppStateError::InvalidHeader(_)));
     }
 }

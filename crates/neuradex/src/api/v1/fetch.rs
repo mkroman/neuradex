@@ -11,14 +11,14 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
 use crate::api::v1::error::ApiError;
-use crate::api::v1::extract::{ApiQuery, FETCH_INCLUDES, PageParams};
+use crate::api::v1::extract::{ApiQuery, FETCH_INCLUDES, PageParams, PageRequest};
 use crate::api::v1::{redirect, stream};
 use crate::metadata::PageMetadata;
-use crate::metrics::FetchMetrics;
+use crate::metrics::PageMetrics;
 use crate::state::AppState;
 
 /// The maximum size of a fetched response body.
-pub(crate) const FETCH_MAX_BYTES: u64 = 25 * 1024 * 1024;
+pub const FETCH_MAX_BYTES: u64 = 25 * 1024 * 1024;
 
 /// The response of the fetch endpoint.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -66,7 +66,7 @@ pub struct FetchResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_headers: Option<BTreeMap<String, String>>,
     /// The request metrics and stats.
-    pub metrics: FetchMetrics,
+    pub metrics: PageMetrics,
 }
 
 /// Fetches a page and returns its metadata, body, headers, and metrics.
@@ -96,13 +96,15 @@ pub struct FetchResponse {
         ApiError,
     )
 )]
-pub(crate) async fn fetch(
+pub async fn fetch(
     State(state): State<Arc<AppState>>,
     ApiQuery(params): ApiQuery<PageParams>,
 ) -> Result<Response, ApiError> {
-    let url = params.url()?;
-    let redirects = params.redirects()?;
-    let includes = params.includes(FETCH_INCLUDES)?;
+    let PageRequest {
+        url,
+        redirects,
+        includes,
+    } = params.validate(FETCH_INCLUDES)?;
     let requested = url.to_string();
 
     let started = Instant::now();
@@ -121,7 +123,12 @@ pub(crate) async fn fetch(
         fetched.info.content_length,
     )
     .await?;
-    let body = String::from_utf8(read.body.expect("full mode collects the body"))
+    let Some(body) = read.body else {
+        return Err(ApiError::internal_message(
+            "the full-body read returned no body",
+        ));
+    };
+    let body = String::from_utf8(body)
         .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
     let metrics = fetched.into_metrics(read.bytes_read, read.truncated, started);
 
