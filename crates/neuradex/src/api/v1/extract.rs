@@ -67,12 +67,12 @@ pub(crate) const PEEK_INCLUDES: &[Include] = &[Include::Redirects];
 /// The `include` values accepted by the fetch endpoint.
 pub(crate) const FETCH_INCLUDES: &[Include] = &[Include::Redirects, Include::Headers];
 
-/// The query parameters of the page-fetching endpoints (`/v1/fetch` and `/v1/peek`), as they
-/// arrive on the wire.
+/// The query parameters shared by the page-fetching endpoints (`/v1/fetch` and `/v1/peek`), as
+/// they arrive on the wire.
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[serde(deny_unknown_fields)]
 #[into_params(parameter_in = Query)]
-pub(crate) struct FetchParams {
+pub(crate) struct PageParams {
     /// The absolute URL of the page to fetch.
     #[param(example = "https://example.com", format = "uri")]
     pub(crate) url: String,
@@ -185,7 +185,7 @@ impl IncludeSet {
     ///
     /// # Errors
     ///
-    /// Returns an error when an unknown include value is requested.
+    /// Returns an error when an include value is unknown or is not allowed by the endpoint.
     pub(crate) fn parse(values: &[String], allowed: &[Include]) -> Result<Self, ApiError> {
         let mut includes = Self::default();
 
@@ -196,14 +196,16 @@ impl IncludeSet {
                 continue;
             }
 
-            let include = Include::from_name(value)
-                .filter(|include| allowed.contains(include))
-                .ok_or_else(|| {
-                    ApiError::invalid_param(format!(
-                        "unknown include: {}",
-                        value.to_ascii_lowercase()
-                    ))
-                })?;
+            let include = Include::from_name(value).ok_or_else(|| {
+                ApiError::invalid_param(format!("unknown include: {}", value.to_ascii_lowercase()))
+            })?;
+
+            if !allowed.contains(&include) {
+                return Err(ApiError::invalid_param(format!(
+                    "include {} is not supported by this endpoint",
+                    include.name()
+                )));
+            }
 
             include.apply(&mut includes);
         }
@@ -212,15 +214,25 @@ impl IncludeSet {
     }
 }
 
-impl FetchParams {
+impl PageParams {
     /// Parses and validates the `url` parameter.
+    ///
+    /// Only absolute `http` and `https` URLs with a host are accepted.
     ///
     /// # Errors
     ///
-    /// Returns an error when the value is not a valid URL.
+    /// Returns an error when the value is not a valid absolute HTTP(S) URL with a host.
     pub(crate) fn url(&self) -> Result<Url, ApiError> {
-        Url::parse(&self.url)
-            .map_err(|error| ApiError::invalid_param(format!("invalid url: {error}")))
+        let url = Url::parse(&self.url)
+            .map_err(|error| ApiError::invalid_param(format!("invalid url: {error}")))?;
+
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            return Err(ApiError::invalid_param(
+                "the url must be an absolute http or https URL with a host",
+            ));
+        }
+
+        Ok(url)
     }
 
     /// Resolves the number of redirects to follow, defaulting to [`DEFAULT_REDIRECTS`].
@@ -244,7 +256,7 @@ impl FetchParams {
     ///
     /// # Errors
     ///
-    /// Returns an error when an unknown include value is requested.
+    /// Returns an error when an include value is unknown or is not allowed by the endpoint.
     pub(crate) fn includes(&self, allowed: &[Include]) -> Result<IncludeSet, ApiError> {
         IncludeSet::parse(&self.include, allowed)
     }
@@ -289,13 +301,13 @@ mod tests {
 
     use super::*;
 
-    /// Parses `pairs` into `FetchParams` through the real query extractor.
-    fn fetch_params(pairs: &str) -> Result<FetchParams, QueryRejection> {
+    /// Parses `pairs` into `PageParams` through the real query extractor.
+    fn page_params(pairs: &str) -> Result<PageParams, QueryRejection> {
         let uri: Uri = format!("https://example.com/v1/fetch?{pairs}")
             .parse()
             .expect("the test query is a valid URI");
 
-        Query::<FetchParams>::try_from_uri(&uri).map(|Query(params)| params)
+        Query::<PageParams>::try_from_uri(&uri).map(|Query(params)| params)
     }
 
     #[test]
@@ -305,7 +317,7 @@ mod tests {
                 .parse()
                 .expect("valid uri");
 
-        let Query(query) = Query::<FetchParams>::try_from_uri(&uri).expect("valid query");
+        let Query(query) = Query::<PageParams>::try_from_uri(&uri).expect("valid query");
         let includes = query.includes(FETCH_INCLUDES).expect("valid includes");
 
         assert!(includes.redirects);
@@ -318,13 +330,13 @@ mod tests {
             .parse()
             .expect("valid uri");
 
-        assert!(Query::<FetchParams>::try_from_uri(&uri).is_err());
+        assert!(Query::<PageParams>::try_from_uri(&uri).is_err());
     }
 
     #[test]
-    fn parses_fetch_params() {
+    fn parses_page_params() {
         let query =
-            fetch_params("url=https://example.com&redirects=2&include=redirects").expect("valid");
+            page_params("url=https://example.com&redirects=2&include=redirects").expect("valid");
 
         assert_eq!(query.url().expect("valid").as_str(), "https://example.com/");
         assert_eq!(query.redirects().expect("valid"), 2);
@@ -335,7 +347,7 @@ mod tests {
     #[test]
     fn parses_comma_separated_includes() {
         let query =
-            fetch_params("url=https://example.com&include=redirects,%20headers").expect("valid");
+            page_params("url=https://example.com&include=redirects,%20headers").expect("valid");
         let includes = query.includes(FETCH_INCLUDES).expect("valid");
 
         assert!(includes.redirects);
@@ -344,7 +356,7 @@ mod tests {
 
     #[test]
     fn defaults_redirects() {
-        let query = fetch_params("url=https://example.com").expect("valid");
+        let query = page_params("url=https://example.com").expect("valid");
 
         assert_eq!(query.redirects().expect("valid"), DEFAULT_REDIRECTS);
         assert_eq!(
@@ -355,38 +367,80 @@ mod tests {
 
     #[test]
     fn rejects_out_of_range_redirects() {
-        let query = fetch_params("url=https://example.com&redirects=6").expect("valid");
+        let query = page_params("url=https://example.com&redirects=6").expect("valid");
 
         assert_matches!(query.redirects(), Err(ApiError::InvalidParam(_)));
 
-        assert!(fetch_params("url=https://example.com&redirects=-1").is_err());
+        assert!(page_params("url=https://example.com&redirects=-1").is_err());
     }
 
     #[test]
     fn rejects_non_integer_redirects() {
-        assert!(fetch_params("url=https://example.com&redirects=abc").is_err());
+        assert!(page_params("url=https://example.com&redirects=abc").is_err());
     }
 
     #[test]
     fn requires_a_url() {
-        assert!(fetch_params("").is_err());
+        assert!(page_params("").is_err());
 
-        let query = fetch_params("url=not%20a%20url").expect("valid");
+        let query = page_params("url=not%20a%20url").expect("valid");
         assert_matches!(query.url(), Err(ApiError::InvalidParam(_)));
     }
 
     #[test]
+    fn accepts_absolute_http_urls() {
+        for url in ["https://example.com/page", "http://example.com/page"] {
+            let query = page_params(&format!("url={url}")).expect("valid query");
+
+            assert_eq!(query.url().expect("valid url").as_str(), url);
+        }
+    }
+
+    #[test]
+    fn rejects_non_http_urls() {
+        for url in [
+            "file:///etc/passwd",
+            "ftp://example.com/file",
+            "mailto:user@example.com",
+        ] {
+            let query = page_params(&format!("url={url}")).expect("valid query");
+
+            assert_matches!(
+                query.url(),
+                Err(ApiError::InvalidParam(_)),
+                "expected {url} to be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn validates_includes_against_each_endpoints_allow_list() {
-        let query = fetch_params("url=https://example.com&include=nope").expect("valid");
+        let query = page_params("url=https://example.com&include=nope").expect("valid");
         assert_matches!(
             query.includes(FETCH_INCLUDES),
             Err(ApiError::InvalidParam(_))
         );
 
         // `include=headers` is valid for the fetch endpoint, but not for peek.
-        let peek_query = fetch_params("url=https://example.com&include=headers").expect("valid");
+        let peek_query = page_params("url=https://example.com&include=headers").expect("valid");
         assert!(peek_query.includes(PEEK_INCLUDES).is_err());
         assert!(peek_query.includes(FETCH_INCLUDES).is_ok());
+    }
+
+    #[test]
+    fn distinguishes_unsupported_includes_from_unknown_ones() {
+        let query = page_params("url=https://example.com&include=headers").expect("valid");
+        assert_matches!(
+            query.includes(PEEK_INCLUDES),
+            Err(ApiError::InvalidParam(message))
+                if message == "include headers is not supported by this endpoint"
+        );
+
+        let query = page_params("url=https://example.com&include=nope").expect("valid");
+        assert_matches!(
+            query.includes(FETCH_INCLUDES),
+            Err(ApiError::InvalidParam(message)) if message == "unknown include: nope"
+        );
     }
 
     #[test]

@@ -4,41 +4,18 @@
 //! documentation page to disk. Arguments are parsed with clap, so unknown arguments and typo'd
 //! subcommands print the usage to stderr and exit with status 2 — they never start the server.
 
-use std::env;
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
-use secrecy::SecretString;
 use tracing_subscriber::EnvFilter;
 
 #[cfg(feature = "docs")]
 mod export;
 
-use neuradex::api::v1::AppState;
+use neuradex::config::Config;
 use neuradex::http;
-
-/// The environment variable holding the Kagi session token.
-const KAGI_TOKEN_ENV: &str = "KAGI_SESSION_TOKEN";
-
-/// The environment variable holding the listen address.
-const LISTEN_ADDR_ENV: &str = "LISTEN_ADDR";
-
-/// The environment variable holding the `User-Agent` header sent with requests.
-const USER_AGENT_ENV: &str = "USER_AGENT";
-
-/// The environment variable holding the maximum number of simultaneous searches.
-const KAGI_MAX_SESSIONS_ENV: &str = "KAGI_MAX_SESSIONS";
-
-/// The environment variable selecting anonymous Privacy Pass search authentication.
-const KAGI_PRIVACY_PASS_ENV: &str = "KAGI_PRIVACY_PASS";
-
-/// The default listen address.
-const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:8080";
-
-/// The default user agent, shared with the Kagi client so both emulate the same browser.
-const DEFAULT_USER_AGENT: &str = kagi::USER_AGENT;
+use neuradex::state::AppState;
 
 /// The duration before an HTTP request times out, shared with the Kagi client.
 const REQUEST_TIMEOUT: Duration = kagi::HTTP_TIMEOUT;
@@ -88,7 +65,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// OpenAPI document) to files on disk.
 #[cfg(feature = "docs")]
 fn export_docs(arguments: &ExportDocsArgs) -> Result<(), Box<dyn std::error::Error>> {
-    export::run(&arguments.output, arguments.spec.as_deref()).map_err(Into::into)
+    export::run(&arguments.output, arguments.spec.as_deref())
+        .map_err(|error| error.to_string().into())
 }
 
 /// Rejects `export-docs` in builds without the `docs` feature: there is nothing to render.
@@ -97,12 +75,29 @@ fn export_docs(_arguments: &ExportDocsArgs) -> Result<(), Box<dyn std::error::Er
     Err("this binary was built without the docs feature; rebuild with --features docs".into())
 }
 
-/// Parses a boolean environment setting.
-fn parse_bool(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
+#[cfg(all(test, feature = "docs"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_export_failures_as_plain_messages() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let arguments = ExportDocsArgs {
+            output: directory.path().join("missing").join("docs.html"),
+            spec: None,
+        };
+
+        let error = export_docs(&arguments).expect_err("the export fails");
+        let rendered = format!("{error:?}");
+
+        assert!(
+            rendered.contains("could not write"),
+            "unexpected error: {rendered}"
+        );
+        assert!(
+            !rendered.contains("Write {"),
+            "the derived debug representation leaked: {rendered}"
+        );
     }
 }
 
@@ -112,65 +107,26 @@ fn serve() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let listen_addr = env::var(LISTEN_ADDR_ENV).unwrap_or_else(|_| DEFAULT_LISTEN_ADDR.to_string());
-    let addr: SocketAddr = listen_addr.parse().map_err(|_| {
-        format!("invalid {LISTEN_ADDR_ENV}: expected a socket address, got {listen_addr:?}")
-    })?;
-    let user_agent = env::var(USER_AGENT_ENV).unwrap_or_else(|_| DEFAULT_USER_AGENT.to_string());
-    let max_sessions = match env::var(KAGI_MAX_SESSIONS_ENV) {
-        Ok(value) => value
-            .trim()
-            .parse::<usize>()
-            .ok()
-            .filter(|count| *count > 0)
-            .ok_or_else(|| {
-                format!(
-                    "invalid {KAGI_MAX_SESSIONS_ENV}: expected a positive integer, got {value:?}"
-                )
-            })?,
-        Err(_) => kagi::DEFAULT_MAX_SESSIONS,
+    // Keep the startup errors the CLI printed before the config extraction: the plain message,
+    // not the error type's `Debug` representation.
+    let config = match Config::from_env() {
+        Ok(config) => config,
+        Err(error) => return Err(error.to_string().into()),
     };
-    let privacy_pass = match env::var(KAGI_PRIVACY_PASS_ENV) {
-        Ok(value) => parse_bool(&value).ok_or_else(|| {
-            format!("invalid {KAGI_PRIVACY_PASS_ENV}: expected a boolean, got {value:?}")
-        })?,
-        Err(_) => true,
-    };
-    tracing::info!(privacy_pass, "Kagi search authentication configured");
-    let kagi_token = env::var(KAGI_TOKEN_ENV)
-        .ok()
-        .filter(|token| !token.is_empty())
-        .ok_or_else(|| format!("{KAGI_TOKEN_ENV} is required"))?;
+    tracing::info!(
+        privacy_pass = config.privacy_pass,
+        "Kagi search authentication configured"
+    );
 
     let runtime = tokio::runtime::Runtime::new()?;
 
     let state = AppState::try_new(
-        &user_agent,
-        SecretString::from(kagi_token),
+        &config.user_agent,
+        config.kagi_token().clone(),
         REQUEST_TIMEOUT,
-        max_sessions,
-        privacy_pass,
+        config.max_sessions,
+        config.privacy_pass,
     )?;
 
-    Ok(runtime.block_on(http::serve(state, addr))?)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_bool;
-
-    #[test]
-    fn parses_boolean_environment_values() {
-        for value in ["1", "true", "TRUE", "yes", "on", " true "] {
-            assert_eq!(parse_bool(value), Some(true), "{value:?}");
-        }
-
-        for value in ["0", "false", "FALSE", "no", "off", " false "] {
-            assert_eq!(parse_bool(value), Some(false), "{value:?}");
-        }
-
-        for value in ["", "maybe", "2"] {
-            assert_eq!(parse_bool(value), None, "{value:?}");
-        }
-    }
+    Ok(runtime.block_on(http::serve(state, config.listen_addr))?)
 }

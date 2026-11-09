@@ -9,8 +9,8 @@ use serde::Serialize;
 
 use crate::api::v1::error::ApiError;
 use crate::api::v1::extract::{ApiJson, SearchRequest};
-use crate::api::v1::{AppState, redirect};
-use crate::metrics::SearchMetrics;
+use crate::metrics::{SearchMetrics, duration_ms};
+use crate::state::AppState;
 
 /// The response of the search endpoint.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -64,8 +64,8 @@ impl From<kagi::SearchResult> for SearchResult {
 /// Searches the web with Kagi.
 ///
 /// Accepts a JSON request body with the query, an optional result limit, and an optional
-/// timeout. Searches are queued: at most `MAX_CONCURRENT_SEARCHES` run at once, and the request
-/// blocks here until a slot and the results are ready — including while the Kagi client
+/// timeout. Searches are queued: at most the configured `max_sessions` run at once, and the
+/// request blocks here until a slot and the results are ready — including while the Kagi client
 /// establishes or refreshes a session for the search. The optional `timeout` covers the whole
 /// of it: the queue wait, the session wait, and the search itself. Without it, the request
 /// stays pending until the client disconnects.
@@ -81,11 +81,11 @@ impl From<kagi::SearchResult> for SearchResult {
     tag = "search",
     summary = "Search the web.",
     description = "Searches the web through Kagi for a JSON request body. Searches are \
-                   queued: at most two run at once, and the request blocks until a slot and \
-                   the results are ready. The optional `timeout` covers the whole of it — \
-                   the queue wait, the session wait, and the search itself; without it, the \
-                   request stays pending until the client disconnects. Results are truncated \
-                   to `limit`.",
+                   queued: at most the configured limit run at once, and the request blocks \
+                   until a slot and the results are ready. The optional `timeout` covers the \
+                   whole of it — the queue wait, the session wait, and the search itself; \
+                   without it, the request stays pending until the client disconnects. Results \
+                   are truncated to `limit`.",
     request_body(
         content = SearchRequest,
         content_type = "application/json",
@@ -106,7 +106,7 @@ pub(crate) async fn search(
     let started = Instant::now();
     let timeout = request.timeout.map(Duration::from_secs);
 
-    let (queue_ms, results) = run_queued_search(&state, &request.query, timeout).await?;
+    let QueuedSearch { queue_ms, results } = queued_search(&state, &request.query, timeout).await?;
     let results: Vec<SearchResult> = results
         .into_iter()
         .take(request.limit.unwrap_or(usize::MAX))
@@ -115,7 +115,7 @@ pub(crate) async fn search(
 
     let metrics = SearchMetrics {
         queue_ms,
-        total_ms: redirect::duration_ms(started.elapsed()),
+        total_ms: duration_ms(started.elapsed()),
         result_count: results.len(),
     };
 
@@ -126,40 +126,48 @@ pub(crate) async fn search(
     }))
 }
 
+/// A completed search and the time it waited for a slot.
+pub(crate) struct QueuedSearch {
+    /// The time spent waiting for a search slot before the search started, in milliseconds.
+    pub queue_ms: u64,
+    /// The raw results returned by Kagi.
+    pub results: Vec<kagi::SearchResult>,
+}
+
 /// Runs a search behind the shared search gate, returning the queue wait and the raw results.
 ///
 /// The gate blocks while all slots are busy, in FIFO order. Dropping the permit — including when
 /// the surrounding timeout cancels the future mid-search — releases the slot. The optional
 /// `timeout` covers the queue wait, the session wait, and the search itself.
-pub(crate) async fn run_queued_search(
+pub(crate) async fn queued_search(
     state: &AppState,
     query: &str,
     timeout: Option<Duration>,
-) -> Result<(u64, Vec<kagi::SearchResult>), ApiError> {
+) -> Result<QueuedSearch, ApiError> {
     let queued = Instant::now();
 
     let search = async {
-        let permit =
-            state.search_gate.acquire().await.map_err(|error| {
-                ApiError::internal(format!("the search gate is closed: {error}"))
-            })?;
-        let queue_ms = redirect::duration_ms(queued.elapsed());
+        let permit = state.search_gate.acquire().await.map_err(|error| {
+            ApiError::internal_message(format!("the search gate is closed: {error}"))
+        })?;
+        let queue_ms = duration_ms(queued.elapsed());
 
         let results = state
             .kagi_client
             .search(query)
             .await
-            .map_err(|error| ApiError::upstream(error.to_string()))?;
+            .map_err(ApiError::upstream)?;
 
-        Ok::<_, ApiError>((permit, queue_ms, results))
+        // The permit is scoped to the search itself, not the response mapping.
+        drop(permit);
+
+        Ok::<_, ApiError>(QueuedSearch { queue_ms, results })
     };
 
-    let (_permit, queue_ms, results) = match timeout {
+    match timeout {
         Some(timeout) => tokio::time::timeout(timeout, search).await.map_err(|_| {
-            ApiError::upstream(format!("the search timed out after {}s", timeout.as_secs()))
-        })??,
-        None => search.await?,
-    };
-
-    Ok((queue_ms, results))
+            ApiError::upstream_message(format!("the search timed out after {}s", timeout.as_secs()))
+        })?,
+        None => search.await,
+    }
 }

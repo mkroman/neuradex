@@ -1,6 +1,14 @@
 //! Request metrics and stats shared by the API endpoints.
 
+use std::time::Duration;
+
 use serde::Serialize;
+
+/// Converts a duration to whole milliseconds.
+#[must_use]
+pub(crate) fn duration_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
 
 /// A single intermediate redirect hop.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -15,7 +23,7 @@ pub struct RedirectHop {
 
 /// Request metrics and stats for a fetched page.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-#[schema(examples(json!({
+#[schema(as = Metrics, examples(json!({
     "status": 200,
     "final_url": "https://example.com/",
     "http_version": "HTTP/2",
@@ -25,10 +33,9 @@ pub struct RedirectHop {
     "ttfb_ms": 87,
     "total_ms": 120,
     "redirects_followed": 0,
-    "redirects": [],
     "truncated": false
 })))]
-pub struct Metrics {
+pub struct FetchMetrics {
     /// The status code of the final response.
     pub status: u16,
     /// The URL of the final response, after following redirects.
@@ -67,4 +74,15 @@ pub struct SearchMetrics {
     pub total_ms: u64,
     /// The number of results returned.
     pub result_count: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn converts_durations() {
+        assert_eq!(duration_ms(Duration::from_millis(1_234)), 1_234);
+        assert_eq!(duration_ms(Duration::from_nanos(999)), 0);
+    }
 }

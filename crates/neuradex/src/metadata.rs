@@ -221,10 +221,12 @@ impl HeadSink {
 
     /// Commits the title collected so far, if any.
     fn flush_title(&self) {
-        if let Some(title) = self.title.borrow_mut().take()
-            && !title.is_empty()
-        {
-            self.metadata.borrow_mut().title = Some(title);
+        if let Some(title) = self.title.borrow_mut().take() {
+            let title = title.trim();
+
+            if !title.is_empty() {
+                self.metadata.borrow_mut().title = Some(title.to_owned());
+            }
         }
     }
 
@@ -403,6 +405,13 @@ mod tests {
         );
 
         assert_eq!(metadata.title.as_deref(), Some("Hello world"));
+    }
+
+    #[test]
+    fn trims_the_title() {
+        let metadata = parse_metadata("<html><head><title>\n  Hello  \n</title></head></html>");
+
+        assert_eq!(metadata.title.as_deref(), Some("Hello"));
     }
 
     #[test]

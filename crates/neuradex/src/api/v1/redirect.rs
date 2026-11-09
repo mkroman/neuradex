@@ -6,10 +6,11 @@
 use std::time::{Duration, Instant};
 
 use url::Url;
+use wreq::StatusCode;
 use wreq::header::{CONTENT_LENGTH, CONTENT_TYPE, LOCATION};
 
 use crate::api::v1::error::ApiError;
-use crate::metrics::{Metrics, RedirectHop};
+use crate::metrics::{FetchMetrics, RedirectHop, duration_ms};
 
 /// The facts of the final response, captured before the body is consumed.
 pub(crate) struct ResponseInfo {
@@ -57,7 +58,7 @@ pub(crate) fn media_type(content_type: &str) -> String {
 }
 
 /// The outcome of a fetch with redirects followed manually.
-pub(crate) struct Fetched {
+pub(crate) struct FetchOutcome {
     /// The URL of the final response, after following redirects.
     pub url: Url,
     /// The number of redirects followed.
@@ -70,7 +71,7 @@ pub(crate) struct Fetched {
     pub headers_elapsed: Duration,
 }
 
-impl Fetched {
+impl FetchOutcome {
     /// Assembles the request metrics from this fetch outcome and the body read.
     #[must_use]
     pub(crate) fn into_metrics(
@@ -78,8 +79,8 @@ impl Fetched {
         bytes_read: u64,
         truncated: bool,
         started: Instant,
-    ) -> Metrics {
-        Metrics {
+    ) -> FetchMetrics {
+        FetchMetrics {
             status: self.info.status,
             final_url: self.url.to_string(),
             http_version: self.info.http_version,
@@ -98,14 +99,15 @@ impl Fetched {
 /// Sends GET requests, following at most `max_redirects` redirects by hand.
 ///
 /// When the budget is exhausted on a redirect response, that response is returned as the final
-/// response; the caller can see the truncation through [`Fetched::followed`]. Intermediate hops
-/// are only recorded when `collect_hops` is set; `followed` always counts them.
-pub(crate) async fn fetch(
+/// response: `followed == max_redirects` together with a 3xx status identifies it. Intermediate
+/// hops are only recorded when `collect_hops` is set; `followed` always counts them. Only
+/// redirects to `http` or `https` URLs are followed, so the final response may be a redirect.
+pub(crate) async fn fetch_with_redirects(
     client: &wreq::Client,
     url: Url,
     max_redirects: u32,
     collect_hops: bool,
-) -> Result<(wreq::Response, Fetched), ApiError> {
+) -> Result<(wreq::Response, FetchOutcome), ApiError> {
     let started = Instant::now();
     let mut current = url;
     let mut hops: Vec<RedirectHop> = Vec::new();
@@ -116,7 +118,7 @@ pub(crate) async fn fetch(
             .get(current.as_str())
             .send()
             .await
-            .map_err(|error| ApiError::upstream(error.to_string()))?;
+            .map_err(ApiError::upstream)?;
 
         if let Some(target) = redirect_target(&response, &current)
             && followed < max_redirects
@@ -139,7 +141,7 @@ pub(crate) async fn fetch(
 
         return Ok((
             response,
-            Fetched {
+            FetchOutcome {
                 url: current,
                 followed,
                 hops,
@@ -150,21 +152,37 @@ pub(crate) async fn fetch(
     }
 }
 
+/// Whether `status` is a redirect the fetch endpoints follow.
+///
+/// Only the statuses that resend the request at another URL are followed: `304 Not Modified`
+/// and the other 3xx statuses are final responses.
+fn is_redirect_status(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::MOVED_PERMANENTLY
+            | StatusCode::FOUND
+            | StatusCode::SEE_OTHER
+            | StatusCode::TEMPORARY_REDIRECT
+            | StatusCode::PERMANENT_REDIRECT
+    )
+}
+
 /// Returns the redirect target of a redirect response, if it is one.
 fn redirect_target(response: &wreq::Response, base: &Url) -> Option<Url> {
-    if !response.status().is_redirection() {
+    if !is_redirect_status(response.status()) {
         return None;
     }
 
     let location = response.headers().get(LOCATION)?.to_str().ok()?;
 
-    base.join(location.trim()).ok()
+    redirect_location(base, location)
 }
 
-/// Converts a duration to whole milliseconds.
-#[must_use]
-pub(crate) fn duration_ms(duration: Duration) -> u64 {
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+/// Resolves a `Location` header value against `base`, keeping only absolute http(s) targets.
+fn redirect_location(base: &Url, location: &str) -> Option<Url> {
+    base.join(location.trim())
+        .ok()
+        .filter(|target| matches!(target.scheme(), "http" | "https"))
 }
 
 #[cfg(test)]
@@ -179,8 +197,51 @@ mod tests {
     }
 
     #[test]
-    fn converts_durations() {
-        assert_eq!(duration_ms(Duration::from_millis(1_234)), 1_234);
-        assert_eq!(duration_ms(Duration::from_nanos(999)), 0);
+    fn follows_only_redirect_statuses() {
+        for status in [
+            StatusCode::MOVED_PERMANENTLY,
+            StatusCode::FOUND,
+            StatusCode::SEE_OTHER,
+            StatusCode::TEMPORARY_REDIRECT,
+            StatusCode::PERMANENT_REDIRECT,
+        ] {
+            assert!(is_redirect_status(status), "{status}");
+        }
+
+        let unassigned = StatusCode::from_u16(306).expect("306 is a valid status code");
+
+        for status in [
+            StatusCode::MULTIPLE_CHOICES,
+            StatusCode::NOT_MODIFIED,
+            StatusCode::USE_PROXY,
+            unassigned,
+        ] {
+            assert!(!is_redirect_status(status), "{status}");
+        }
+    }
+
+    #[test]
+    fn follows_only_http_and_https_targets() {
+        let base = Url::parse("https://example.com/start").expect("valid url");
+
+        assert_eq!(
+            redirect_location(&base, "/next").map(|url| url.to_string()),
+            Some("https://example.com/next".to_owned())
+        );
+        assert_eq!(
+            redirect_location(&base, " http://other.example/ ").map(|url| url.to_string()),
+            Some("http://other.example/".to_owned())
+        );
+
+        for target in [
+            "ftp://example.com/file",
+            "file:///etc/passwd",
+            "mailto:user@example.com",
+        ] {
+            assert!(
+                redirect_location(&base, target).is_none(),
+                "followed the non-http target {target}"
+            );
+        }
     }
 }

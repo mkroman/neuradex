@@ -1,8 +1,9 @@
 //! A high-level harness for the neuradex HTTP service.
 //!
 //! [`TestApp`] assembles the production router around mock page and Kagi endpoints, then
-//! sends requests through the real extraction and handler stack. Every instance owns an
-//! isolated [`httpmock::MockServer`], so tests can run in parallel.
+//! sends requests through the real extraction and handler stack. The default constructors
+//! own an isolated [`httpmock::MockServer`], so tests can run in parallel;
+//! [`TestApp::with_kagi_client`] shares the caller-provided server and client instead.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +15,7 @@ use axum::response::Response;
 use httpmock::{Mock, MockServer};
 use kagi::DEFAULT_MAX_SESSIONS;
 use neuradex::api::v1;
-use neuradex::api::v1::AppState;
+use neuradex::state::AppState;
 use serde_json::Value;
 
 use crate::kagi::KagiHarness;

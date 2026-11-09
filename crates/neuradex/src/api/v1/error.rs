@@ -4,6 +4,7 @@
 //! `{"error": {"type": "...", "message": "..."}}` with an appropriate status code.
 
 use std::collections::BTreeMap;
+use std::error::Error;
 
 use axum::Json;
 use axum::http::{Method, StatusCode};
@@ -17,6 +18,7 @@ use utoipa::openapi::{Content, Ref, RefOr, ResponseBuilder, ResponsesBuilder};
 /// The errors the handlers can produce are documented as OpenAPI responses through the
 /// [`IntoResponses`] implementation, referenced from every `#[utoipa::path]` as `ApiError`.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ApiError {
     /// A request parameter is missing, malformed, or out of range.
     #[error("{0}")]
@@ -25,12 +27,17 @@ pub enum ApiError {
     #[error("{0}")]
     UnsupportedMediaType(String),
     /// The upstream request failed.
-    #[error("upstream request failed: {0}")]
-    Upstream(String),
+    #[error("the upstream request failed")]
+    Upstream(#[source] Box<dyn Error + Send + Sync>),
     /// An internal, unexpected failure.
-    #[error("{0}")]
-    Internal(String),
+    #[error("an internal error occurred")]
+    Internal(#[source] Box<dyn Error + Send + Sync>),
 }
+
+/// A message-only error for failures that carry no underlying source.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct MessageError(String);
 
 /// The JSON body of an error response.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -144,52 +151,64 @@ impl ApiError {
         Self::UnsupportedMediaType(message.into())
     }
 
-    /// Constructs an [`ApiError::Upstream`].
-    pub fn upstream(message: impl Into<String>) -> Self {
-        Self::Upstream(message.into())
+    /// Constructs an [`ApiError::Upstream`] from the error that caused it.
+    pub fn upstream(error: impl Into<Box<dyn Error + Send + Sync>>) -> Self {
+        Self::Upstream(error.into())
     }
 
-    /// Constructs an [`ApiError::Internal`].
-    pub fn internal(message: impl Into<String>) -> Self {
-        Self::Internal(message.into())
+    /// Constructs an [`ApiError::Upstream`] from a message alone.
+    pub fn upstream_message(message: impl Into<String>) -> Self {
+        Self::upstream(MessageError(message.into()))
     }
 
-    /// Returns the status code and machine-readable type for the error.
-    const fn classify(&self) -> (StatusCode, ErrorKind) {
-        match self {
-            Self::InvalidParam(_) => (StatusCode::BAD_REQUEST, ErrorKind::InvalidParam),
-            Self::UnsupportedMediaType(_) => (
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                ErrorKind::UnsupportedMediaType,
-            ),
-            Self::Upstream(_) => (StatusCode::BAD_GATEWAY, ErrorKind::UpstreamError),
-            Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, ErrorKind::InternalError),
-        }
+    /// Constructs an [`ApiError::Internal`] from the error that caused it.
+    pub fn internal(error: impl Into<Box<dyn Error + Send + Sync>>) -> Self {
+        Self::Internal(error.into())
+    }
+
+    /// Constructs an [`ApiError::Internal`] from a message alone.
+    pub fn internal_message(message: impl Into<String>) -> Self {
+        Self::internal(MessageError(message.into()))
     }
 }
 
 impl From<tokio::task::JoinError> for ApiError {
     fn from(error: tokio::task::JoinError) -> Self {
-        Self::internal(format!("could not process the response: {error}"))
+        Self::internal(error)
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, kind) = self.classify();
+        let (status, kind, message) = match self {
+            Self::InvalidParam(message) => {
+                (StatusCode::BAD_REQUEST, ErrorKind::InvalidParam, message)
+            }
+            Self::UnsupportedMediaType(message) => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                ErrorKind::UnsupportedMediaType,
+                message,
+            ),
+            Self::Upstream(source) => {
+                // 5xx bodies stay generic per the "Invariants" rule: the details are for the
+                // logs, never for the client.
+                tracing::error!(error = ?source, "request failed");
 
-        // 5xx bodies stay generic per the "Invariants" rule: the details are for the logs,
-        // never for the client.
-        if status.is_server_error() {
-            tracing::error!(kind = ?kind, message = %self, "request failed");
-        }
+                (
+                    StatusCode::BAD_GATEWAY,
+                    ErrorKind::UpstreamError,
+                    "the upstream request failed".to_owned(),
+                )
+            }
+            Self::Internal(source) => {
+                tracing::error!(error = ?source, "request failed");
 
-        // 4xx variants already own their client-facing message; only the 5xx classes need a
-        // generic replacement.
-        let message = match self {
-            Self::InvalidParam(message) | Self::UnsupportedMediaType(message) => message,
-            Self::Upstream(_) => "the upstream request failed".to_owned(),
-            Self::Internal(_) => "an internal error occurred".to_owned(),
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorKind::InternalError,
+                    "an internal error occurred".to_owned(),
+                )
+            }
         };
 
         let body = ErrorBody {
@@ -202,15 +221,18 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
     use serde_json::Value;
+    use utoipa::IntoResponses;
 
     use super::*;
 
     #[tokio::test]
     async fn maps_every_constructor_to_its_status_and_type() {
-        // `classify` is an exhaustive match, so a variant added without a mapping fails to
+        // The `IntoResponse` match is exhaustive, so a variant added without a mapping fails to
         // compile; this additionally pins each constructor's pairing on the rendered response,
         // where the envelope type is serialized — including the generic 5xx bodies.
         let cases = [
@@ -227,21 +249,27 @@ mod tests {
                 "binary",
             ),
             (
-                ApiError::upstream("timeout"),
+                ApiError::upstream(io::Error::other("timeout")),
                 StatusCode::BAD_GATEWAY,
                 "upstream_error",
                 "the upstream request failed",
             ),
             (
-                ApiError::internal("panic"),
+                ApiError::internal(io::Error::other("panic")),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal_error",
                 "an internal error occurred",
             ),
         ];
+        let documented = ApiError::responses();
 
         for (error, status, kind, expected) in cases {
-            let detail = error.to_string();
+            // The hand-written response map must document every status this match renders.
+            assert!(
+                documented.contains_key(status.as_str()),
+                "the {status} response is missing from ApiError::responses()"
+            );
+
             let response = error.into_response();
 
             assert_eq!(response.status(), status);
@@ -253,11 +281,21 @@ mod tests {
 
             assert_eq!(rendered["error"]["type"], kind);
             assert_eq!(rendered["error"]["message"], expected);
-
-            if status.is_server_error() {
-                // The detail is logged, never returned to the client.
-                assert_ne!(rendered["error"]["message"], detail);
-            }
         }
+    }
+
+    #[test]
+    fn exposes_the_underlying_error_as_the_source() {
+        let upstream = ApiError::upstream(io::Error::other("upstream detail"));
+        let internal = ApiError::internal(io::Error::other("internal detail"));
+
+        assert_eq!(
+            upstream.source().map(ToString::to_string).as_deref(),
+            Some("upstream detail")
+        );
+        assert_eq!(
+            internal.source().map(ToString::to_string).as_deref(),
+            Some("internal detail")
+        );
     }
 }
