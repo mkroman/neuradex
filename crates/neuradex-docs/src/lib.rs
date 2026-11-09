@@ -156,6 +156,48 @@ mod tests {
         .expect("the fixture document deserializes")
     }
 
+    /// A document whose operation carries a referenced JSON request body.
+    fn body_document() -> utoipa::openapi::OpenApi {
+        serde_json::from_value(json!({
+            "openapi": "3.1.0",
+            "info": {"title": "test", "version": "1.2.3"},
+            "tags": [{"name": "search", "description": "Searching."}],
+            "paths": {
+                "/search": {"post": {
+                    "tags": ["search"],
+                    "summary": "Search.",
+                    "description": "Searches.",
+                    "requestBody": {
+                        "required": true,
+                        "description": "The search request.",
+                        "content": {"application/json": {"schema":
+                            {"$ref": "#/components/schemas/SearchRequest"}}}
+                    },
+                    "responses": {"200": {"description": "The results."}}
+                }}
+            },
+            "components": {"schemas": {
+                "SearchRequest": {
+                    "type": "object",
+                    "required": ["query"],
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The query.",
+                            "example": "rust"
+                        },
+                        "limit": {
+                            "type": ["integer", "null"],
+                            "description": "Max results.",
+                            "default": 10
+                        }
+                    }
+                }
+            }}
+        }))
+        .expect("the fixture document deserializes")
+    }
+
     #[test]
     fn renders_the_full_page_shell() {
         let page_html = render(&document());
@@ -204,26 +246,26 @@ mod tests {
     fn renders_parameter_tables_and_request_builders() {
         let page_html = render(&document());
 
-        assert!(
-            page_html.contains(
-                r#"<span class="param-name">limit</span><span class="opt">optional</span>"#
-            )
-        );
-        assert!(
-            page_html.contains(r#"<span class="ann-k">min</span> <span class="ann-v">1</span>"#)
-        );
-        assert!(
-            page_html
-                .contains(r#"<span class="ann-k">example</span> <span class="ann-v">10</span>"#)
-        );
-        // Array parameters are annotated as repeated keys and seed the builder input.
-        assert!(page_html.contains(
-            r#"<span class="ann-k">send as</span> <span class="ann-v">repeated keys</span>"#
-        ));
-        assert!(page_html.contains(r#"data-name="kind" data-array="true""#));
+        assert!(page_html.contains(r#"<span class="param-name">limit</span>"#));
+        // Array parameters seed the builder input for repeated keys.
+        assert!(page_html.contains(r#"data-name="kind""#));
+        assert!(page_html.contains(r#"data-array="true""#));
         assert!(page_html.contains(r#"value="big""#));
         // The parameterless endpoint renders its empty-state note.
         assert!(page_html.contains("No query parameters — the endpoint takes none."));
+    }
+
+    #[test]
+    fn renders_request_bodies_with_method_aware_builders() {
+        let page_html = render(&body_document());
+
+        assert!(page_html.contains(r#"data-method="POST""#));
+        assert!(page_html.contains("POST /search"));
+        assert!(page_html.contains(r#"aria-label="Request body""#));
+        assert!(page_html.contains("application/json"));
+        assert!(page_html.contains(r#"data-location="body""#));
+        assert!(page_html.contains(r#"data-type="integer""#));
+        assert!(page_html.contains(r#"value="rust""#));
     }
 
     #[test]

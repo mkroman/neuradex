@@ -4,8 +4,9 @@
 //! the request (queries through `ApiQuery`, a thin extractor over
 //! [`axum_extra::extract::Query`], which uses `serde_html_form`, so the `include` parameter may
 //! be repeated — `include=redirects&include=headers` — or comma-separated; JSON bodies through
-//! `ApiJson`, a thin extractor over [`axum::extract::Json`]), document the OpenAPI
-//! parameters, and expose the validation each endpoint applies to its own request.
+//! `ApiJson`, a thin extractor over [`axum::extract::Json`]), document the OpenAPI query
+//! parameters or request body, and expose the validation each endpoint applies to its own
+//! request.
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
@@ -94,21 +95,28 @@ pub(crate) struct FetchParams {
     pub(crate) include: Vec<String>,
 }
 
-/// The query parameters of the search endpoint (`/v1/search`), as they arrive on the wire.
+/// The JSON request body of the search endpoint (`/v1/search`), as it arrives on the wire.
 #[derive(Debug, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "utoipa",
+    schema(examples(json!({
+        "query": "rust programming",
+        "limit": 10,
+        "timeout": 10
+    })))
+)]
 #[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "utoipa", into_params(parameter_in = Query))]
-pub(crate) struct SearchParams {
+pub(crate) struct SearchRequest {
     /// The search query.
-    #[cfg_attr(feature = "utoipa", param(example = "rust programming"))]
+    #[cfg_attr(feature = "utoipa", schema(example = "rust programming"))]
     pub(crate) query: String,
     /// The maximum number of results to return.
-    #[cfg_attr(feature = "utoipa", param(example = 10))]
+    #[cfg_attr(feature = "utoipa", schema(example = 10))]
     pub(crate) limit: Option<usize>,
     /// The maximum time to wait for the search — the queue wait, the session wait, and the
     /// search itself — in whole seconds.
-    #[cfg_attr(feature = "utoipa", param(minimum = 1, maximum = 30, example = 10))]
+    #[cfg_attr(feature = "utoipa", schema(minimum = 1, maximum = 30, example = 10))]
     pub(crate) timeout: Option<u64>,
 }
 
@@ -256,20 +264,20 @@ impl FetchParams {
     }
 }
 
-impl SearchParams {
-    /// Validates the query parameters.
+impl SearchRequest {
+    /// Validates the request body.
     ///
     /// # Errors
     ///
     /// Returns an error when the query is empty or the timeout is out of range.
     pub(crate) fn validate(&self) -> Result<(), ApiError> {
         if self.query.is_empty() {
-            return Err(ApiError::invalid_param("the query parameter is empty"));
+            return Err(ApiError::invalid_param("the query is empty"));
         }
 
         if self.timeout == Some(0) {
             return Err(ApiError::invalid_param(
-                "the timeout parameter must be at least 1 second",
+                "the timeout must be at least 1 second",
             ));
         }
 
@@ -278,7 +286,7 @@ impl SearchParams {
             .is_some_and(|timeout| timeout > MAX_SEARCH_TIMEOUT_SECS)
         {
             return Err(ApiError::invalid_param(format!(
-                "the timeout parameter must be between 1 and {MAX_SEARCH_TIMEOUT_SECS} seconds"
+                "the timeout must be between 1 and {MAX_SEARCH_TIMEOUT_SECS} seconds"
             )));
         }
 
@@ -302,15 +310,6 @@ mod tests {
             .expect("the test query is a valid URI");
 
         Query::<FetchParams>::try_from_uri(&uri).map(|Query(params)| params)
-    }
-
-    /// Parses `pairs` into `SearchParams` through the real query extractor.
-    fn search_params(pairs: &str) -> Result<SearchParams, QueryRejection> {
-        let uri: Uri = format!("https://example.com/v1/search?{pairs}")
-            .parse()
-            .expect("the test query is a valid URI");
-
-        Query::<SearchParams>::try_from_uri(&uri).map(|Query(params)| params)
     }
 
     #[test]
@@ -405,78 +404,54 @@ mod tests {
     }
 
     #[test]
-    fn extracts_search_params_through_the_real_extractor() {
-        let uri: Uri = "https://example.com/v1/search?query=rust+programming&limit=10"
-            .parse()
-            .expect("valid uri");
+    fn extracts_search_request_through_the_real_json_extractor() {
+        let Json(request) =
+            Json::<SearchRequest>::from_bytes(br#"{"query":"rust programming","limit":10}"#)
+                .expect("valid body");
 
-        let Query(params) = Query::<SearchParams>::try_from_uri(&uri).expect("valid query");
-
-        assert!(params.validate().is_ok());
-        assert_eq!(params.query, "rust programming");
-        assert_eq!(params.limit, Some(10));
-        assert_eq!(params.timeout, None);
+        assert!(request.validate().is_ok());
+        assert_eq!(request.query, "rust programming");
+        assert_eq!(request.limit, Some(10));
+        assert_eq!(request.timeout, None);
     }
 
     #[test]
-    fn extracts_the_search_timeout_through_the_real_extractor() {
-        let uri: Uri = "https://example.com/v1/search?query=rust&timeout=10"
-            .parse()
-            .expect("valid uri");
+    fn extracts_the_search_timeout_through_the_real_json_extractor() {
+        let Json(request) = Json::<SearchRequest>::from_bytes(br#"{"query":"rust","timeout":10}"#)
+            .expect("valid body");
 
-        let Query(query) = Query::<SearchParams>::try_from_uri(&uri).expect("valid query");
-
-        assert!(query.validate().is_ok());
-        assert_eq!(query.timeout, Some(10));
+        assert!(request.validate().is_ok());
+        assert_eq!(request.timeout, Some(10));
     }
 
     #[test]
     fn rejects_out_of_range_search_timeouts() {
-        for (raw, expected) in [
+        for (body, expected) in [
             (
-                "query=rust&timeout=0",
-                "the timeout parameter must be at least",
+                r#"{"query":"rust","timeout":0}"#,
+                "the timeout must be at least",
             ),
             (
-                "query=rust&timeout=31",
-                "the timeout parameter must be between",
+                r#"{"query":"rust","timeout":31}"#,
+                "the timeout must be between",
             ),
         ] {
-            let query = search_params(raw).expect("valid");
+            let Json(request) =
+                Json::<SearchRequest>::from_bytes(body.as_bytes()).expect("valid body");
 
             assert_matches!(
-                query.validate(),
+                request.validate(),
                 Err(ApiError::InvalidParam(message)) if message.contains(expected),
-                "expected {raw} to be rejected"
+                "expected {body} to be rejected"
             );
         }
     }
 
     #[test]
-    fn rejects_non_integer_search_timeouts() {
-        let uri: Uri = "https://example.com/v1/search?query=rust&timeout=1.5"
-            .parse()
-            .expect("valid uri");
+    fn rejects_an_empty_search_request() {
+        let Json(request) =
+            Json::<SearchRequest>::from_bytes(br#"{"query":""}"#).expect("valid body");
 
-        assert!(Query::<SearchParams>::try_from_uri(&uri).is_err());
-    }
-
-    #[test]
-    fn rejects_an_empty_search_params() {
-        let uri: Uri = "https://example.com/v1/search?query="
-            .parse()
-            .expect("valid uri");
-        let Query(query) = Query::<SearchParams>::try_from_uri(&uri).expect("valid query");
-
-        assert_matches!(query.validate(), Err(ApiError::InvalidParam(_)));
-    }
-
-    #[test]
-    fn rejects_unknown_search_parameters() {
-        let uri: Uri = "https://example.com/v1/search?query=rust&nope=1"
-            .parse()
-            .expect("valid uri");
-
-        assert!(Query::<SearchParams>::try_from_uri(&uri).is_err());
+        assert_matches!(request.validate(), Err(ApiError::InvalidParam(_)));
     }
 }

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-axum 0.8 HTTP service exposing LLM-agent tools as JSON: `GET /v1/{fetch,peek,search}`, `POST /v1/openwebui_search` (Open WebUI `external` search shape: `{"query","count"}` in, bare `[{link,title,snippet}]` out), `GET /healthz` (204). Feature-gated: `/openapi.json` (`utoipa`) and the `/docs` page (`docs`; legacy `/swagger-ui[/]` 302 there).
+axum 0.8 HTTP service exposing LLM-agent tools as JSON: `GET /v1/{fetch,peek}`, `POST /v1/search` (`{"query","limit","timeout"}` in, `SearchResponse` out), `POST /v1/openwebui_search` (Open WebUI `external` search shape: `{"query","count"}` in, bare `[{link,title,snippet}]` out), `GET /healthz` (204). Feature-gated: `/openapi.json` (`utoipa`) and the `/docs` page (`docs`; legacy `/swagger-ui[/]` 302 there).
 
 ## Workspace
 
@@ -40,7 +40,7 @@ Also in CI: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-fe
   - `/docs`, `/openapi.json`, `/swagger-ui` and the 404/405 fallbacks are hand-registered in `router()`.
 - **Every error is `{"error": {type, message}}`**, including the router 404/405 fallbacks. 5xx bodies are generic; details go to tracing only. A new error path needs two tests: a router oneshot test in `src/api/v1.rs` and a variant mapping test in `src/api/v1/error.rs`. `ErrorBody` must stay in `components(schemas(...))` in `openapi.rs`, because the manual `IntoResponses` impl is invisible to utoipa. That impl (`error.rs`) hand-lists the documented statuses (400/415/500/502): a new status must be added there, and new handlers list `ApiError` in their `utoipa::path` responses, or the error is missing from `/openapi.json`.
 - **Never extract `Query<T>`/`Json<T>` directly.** Use `ApiQuery<T>`/`ApiJson<T>` (`extract.rs`), which turn rejections into the JSON envelope. `ApiQuery` wraps `axum_extra::extract::Query` (serde_html_form) so repeated keys work. Optional lists are `Vec<T>` + `#[serde(default)]`, never `Option<Vec<T>>`.
-- **The wire types are the single source of truth**: `FetchParams`/`SearchParams`/`OpenWebUiSearchRequest` handle deserialization, validation methods, and `IntoParams` docs. A new query param needs all three. Each endpoint owns its `include` allow-list (`FETCH_INCLUDES` vs `PEEK_INCLUDES`).
+- **The wire types are the single source of truth**: `FetchParams`/`SearchRequest`/`OpenWebUiSearchRequest` handle deserialization, validation methods, and OpenAPI docs (`IntoParams` for query types, `ToSchema` + `request_body` for JSON bodies). A new field needs all three. Each endpoint owns its `include` allow-list (`FETCH_INCLUDES` vs `PEEK_INCLUDES`).
 - Tests must go through the real extraction path (`Query::try_from_uri` on the real types), not a hand-rolled deserializer. That mismatch once shipped a production 400.
 - `html5ever` is `!Send`: `HeadParser` runs on `spawn_blocking`, fed by a bounded `tokio::sync::mpsc` (async `send` / `blocking_recv`) in `stream.rs`. Never use `std::sync::mpsc` or blocking sends in tokio tasks.
 - Peek stops at `</head>`/`<body>` (cap `HEAD_MAX_BYTES` 2 MiB). Fetch reads up to `FETCH_MAX_BYTES` (25 MiB). `truncated: true` only when bytes were actually cut.

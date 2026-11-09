@@ -91,13 +91,25 @@ pub struct Endpoint {
     pub description_html: String,
     /// The query parameters, in declaration order.
     pub params: Vec<Param>,
+    /// The JSON request body, when the operation documents one.
+    pub body: Option<BodyView>,
     /// The documented responses, in document order.
     pub responses: Vec<ResponseView>,
     /// The success schema tree, when the operation returns JSON.
     pub schema_tree: Option<SchemaNode>,
 }
 
-/// One query parameter of an endpoint.
+/// The documented JSON request body of an endpoint.
+pub struct BodyView {
+    /// The media type, e.g. `application/json`.
+    pub media_type: String,
+    /// The request-body description, as HTML.
+    pub description_html: String,
+    /// The object fields, in schema declaration order.
+    pub fields: Vec<Param>,
+}
+
+/// One query parameter or request-body field of an endpoint.
 pub struct Param {
     /// The parameter name.
     pub name: String,
@@ -111,6 +123,8 @@ pub struct Param {
     pub seed: String,
     /// Whether the parameter accepts repeated/comma-separated values.
     pub is_array: bool,
+    /// The schema type, e.g. `integer`, used to coerce request-builder values.
+    pub schema_type: Option<String>,
 }
 
 /// One constraint annotation.
@@ -362,6 +376,7 @@ fn endpoint(spec: &Value, op: &Op<'_>, num: &str) -> Endpoint {
         title: op.summary.unwrap_or(op.path).to_owned(),
         description_html: op.description.map_or_else(String::new, html::prose),
         params: op.params.iter().map(|p| param(p)).collect(),
+        body: request_body(spec, op.operation),
         responses: responses(op.operation),
         schema_tree: success_schema(op.operation).map(|schema| {
             let name = html::str_field(schema, "$ref").map_or_else(
@@ -377,24 +392,10 @@ fn endpoint(spec: &Value, op: &Op<'_>, num: &str) -> Endpoint {
 /// builder's seed value.
 fn param(p: &Value) -> Param {
     let schema = html::field(p, "schema");
-    let schema_type = schema.and_then(|s| html::str_field(s, "type"));
+    let schema_type = schema.and_then(schema_type);
     let example = html::field(p, "example");
 
-    let mut anns: Vec<Anno> = Vec::new();
-    if schema_type == Some("array") {
-        let items_type = schema
-            .and_then(|s| html::field(s, "items"))
-            .and_then(|items| html::str_field(items, "type"));
-        anns.push(Anno::new(
-            "type",
-            items_type.map_or_else(
-                || "array".to_owned(),
-                |items_type| format!("array<{items_type}>"),
-            ),
-        ));
-    } else if let Some(schema_type) = schema_type {
-        anns.push(Anno::new("type", schema_type.to_owned()));
-    }
+    let mut anns = type_annotations(schema, schema_type);
     if let Some(schema) = schema {
         common_anns(&mut anns, schema);
     }
@@ -423,7 +424,121 @@ fn param(p: &Value) -> Param {
         anns,
         seed: seed(example, schema),
         is_array: schema_type == Some("array"),
+        schema_type: schema_type.map(str::to_owned),
     }
+}
+
+/// Builds the request-body view of an operation, resolving its JSON schema reference.
+fn request_body(spec: &Value, op: &Value) -> Option<BodyView> {
+    let body = html::field(op, "requestBody")?;
+    let content = html::field(body, "content")?.as_object()?;
+    let (media_type, media) = content
+        .iter()
+        .find(|(media_type, _)| media_type.as_str() == "application/json")
+        .or_else(|| content.iter().next())?;
+    let schema = resolve_schema(spec, html::field(media, "schema")?);
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map_or_default(|required| required.iter().filter_map(Value::as_str).collect());
+
+    let fields = html::field(schema, "properties")
+        .and_then(Value::as_object)
+        .map_or_default(|properties| {
+            properties
+                .iter()
+                .map(|(name, property)| {
+                    body_param(spec, name, property, required.contains(&name.as_str()))
+                })
+                .collect()
+        });
+
+    Some(BodyView {
+        media_type: media_type.clone(),
+        description_html: html::prose(html::str_field(body, "description").unwrap_or_default()),
+        fields,
+    })
+}
+
+/// Builds one request-body field row from its schema property.
+fn body_param(spec: &Value, name: &str, property: &Value, required: bool) -> Param {
+    let schema = resolve_schema(spec, property);
+    let schema_type = schema_type(schema);
+    let example = schema_example(schema);
+
+    let mut anns = type_annotations(Some(schema), schema_type);
+    common_anns(&mut anns, schema);
+    if let Some(example) = example {
+        anns.push(Anno::new("example", flat_value(example)));
+    }
+
+    Param {
+        name: name.to_owned(),
+        required,
+        description_html: html::prose(html::str_field(schema, "description").unwrap_or_default()),
+        anns,
+        seed: seed(example, Some(schema)),
+        is_array: schema_type == Some("array"),
+        schema_type: schema_type.map(str::to_owned),
+    }
+}
+
+/// Resolves a local component `$ref` to its schema; other schemas are returned as-is.
+fn resolve_schema<'a>(spec: &'a Value, schema: &'a Value) -> &'a Value {
+    schema
+        .get("$ref")
+        .and_then(Value::as_str)
+        .and_then(|reference| reference.strip_prefix("#/components/schemas/"))
+        .and_then(|name| {
+            spec.get("components")
+                .and_then(|components| components.get("schemas"))
+                .and_then(|schemas| schemas.get(name))
+        })
+        .unwrap_or(schema)
+}
+
+/// Returns the schema's primary type, ignoring OpenAPI 3.1's `null` union member.
+fn schema_type(schema: &Value) -> Option<&str> {
+    match schema.get("type")? {
+        Value::String(kind) => Some(kind),
+        Value::Array(kinds) => kinds
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|kind| *kind != "null"),
+        _ => None,
+    }
+}
+
+/// Builds the `type` annotation for a parameter or request-body field.
+fn type_annotations(schema: Option<&Value>, kind: Option<&str>) -> Vec<Anno> {
+    let mut anns = Vec::new();
+
+    if kind == Some("array") {
+        let items_type = schema
+            .and_then(|s| html::field(s, "items"))
+            .and_then(schema_type);
+        anns.push(Anno::new(
+            "type",
+            items_type.map_or_else(
+                || "array".to_owned(),
+                |items_type| format!("array<{items_type}>"),
+            ),
+        ));
+    } else if let Some(kind) = kind {
+        anns.push(Anno::new("type", kind.to_owned()));
+    }
+
+    anns
+}
+
+/// Returns the first example documented on a schema property.
+fn schema_example(schema: &Value) -> Option<&Value> {
+    html::field(schema, "example").or_else(|| {
+        schema
+            .get("examples")
+            .and_then(Value::as_array)
+            .and_then(|examples| examples.first())
+    })
 }
 
 /// The value the request builder's input is seeded with: the example when documented, the
@@ -622,7 +737,83 @@ mod tests {
         let page = page(&spec());
 
         assert!(page.endpoints[1].params.is_empty());
+        assert!(page.endpoints[1].body.is_none());
         assert_eq!(page.endpoint_count, 2);
+    }
+
+    /// A document whose operation carries a referenced JSON request body.
+    fn body_spec() -> Value {
+        json!({
+            "openapi": "3.1.0",
+            "info": {"title": "test", "version": "1.2.3"},
+            "tags": [{"name": "search", "description": "Searching things."}],
+            "paths": {
+                "/search": {"post": {
+                    "tags": ["search"],
+                    "summary": "Search things.",
+                    "requestBody": {
+                        "required": true,
+                        "description": "The search request.",
+                        "content": {"application/json": {"schema":
+                            {"$ref": "#/components/schemas/SearchRequest"}}}
+                    },
+                    "responses": {"200": {"description": "The results."}}
+                }}
+            },
+            "components": {"schemas": {
+                "SearchRequest": {
+                    "type": "object",
+                    "description": "A search request.",
+                    "required": ["query"],
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The query.",
+                            "example": "rust"
+                        },
+                        "limit": {
+                            "type": ["integer", "null"],
+                            "description": "Max results.",
+                            "default": 10
+                        },
+                        "timeout": {
+                            "type": ["integer", "null"],
+                            "description": "Timeout.",
+                            "minimum": 1,
+                            "maximum": 30
+                        }
+                    }
+                }
+            }}
+        })
+    }
+
+    #[test]
+    fn builds_request_body_fields() {
+        let page = page(&body_spec());
+        let body = page.endpoints[0].body.as_ref().expect("a request body");
+
+        assert_eq!(body.media_type, "application/json");
+        assert_eq!(body.description_html, "The search request.");
+        assert_eq!(body.fields.len(), 3);
+
+        assert_eq!(body.fields[0].name, "query");
+        assert!(body.fields[0].required);
+        assert_eq!(body.fields[0].schema_type.as_deref(), Some("string"));
+        assert_eq!(body.fields[0].seed, "rust");
+
+        assert_eq!(body.fields[1].name, "limit");
+        assert!(!body.fields[1].required);
+        assert_eq!(body.fields[1].schema_type.as_deref(), Some("integer"));
+        assert_eq!(body.fields[1].seed, "10");
+
+        assert_eq!(body.fields[2].name, "timeout");
+        assert!(
+            body.fields[2]
+                .anns
+                .iter()
+                .any(|anno| anno.key == "max" && anno.value == "30")
+        );
     }
 
     #[test]

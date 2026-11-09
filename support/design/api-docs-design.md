@@ -99,7 +99,8 @@ The page fetches the spec at runtime and renders it — nothing is hardcoded:
     strings in `--positive`, numbers in `--link`, booleans/null in `--text-secondary`).
   - The error envelope (`{"error": {"type", "message"}}`) gets a friendly rendering:
     type as a pill, message as prose.
-  - Requests are GET-only; the playground must never follow non-same-origin URLs.
+  - Requests use the operation's method, sending query parameters for `GET`/`HEAD` and a
+    JSON body for `POST`; the playground must never follow non-same-origin URLs.
 - **Copy as cURL** per endpoint: builds the full curl line with the current builder
   values; on click, copies and flashes the button text to "copied" for ~1.5s.
 - **Schema inspector**: every `$ref` in a response (`PageMetadata`, `Metrics`,

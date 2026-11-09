@@ -1,0 +1,42 @@
+{%- match endpoint.body %}
+{%- when Some(body) %}
+<section class="widget" aria-label="Request body">
+  <h3 class="widget-label">Request body <span class="ann-k">{{ body.media_type }}</span></h3>
+  {%- if !body.description_html.is_empty() %}
+  <p class="param-desc">{{ body.description_html|safe }}</p>
+  {%- endif %}
+  {%- if body.fields.is_empty() %}
+  <p class="widget-empty">No documented fields — see the schema appendix.</p>
+  {%- else %}
+  <table class="params">
+    <thead>
+      <tr>
+        <th scope="col">name</th>
+        <th scope="col">description</th>
+        <th scope="col">value</th>
+      </tr>
+    </thead>
+    <tbody>
+      {%- for field in body.fields %}
+      <tr>
+        <td>
+          <div class="param-name-wrap"><span class="param-name">{{ field.name }}</span>{% if field.required %}<span class="req">*</span>{% else %}<span class="opt">optional</span>{% endif %}</div>
+        </td>
+        <td class="param-desc">{{ field.description_html|safe }}</td>
+        <td>
+          {%- if !field.anns.is_empty() %}
+          <span class="ann-list">
+            {%- for anno in field.anns -%}
+            <span class="ann"><span class="ann-k">{{ anno.key }}</span> <span class="ann-v">{{ anno.value }}</span></span>
+            {%- endfor -%}
+          </span>
+          {%- endif %}
+        </td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  {%- endif %}
+</section>
+{%- when None %}
+{%- endmatch %}

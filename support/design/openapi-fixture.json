@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "neuradex",
-    "description": "A small API service implementing tools for LLM agents: fetching pages (`/v1/fetch`, `/v1/peek`) and searching the web (`/v1/search`). Every error response — including router-level 404 and 405 — is rendered as `{\"error\": {\"type\", \"message\"}}`; see the `ErrorBody` schema.",
+    "description": "A small API service implementing tools for LLM agents: fetching pages (`/v1/fetch`, `/v1/peek`), searching the web (`POST /v1/search`), and a search endpoint shaped for Open WebUI's `external` web search engine (`POST /v1/openwebui_search`). Every error response — including router-level 404 and 405 — is rendered as `{\"error\": {\"type\", \"message\"}}`; see the `ErrorBody` schema.",
     "license": {
       "name": "MIT OR Apache-2.0",
       "identifier": "MIT OR Apache-2.0"
@@ -107,8 +107,8 @@
                   "examples": [
                     {
                       "error": {
-                        "message": "the timeout parameter must be between 1 and 30 seconds",
-                        "type": "invalid_param"
+                        "type": "invalid_param",
+                        "message": "the timeout must be between 1 and 30 seconds"
                       }
                     }
                   ]
@@ -117,7 +117,7 @@
             }
           },
           "415": {
-            "description": "The target response has a content type that cannot be returned.",
+            "description": "The request body is not JSON, or the target response has a content type that cannot be returned.",
             "content": {
               "application/json": {
                 "schema": {
@@ -135,8 +135,8 @@
                   "examples": [
                     {
                       "error": {
-                        "message": "the timeout parameter must be between 1 and 30 seconds",
-                        "type": "invalid_param"
+                        "type": "invalid_param",
+                        "message": "the timeout must be between 1 and 30 seconds"
                       }
                     }
                   ]
@@ -163,8 +163,8 @@
                   "examples": [
                     {
                       "error": {
-                        "message": "the timeout parameter must be between 1 and 30 seconds",
-                        "type": "invalid_param"
+                        "type": "invalid_param",
+                        "message": "the timeout must be between 1 and 30 seconds"
                       }
                     }
                   ]
@@ -191,8 +191,156 @@
                   "examples": [
                     {
                       "error": {
-                        "message": "the timeout parameter must be between 1 and 30 seconds",
-                        "type": "invalid_param"
+                        "type": "invalid_param",
+                        "message": "the timeout must be between 1 and 30 seconds"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/openwebui_search": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Search the web for Open WebUI.",
+        "description": "Searches the web through Kagi and answers in the shape Open WebUI's `external` web search engine expects: a bare JSON array of `{link, title, snippet}` objects, truncated to `count`. Searches are queued: at most two run at once, and the request blocks until a slot and the results are ready.",
+        "operationId": "openwebui_search",
+        "requestBody": {
+          "description": "The query to search for and the suggested maximum number of results.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenWebUiSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The search completed; an empty array means no results.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OpenWebUiSearchResult"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A request parameter is missing, malformed, or out of range.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The JSON body of an error response.",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail",
+                      "description": "The error details."
+                    }
+                  },
+                  "examples": [
+                    {
+                      "error": {
+                        "type": "invalid_param",
+                        "message": "the timeout must be between 1 and 30 seconds"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body is not JSON, or the target response has a content type that cannot be returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The JSON body of an error response.",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail",
+                      "description": "The error details."
+                    }
+                  },
+                  "examples": [
+                    {
+                      "error": {
+                        "type": "invalid_param",
+                        "message": "the timeout must be between 1 and 30 seconds"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal, unexpected failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The JSON body of an error response.",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail",
+                      "description": "The error details."
+                    }
+                  },
+                  "examples": [
+                    {
+                      "error": {
+                        "type": "invalid_param",
+                        "message": "the timeout must be between 1 and 30 seconds"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The upstream request failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The JSON body of an error response.",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorDetail",
+                      "description": "The error details."
+                    }
+                  },
+                  "examples": [
+                    {
+                      "error": {
+                        "type": "invalid_param",
+                        "message": "the timeout must be between 1 and 30 seconds"
                       }
                     }
                   ]
@@ -285,8 +433,8 @@
                   "examples": [
                     {
                       "error": {
-                        "message": "the timeout parameter must be between 1 and 30 seconds",
-                        "type": "invalid_param"
+                        "type": "invalid_param",
+                        "message": "the timeout must be between 1 and 30 seconds"
                       }
                     }
                   ]
@@ -295,7 +443,7 @@
             }
           },
           "415": {
-            "description": "The target response has a content type that cannot be returned.",
+            "description": "The request body is not JSON, or the target response has a content type that cannot be returned.",
             "content": {
               "application/json": {
                 "schema": {
@@ -313,8 +461,8 @@
                   "examples": [
                     {
                       "error": {
-                        "message": "the timeout parameter must be between 1 and 30 seconds",
-                        "type": "invalid_param"
+                        "type": "invalid_param",
+                        "message": "the timeout must be between 1 and 30 seconds"
                       }
                     }
                   ]
@@ -341,8 +489,8 @@
                   "examples": [
                     {
                       "error": {
-                        "message": "the timeout parameter must be between 1 and 30 seconds",
-                        "type": "invalid_param"
+                        "type": "invalid_param",
+                        "message": "the timeout must be between 1 and 30 seconds"
                       }
                     }
                   ]
@@ -369,8 +517,8 @@
                   "examples": [
                     {
                       "error": {
-                        "message": "the timeout parameter must be between 1 and 30 seconds",
-                        "type": "invalid_param"
+                        "type": "invalid_param",
+                        "message": "the timeout must be between 1 and 30 seconds"
                       }
                     }
                   ]
@@ -382,49 +530,24 @@
       }
     },
     "/v1/search": {
-      "get": {
+      "post": {
         "tags": [
           "search"
         ],
         "summary": "Search the web.",
-        "description": "Searches the web through Kagi. Searches are queued: at most two run at once, and the request blocks until a slot and the results are ready. The optional `timeout` covers the whole of it — the queue wait, the session wait, and the search itself; without it, the request stays pending until the client disconnects. Results are truncated to `limit`.",
+        "description": "Searches the web through Kagi for a JSON request body. Searches are queued: at most two run at once, and the request blocks until a slot and the results are ready. The optional `timeout` covers the whole of it — the queue wait, the session wait, and the search itself; without it, the request stays pending until the client disconnects. Results are truncated to `limit`.",
         "operationId": "search",
-        "parameters": [
-          {
-            "name": "query",
-            "in": "query",
-            "description": "The search query.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "example": "rust programming"
+        "requestBody": {
+          "description": "The query to search for, the maximum number of results, and the timeout.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
           },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "The maximum number of results to return.",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "example": 10
-          },
-          {
-            "name": "timeout",
-            "in": "query",
-            "description": "The maximum time to wait for the search — the queue wait, the session wait, and the\nsearch itself — in whole seconds.",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64",
-              "maximum": 30,
-              "minimum": 1
-            },
-            "example": 10
-          }
-        ],
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "The search completed",
@@ -455,8 +578,8 @@
                   "examples": [
                     {
                       "error": {
-                        "message": "the timeout parameter must be between 1 and 30 seconds",
-                        "type": "invalid_param"
+                        "type": "invalid_param",
+                        "message": "the timeout must be between 1 and 30 seconds"
                       }
                     }
                   ]
@@ -465,7 +588,7 @@
             }
           },
           "415": {
-            "description": "The target response has a content type that cannot be returned.",
+            "description": "The request body is not JSON, or the target response has a content type that cannot be returned.",
             "content": {
               "application/json": {
                 "schema": {
@@ -483,8 +606,8 @@
                   "examples": [
                     {
                       "error": {
-                        "message": "the timeout parameter must be between 1 and 30 seconds",
-                        "type": "invalid_param"
+                        "type": "invalid_param",
+                        "message": "the timeout must be between 1 and 30 seconds"
                       }
                     }
                   ]
@@ -511,8 +634,8 @@
                   "examples": [
                     {
                       "error": {
-                        "message": "the timeout parameter must be between 1 and 30 seconds",
-                        "type": "invalid_param"
+                        "type": "invalid_param",
+                        "message": "the timeout must be between 1 and 30 seconds"
                       }
                     }
                   ]
@@ -539,8 +662,8 @@
                   "examples": [
                     {
                       "error": {
-                        "message": "the timeout parameter must be between 1 and 30 seconds",
-                        "type": "invalid_param"
+                        "type": "invalid_param",
+                        "message": "the timeout must be between 1 and 30 seconds"
                       }
                     }
                   ]
@@ -569,8 +692,8 @@
         "examples": [
           {
             "error": {
-              "message": "the timeout parameter must be between 1 and 30 seconds",
-              "type": "invalid_param"
+              "type": "invalid_param",
+              "message": "the timeout must be between 1 and 30 seconds"
             }
           }
         ]
@@ -654,42 +777,42 @@
         },
         "examples": [
           {
-            "body": "<!doctype html>\n<html>…</html>",
+            "url": "https://example.com/",
             "metadata": {
+              "title": "Maero",
               "canonical": "https://example.com/",
               "description": "A small API service implementing tools for LLM agents.",
               "og": {
                 "site_name": "Maero"
               },
+              "twitter": {},
               "other": {
                 "viewport": "width=device-width"
-              },
-              "title": "Maero",
-              "twitter": {}
+              }
             },
-            "metrics": {
-              "bytes_read": 5123,
-              "content_length": 5123,
-              "content_type": "text/html",
-              "final_url": "https://example.com/",
-              "http_version": "HTTP/2",
-              "redirects": [],
-              "redirects_followed": 0,
-              "status": 200,
-              "total_ms": 120,
-              "truncated": false,
-              "ttfb_ms": 87
-            },
+            "body": "<!doctype html>\n<html>…</html>",
+            "truncated": false,
             "request_headers": {
-              "accept-encoding": "gzip, deflate, br, zstd",
-              "user-agent": "neuradex/0.1"
+              "user-agent": "neuradex/0.1",
+              "accept-encoding": "gzip, deflate, br, zstd"
             },
             "response_headers": {
-              "content-length": "5123",
-              "content-type": "text/html; charset=utf-8"
+              "content-type": "text/html; charset=utf-8",
+              "content-length": "5123"
             },
-            "truncated": false,
-            "url": "https://example.com/"
+            "metrics": {
+              "status": 200,
+              "final_url": "https://example.com/",
+              "http_version": "HTTP/2",
+              "content_type": "text/html",
+              "content_length": 5123,
+              "bytes_read": 5123,
+              "ttfb_ms": 87,
+              "total_ms": 120,
+              "redirects_followed": 0,
+              "redirects": [],
+              "truncated": false
+            }
           }
         ]
       },
@@ -778,17 +901,79 @@
         },
         "examples": [
           {
-            "bytes_read": 5123,
-            "content_length": 5123,
-            "content_type": "text/html",
+            "status": 200,
             "final_url": "https://example.com/",
             "http_version": "HTTP/2",
-            "redirects": [],
-            "redirects_followed": 0,
-            "status": 200,
+            "content_type": "text/html",
+            "content_length": 5123,
+            "bytes_read": 5123,
+            "ttfb_ms": 87,
             "total_ms": 120,
-            "truncated": false,
-            "ttfb_ms": 87
+            "redirects_followed": 0,
+            "redirects": [],
+            "truncated": false
+          }
+        ]
+      },
+      "OpenWebUiSearchRequest": {
+        "type": "object",
+        "description": "The request body of the Open WebUI external search endpoint, as it arrives on the wire.",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The suggested maximum number of results; defaults to `DEFAULT_COUNT` when omitted.",
+            "default": 5,
+            "example": 5,
+            "minimum": 0
+          },
+          "query": {
+            "type": "string",
+            "description": "The user's search query string.",
+            "example": "rust programming"
+          }
+        },
+        "additionalProperties": false,
+        "examples": [
+          {
+            "query": "rust programming",
+            "count": 5
+          }
+        ]
+      },
+      "OpenWebUiSearchResult": {
+        "type": "object",
+        "description": "A single search result, in the shape Open WebUI expects.",
+        "required": [
+          "link",
+          "title",
+          "snippet"
+        ],
+        "properties": {
+          "link": {
+            "type": "string",
+            "format": "uri",
+            "description": "The direct URL to the search result."
+          },
+          "snippet": {
+            "type": "string",
+            "description": "A snippet from the page content relevant to the query."
+          },
+          "title": {
+            "type": "string",
+            "description": "The title of the web page."
+          }
+        },
+        "examples": [
+          {
+            "link": "https://doc.rust-lang.org/book/",
+            "title": "The Rust Programming Language",
+            "snippet": "Learn Rust with an official book."
           }
         ]
       },
@@ -856,18 +1041,18 @@
         },
         "examples": [
           {
+            "title": "Maero",
             "canonical": "https://example.com/",
             "description": "A small API service implementing tools for LLM agents.",
             "og": {
               "site_name": "Maero",
               "title": "Hello"
             },
-            "other": {
-              "viewport": "width=device-width"
-            },
-            "title": "Maero",
             "twitter": {
               "card": "summary"
+            },
+            "other": {
+              "viewport": "width=device-width"
             }
           }
         ]
@@ -897,30 +1082,30 @@
         },
         "examples": [
           {
+            "url": "https://example.com/",
             "metadata": {
+              "title": "Maero",
               "canonical": "https://example.com/",
               "description": "A small API service implementing tools for LLM agents.",
               "og": {
                 "site_name": "Maero"
               },
-              "other": {},
-              "title": "Maero",
-              "twitter": {}
+              "twitter": {},
+              "other": {}
             },
             "metrics": {
-              "bytes_read": 1024,
-              "content_length": 5123,
-              "content_type": "text/html",
+              "status": 200,
               "final_url": "https://example.com/",
               "http_version": "HTTP/2",
-              "redirects": [],
-              "redirects_followed": 0,
-              "status": 200,
+              "content_type": "text/html",
+              "content_length": 5123,
+              "bytes_read": 1024,
+              "ttfb_ms": 87,
               "total_ms": 95,
-              "truncated": false,
-              "ttfb_ms": 87
-            },
-            "url": "https://example.com/"
+              "redirects_followed": 0,
+              "redirects": [],
+              "truncated": false
+            }
           }
         ]
       },
@@ -981,8 +1166,50 @@
         "examples": [
           {
             "queue_ms": 12,
-            "result_count": 10,
-            "total_ms": 340
+            "total_ms": 340,
+            "result_count": 10
+          }
+        ]
+      },
+      "SearchRequest": {
+        "type": "object",
+        "description": "The JSON request body of the search endpoint (`/v1/search`), as it arrives on the wire.",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The maximum number of results to return.",
+            "example": 10,
+            "minimum": 0
+          },
+          "query": {
+            "type": "string",
+            "description": "The search query.",
+            "example": "rust programming"
+          },
+          "timeout": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The maximum time to wait for the search — the queue wait, the session wait, and the\nsearch itself — in whole seconds.",
+            "example": 10,
+            "maximum": 30,
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false,
+        "examples": [
+          {
+            "query": "rust programming",
+            "limit": 10,
+            "timeout": 10
           }
         ]
       },
@@ -1013,19 +1240,19 @@
         },
         "examples": [
           {
-            "metrics": {
-              "queue_ms": 12,
-              "result_count": 1,
-              "total_ms": 340
-            },
             "query": "rust programming",
             "results": [
               {
-                "description": "Learn Rust with an official book.",
                 "title": "The Rust Programming Language",
-                "url": "https://doc.rust-lang.org/book/"
+                "url": "https://doc.rust-lang.org/book/",
+                "description": "Learn Rust with an official book."
               }
-            ]
+            ],
+            "metrics": {
+              "queue_ms": 12,
+              "total_ms": 340,
+              "result_count": 1
+            }
           }
         ]
       },
@@ -1054,9 +1281,9 @@
         },
         "examples": [
           {
-            "description": "Learn Rust with an official book.",
             "title": "The Rust Programming Language",
-            "url": "https://doc.rust-lang.org/book/"
+            "url": "https://doc.rust-lang.org/book/",
+            "description": "Learn Rust with an official book."
           }
         ]
       }

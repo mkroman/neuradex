@@ -257,7 +257,9 @@ async fn search_returns_kagi_results_and_honors_the_limit() {
     let nonce = app.mock_kagi_nonce();
     let stream = app.mock_kagi_search_stream("hello world", "search_stream_sse.bin");
 
-    let response = app.get("/v1/search?query=hello%20world&limit=2").await;
+    let response = app
+        .post_json("/v1/search", &json!({"query": "hello world", "limit": 2}))
+        .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -289,9 +291,9 @@ async fn concurrent_searches_are_queued_and_reuse_sessions() {
     );
 
     let responses = futures::future::join_all([
-        app.get("/v1/search?query=hello%20world"),
-        app.get("/v1/search?query=hello%20world"),
-        app.get("/v1/search?query=hello%20world"),
+        app.post_json("/v1/search", &json!({"query": "hello world"})),
+        app.post_json("/v1/search", &json!({"query": "hello world"})),
+        app.post_json("/v1/search", &json!({"query": "hello world"})),
     ])
     .await;
 
@@ -320,7 +322,9 @@ async fn search_times_out_and_returns_the_error_envelope() {
         std::time::Duration::from_secs(5),
     );
 
-    let response = app.get("/v1/search?query=hello%20world&timeout=2").await;
+    let response = app
+        .post_json("/v1/search", &json!({"query": "hello world", "timeout": 2}))
+        .await;
     let body = TestApp::assert_error(response, StatusCode::BAD_GATEWAY, "upstream_error").await;
 
     assert_eq!(body["error"]["message"], "the upstream request failed");
@@ -347,7 +351,9 @@ async fn search_maps_upstream_failures_to_the_error_envelope() {
         then.status(500);
     });
 
-    let response = app.get("/v1/search?query=hello%20world").await;
+    let response = app
+        .post_json("/v1/search", &json!({"query": "hello world"}))
+        .await;
     let body = TestApp::assert_error(response, StatusCode::BAD_GATEWAY, "upstream_error").await;
 
     assert_eq!(body["error"]["message"], "the upstream request failed");
