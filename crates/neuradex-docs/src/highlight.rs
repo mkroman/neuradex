@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::html;
 
-/// The character cap for rendered schema examples.
+/// The byte cap for rendered example annotations.
 pub const EXAMPLE_CAP: usize = 20_000;
 
 /// Renders a JSON value as syntax-highlighted HTML, mirroring the behavior script's

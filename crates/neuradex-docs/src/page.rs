@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
+use crate::highlight;
 use crate::html;
 use crate::model::{
     Annotation, BodyView, Endpoint, Page, Param, ResponseView, SchemaDoc, TocGroup, TocLink,
@@ -257,7 +258,7 @@ fn build_param(parameter: &Value) -> Param {
     if let Some(schema) = schema {
         schema::push_common_annotations(&mut anns, schema);
     }
-    schema::push_example_annotation(&mut anns, example, None);
+    schema::push_example_annotation(&mut anns, example, Some(highlight::EXAMPLE_CAP));
     if schema_type == Some("array") {
         anns.push(Annotation::new("send as", "repeated keys".to_owned()));
     }
@@ -329,7 +330,7 @@ fn build_body_param(spec: &Value, name: &str, property: &Value, required: bool) 
     let mut anns = Vec::new();
     schema::push_type_annotation(&mut anns, Some(schema), schema_type);
     schema::push_common_annotations(&mut anns, schema);
-    schema::push_example_annotation(&mut anns, example, None);
+    schema::push_example_annotation(&mut anns, example, Some(highlight::EXAMPLE_CAP));
 
     Param {
         name: name.to_owned(),
@@ -485,6 +486,12 @@ mod tests {
         })
     }
 
+    /// A multibyte example longer than [`highlight::EXAMPLE_CAP`] whose cut lands inside
+    /// a character, so truncation must back off to a boundary.
+    fn long_example() -> String {
+        "é<\"&ab".repeat(3_000)
+    }
+
     #[test]
     fn orders_endpoints_by_tag_priority_then_document_order() {
         let page = build_page(&spec());
@@ -527,6 +534,45 @@ mod tests {
             )
         );
         assert_eq!(params[1].seed, "big");
+    }
+
+    #[test]
+    fn truncates_long_parameter_example_annotation_but_not_seed() {
+        let example = long_example();
+        let spec = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "test", "version": "1.2.3"},
+            "paths": {"/things": {"get": {
+                "tags": ["things"],
+                "summary": "List things.",
+                "parameters": [{
+                    "name": "q",
+                    "in": "query",
+                    "schema": {"type": "string"},
+                    "example": example
+                }],
+                "responses": {"200": {"description": "The things."}}
+            }}}
+        });
+        let page = build_page(&spec);
+        let param = &page.endpoints[0].params[0];
+        let annotation = param
+            .anns
+            .iter()
+            .find(|annotation| annotation.key == "example")
+            .expect("an example annotation");
+
+        assert!(annotation.value.contains("truncated for display"));
+        // Only whole repeats fit under the cap: the cut backed off from the incomplete
+        // `é` at byte 20,000 to the previous character boundary.
+        assert_eq!(
+            annotation.value.matches('é').count(),
+            highlight::EXAMPLE_CAP / "é<\"&ab".len()
+        );
+        // The request builder's input keeps the full example.
+        assert_eq!(param.seed, example);
+        assert!(param.seed.len() > highlight::EXAMPLE_CAP);
+        assert!(!param.seed.contains("truncated for display"));
     }
 
     #[test]
@@ -617,6 +663,52 @@ mod tests {
                 .iter()
                 .any(|annotation| annotation.key == "max" && annotation.value == "30")
         );
+    }
+
+    #[test]
+    fn truncates_long_request_body_example_annotation_but_not_seed() {
+        let example = long_example();
+        let spec = json!({
+            "openapi": "3.1.0",
+            "info": {"title": "test", "version": "1.2.3"},
+            "paths": {"/search": {"post": {
+                "tags": ["search"],
+                "summary": "Search things.",
+                "requestBody": {
+                    "content": {"application/json": {"schema":
+                        {"$ref": "#/components/schemas/SearchRequest"}}}
+                },
+                "responses": {"200": {"description": "The results."}}
+            }}},
+            "components": {"schemas": {
+                "SearchRequest": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "example": example}
+                    }
+                }
+            }}
+        });
+        let page = build_page(&spec);
+        let body = page.endpoints[0].body.as_ref().expect("a request body");
+        let field = &body.fields[0];
+        let annotation = field
+            .anns
+            .iter()
+            .find(|annotation| annotation.key == "example")
+            .expect("an example annotation");
+
+        assert!(annotation.value.contains("truncated for display"));
+        // Only whole repeats fit under the cap: the cut backed off from the incomplete
+        // `é` at byte 20,000 to the previous character boundary.
+        assert_eq!(
+            annotation.value.matches('é').count(),
+            highlight::EXAMPLE_CAP / "é<\"&ab".len()
+        );
+        // The request builder's input keeps the full example.
+        assert_eq!(field.seed, example);
+        assert!(field.seed.len() > highlight::EXAMPLE_CAP);
+        assert!(!field.seed.contains("truncated for display"));
     }
 
     #[test]

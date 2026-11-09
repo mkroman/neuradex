@@ -79,8 +79,9 @@ pub fn push_type_annotation(
 /// Appends the `example` annotation when an example value is documented.
 ///
 /// `max_bytes` caps the formatted value for callers that render it inline (flat schema
-/// property rows pass [`crate::highlight::EXAMPLE_CAP`]); it is `None` for parameter and
-/// request-body annotations, whose display is intentionally uncapped.
+/// property rows, query parameters, and request-body fields pass
+/// [`crate::highlight::EXAMPLE_CAP`]); it is `None` only for callers that need the
+/// uncapped value.
 pub fn push_example_annotation(
     anns: &mut Vec<Annotation>,
     example: Option<&Value>,
