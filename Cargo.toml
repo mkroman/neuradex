@@ -15,6 +15,7 @@ license = "MIT OR Apache-2.0"
 assert_cmd = "2.2.2"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "matched-path", "tokio", "tracing"] }
 base64 = "0.23.0"
+criterion = { version = "0.8.2", features = ["async_tokio"] }
 htmlize = { version = "1.1.0", features = ["unescape"] }
 httpmock = "0.9.0"
 opentelemetry = { version = "0.33.1", default-features = false, features = ["trace", "logs"] }
