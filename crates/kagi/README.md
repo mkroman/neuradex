@@ -50,6 +50,14 @@ async fn main() -> Result<(), Error> {
 }
 ```
 
+Structured `search_results_json` payloads carry `rank` and `source` in addition to the title,
+URL, and snippet; `SearchResult` exposes them, and titles/snippets are converted to plain text
+so Kagi's `<strong>` highlight markup does not leak into the API. The HTML fallbacks (`search`
+and `images` messages) remain supported and leave `rank` and `source` empty.
+
+Image results expose Kagi's original image URL (the sentinel `#no_preview` when Kagi cannot
+preview the image), the proxied thumbnail, dimensions, host, and Kagi's rank field.
+
 ## Sessions
 
 The client maintains a pool of persistent sessions, each mirroring one browser

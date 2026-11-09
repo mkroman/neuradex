@@ -21,7 +21,9 @@ use crate::model::{ImageResult, SearchResult};
 #[derive(Deserialize, Debug)]
 pub(crate) struct KagiMessage {
     /// The message tag (e.g., "search", "search.info", "meta").
-    /// This is extracted from the wire prefix or the JSON body.
+    /// This is extracted from the wire prefix or the JSON body. When the body omits it, the
+    /// field defaults to empty so the legacy wire tag can fill it in.
+    #[serde(default)]
     tag: String,
     /// The flexible payload. Using `Value` allows this struct to handle
     /// diverse message types (HTML strings, objects, or nulls) without breaking.
@@ -29,6 +31,9 @@ pub(crate) struct KagiMessage {
 }
 
 /// The structured search results payload of a `search_results_json` message.
+///
+/// Kagi also sends an `answer_box` field, which is not part of the web result list and is
+/// intentionally ignored.
 #[derive(Deserialize)]
 struct SearchResultsJson {
     #[serde(default)]
@@ -42,6 +47,12 @@ struct JsonSearchResult {
     url: String,
     #[serde(default)]
     snippet: String,
+    /// The 1-based rank of the result in the payload.
+    #[serde(default)]
+    rank: u32,
+    /// The source domain reported by Kagi (for example, `en.wikipedia.org`).
+    #[serde(default)]
+    source: String,
 }
 
 // Extracts the `window.sse_nonce` value from the raw HTML content.
@@ -110,6 +121,7 @@ fn parse_sse_stream(raw_body: &str) -> Vec<KagiMessage> {
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim_start)
+        .filter(|json| !json.is_empty())
         .filter_map(|json| {
             serde_json::from_str::<Vec<KagiMessage>>(json)
                 .inspect_err(|error| {
@@ -164,9 +176,35 @@ fn parse_kagi_stream(raw_body: &str) -> Vec<KagiMessage> {
         .collect()
 }
 
-/// Returns the `content` string of a message's payload, if it has one.
+/// Returns the HTML content of a message's payload, if it has one.
+///
+/// HTML payloads arrive either as a bare string or as an object with a `content` field,
+/// depending on the transport Kagi used for the stream.
 fn payload_content(message: &KagiMessage) -> Option<&str> {
-    message.payload.as_ref()?.get("content")?.as_str()
+    match message.payload.as_ref()? {
+        Value::String(content) => Some(content),
+        payload => payload.get("content")?.as_str(),
+    }
+}
+
+/// Parses a `search_results_json` payload, which arrives as a JSON string on the SSE transport
+/// and as an already-decoded object on the fetch-stream transport.
+fn parse_structured_results(payload: &Value) -> Result<SearchResultsJson, serde_json::Error> {
+    match payload {
+        Value::String(json) => serde_json::from_str(json),
+        payload => serde_json::from_value(payload.clone()),
+    }
+}
+
+/// Converts an HTML fragment to trimmed plain text.
+///
+/// Structured titles and snippets are HTML-entity encoded and snippets can contain the
+/// `<strong>` tags Kagi uses to highlight query terms. Parsing the fragment decodes character
+/// references and drops the markup, matching the plain text the HTML fallback produces.
+fn html_to_text(html: &str) -> String {
+    let fragment = Html::parse_fragment(html);
+
+    collect_trimmed_text(&fragment.root_element())
 }
 
 pub(crate) fn parse_search_result_messages(messages: &[KagiMessage]) -> Vec<SearchResult> {
@@ -175,10 +213,10 @@ pub(crate) fn parse_search_result_messages(messages: &[KagiMessage]) -> Vec<Sear
         .iter()
         .filter(|message| message.tag == "search_results_json")
     {
-        let Some(payload) = message.payload.as_ref().and_then(Value::as_str) else {
+        let Some(payload) = message.payload.as_ref() else {
             continue;
         };
-        let results = match serde_json::from_str::<SearchResultsJson>(payload) {
+        let results = match parse_structured_results(payload) {
             Ok(results) => results,
             Err(error) => {
                 debug!(
@@ -194,9 +232,11 @@ pub(crate) fn parse_search_result_messages(messages: &[KagiMessage]) -> Vec<Sear
                 .items
                 .into_iter()
                 .map(|item| SearchResult {
-                    title: htmlize::unescape(item.title).into_owned(),
+                    title: html_to_text(&item.title),
                     url: item.url,
-                    description: htmlize::unescape(item.snippet).into_owned(),
+                    description: html_to_text(&item.snippet),
+                    rank: item.rank,
+                    source: item.source,
                 })
                 .collect();
         }
@@ -218,12 +258,14 @@ pub(crate) fn parse_search_result_messages(messages: &[KagiMessage]) -> Vec<Sear
 
 /// The CSS selectors for parsing the search and image result fragments.
 struct Selectors {
-    /// A search result block.
+    /// A search result block, either a top-level result or a grouped sub-result.
     search_result: Selector,
     /// The title link of a search result block.
     title_link: Selector,
-    /// The description of a search result block.
+    /// The description of a top-level search result block.
     description: Selector,
+    /// The description of a grouped sub-result, which has no inner wrapper.
+    grouped_description: Selector,
     /// An image result block.
     image_item: Selector,
     /// The thumbnail image of an image result block.
@@ -238,11 +280,18 @@ impl Selectors {
     /// Panics if a selector is invalid; the selectors are compile-time constants.
     fn new() -> Self {
         Self {
-            search_result: Selector::parse("div.search-result").expect("search result selector"),
-            title_link: Selector::parse("h3.__sri-title-box > a.__sri_title_link")
-                .expect("title link selector"),
+            search_result: Selector::parse("div.search-result, div.sr-group > div.__srgi")
+                .expect("search result selector"),
+            title_link: Selector::parse(
+                "h3.__sri-title-box > a.__sri_title_link, h3.__srgi-title > a._0_URL",
+            )
+            .expect("title link selector"),
             description: Selector::parse("div.__sri-desc > div").expect("description selector"),
-            image_item: Selector::parse("div._0_img-results > div.item").expect("item selector"),
+            grouped_description: Selector::parse("div.__sri-body > div.__sri-desc")
+                .expect("grouped description selector"),
+            // The preview modal clones an item into the grid; it is not a search result.
+            image_item: Selector::parse("div._0_img-results > div.item:not(.item_img_preview)")
+                .expect("item selector"),
             image_thumbnail: Selector::parse("img._0_img_src").expect("thumbnail selector"),
         }
     }
@@ -251,6 +300,10 @@ impl Selectors {
 /// The pre-compiled result selectors, initialized on first use.
 static SELECTORS: LazyLock<Selectors> = LazyLock::new(Selectors::new);
 
+/// Parses the HTML fallback carried by `search` messages.
+///
+/// Main and grouped (`sr-group` / `__srgi`) results are supported. Widget results have no
+/// comparable title/description shape and are only available through the structured payload.
 fn parse_search_results_html(html: &str) -> Vec<SearchResult> {
     let fragment = Html::parse_fragment(html);
     let selectors = &SELECTORS;
@@ -261,7 +314,10 @@ fn parse_search_results_html(html: &str) -> Vec<SearchResult> {
 
     for result_div in search_results {
         let title = result_div.select(&selectors.title_link).next();
-        let description = result_div.select(&selectors.description).next();
+        let description = result_div
+            .select(&selectors.description)
+            .next()
+            .or_else(|| result_div.select(&selectors.grouped_description).next());
 
         if let (Some(title), Some(description)) = (title, description) {
             let url = title.attr("href").unwrap_or("").to_string();
@@ -269,7 +325,9 @@ fn parse_search_results_html(html: &str) -> Vec<SearchResult> {
             results.push(SearchResult {
                 title: collect_trimmed_text(&title),
                 url,
-                description: extract_topmost_text(&description),
+                description: extract_description_text(&description),
+                rank: 0,
+                source: String::new(),
             });
         }
     }
@@ -315,7 +373,8 @@ fn parse_image_results_html(html: &str) -> Vec<ImageResult> {
         };
 
         results.push(ImageResult {
-            title: htmlize::unescape(title).into_owned(),
+            // `scraper` already decodes character references in attribute values.
+            title: title.to_string(),
             page_url: page_url.to_string(),
             image_url: image_url.to_string(),
             thumbnail_url: thumbnail.to_string(),
@@ -354,27 +413,50 @@ fn collect_trimmed_text(elem: &ElementRef<'_>) -> String {
     text
 }
 
-fn extract_topmost_text(elem: &ElementRef<'_>) -> String {
+/// Collects the text of a description element, keeping inline markup text such as Kagi's
+/// `<strong>` highlights while skipping dates and the trailing "Summarize" action.
+fn extract_description_text(elem: &ElementRef<'_>) -> String {
     let mut extracted = String::new();
 
-    for node in elem.children() {
-        let Node::Text(text_node) = node.value() else {
-            continue;
-        };
-        let text = text_node.trim();
-
-        if text.is_empty() {
-            continue;
-        }
-
-        if !extracted.is_empty() {
-            extracted.push(' ');
-        }
-
-        extracted.push_str(text);
-    }
+    collect_description_text(elem, &mut extracted);
 
     extracted
+}
+
+fn collect_description_text(elem: &ElementRef<'_>, extracted: &mut String) {
+    for node in elem.children() {
+        match node.value() {
+            Node::Text(text_node) => {
+                let text = text_node.trim();
+
+                if text.is_empty() {
+                    continue;
+                }
+
+                if !extracted.is_empty() {
+                    extracted.push(' ');
+                }
+
+                extracted.push_str(text);
+            }
+            Node::Element(_) => {
+                let child = ElementRef::wrap(node).expect("an element node wraps");
+                if skips_description_text(&child) {
+                    continue;
+                }
+
+                collect_description_text(&child, extracted);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Returns whether a description child holds metadata or an action rather than result text.
+fn skips_description_text(elem: &ElementRef<'_>) -> bool {
+    elem.value()
+        .classes()
+        .any(|class| matches!(class, "__sri-time" | "__result-date" | "summarize-link"))
 }
 
 #[cfg(test)]
@@ -410,11 +492,13 @@ mod tests {
         // Snippets arrive HTML-entity encoded and must be decoded.
         assert!(results[0].description.contains('"'));
         assert!(!results[0].description.contains("&quot;"));
+        assert_eq!(results[0].rank, 1);
+        assert_eq!(results[0].source, "en.wikipedia.org");
     }
 
     #[test]
     fn unescapes_structured_search_result_titles_and_snippets() {
-        let payload = r#"{"items":[{"title":"Fish &amp; Chips","url":"https://example.com/fish","snippet":"A &quot;classic&quot; dish &amp; more"}]}"#;
+        let payload = r#"{"items":[{"title":"Fish &amp; Chips","url":"https://example.com/fish","snippet":"A &quot;classic&quot; dish &amp; more","rank":1,"source":"example.com"}]}"#;
         let messages = vec![KagiMessage {
             tag: "search_results_json".to_string(),
             payload: Some(Value::String(payload.to_string())),
@@ -425,6 +509,82 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Fish & Chips");
         assert_eq!(results[0].description, "A \"classic\" dish & more");
+        assert_eq!(results[0].rank, 1);
+        assert_eq!(results[0].source, "example.com");
+    }
+
+    #[test]
+    fn parses_structured_results_delivered_as_objects() {
+        let messages = vec![KagiMessage {
+            tag: "search_results_json".to_string(),
+            payload: Some(serde_json::json!({
+                "items": [{
+                    "title": "Fish &amp; Chips",
+                    "url": "https://example.com/fish",
+                    "snippet": "A &quot;classic&quot; dish &amp; more",
+                    "rank": 2,
+                    "source": "example.com"
+                }]
+            })),
+        }];
+
+        let results = parse_search_result_messages(&messages);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Fish & Chips");
+        assert_eq!(results[0].description, "A \"classic\" dish & more");
+        assert_eq!(results[0].rank, 2);
+        assert_eq!(results[0].source, "example.com");
+    }
+
+    #[test]
+    fn strips_html_markup_from_structured_snippets() {
+        let payload = r#"{"items":[{"title":"T","url":"https://example.com","snippet":"Søgning på “<strong>skidespræller</strong>” &amp; mere","rank":1,"source":"example.com"}]}"#;
+        let messages = vec![KagiMessage {
+            tag: "search_results_json".to_string(),
+            payload: Some(Value::String(payload.to_string())),
+        }];
+
+        let results = parse_search_result_messages(&messages);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].description, "Søgning på “skidespræller” & mere");
+    }
+
+    #[test]
+    fn parses_html_payloads_delivered_as_strings() {
+        let html = r#"<div class="search-result"><h3 class="__sri-title-box"><a class="__sri_title_link" href="https://example.com">Example</a></h3><div class="__sri-desc"><div>A description</div></div></div>"#;
+        let messages = vec![KagiMessage {
+            tag: "search".to_string(),
+            payload: Some(Value::String(html.to_string())),
+        }];
+
+        let results = parse_search_result_messages(&messages);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Example");
+        assert_eq!(results[0].url, "https://example.com");
+        assert_eq!(results[0].description, "A description");
+        assert_eq!(results[0].rank, 0);
+        assert_eq!(results[0].source, "");
+    }
+
+    #[test]
+    fn uses_the_wire_tag_when_the_json_body_omits_it() {
+        let messages = parse_stream("search:{\"payload\":\"<html></html>\"}\0\n");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].tag, "search");
+    }
+
+    #[test]
+    fn ignores_the_empty_data_event_that_closes_the_stream() {
+        let body =
+            "hi\nid: 0\ndata: [{\"tag\":\"search\",\"payload\":\"\"}]\n\nid: CLOSE\ndata:\n\n";
+        let messages = parse_stream(body);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].tag, "search");
     }
 
     #[test]
@@ -432,7 +592,7 @@ mod tests {
         let messages = parse_stream(&read_fixture("search_stream.bin"));
         let results = parse_search_result_messages(&messages);
 
-        assert_eq!(results.len(), 19);
+        assert_eq!(results.len(), 20);
         assert_eq!(
             results[0].title,
             "Vitamin D - Health Professional Fact Sheet"
@@ -445,6 +605,105 @@ mod tests {
             results[0].url,
             "https://ods.od.nih.gov/factsheets/VitaminD-HealthProfessional/"
         );
+        assert_eq!(results[0].rank, 0);
+        assert_eq!(results[0].source, "");
+        assert!(
+            results.iter().any(|result| result.title == "Vitamin D"
+                && result.url == "https://en.wikipedia.org/wiki/Vitamin_D"),
+            "the grouped sub-result is parsed"
+        );
+    }
+
+    #[test]
+    fn parses_grouped_html_results_and_inline_text() {
+        let html = r#"
+            <div class="search-result">
+                <h3 class="__sri-title-box"><a class="__sri_title_link"
+                    href="https://example.com/top">Top</a></h3>
+                <div class="__sri-desc"><div>Before <strong>highlighted</strong> after
+                    <span class="__sri-time">Oct 8</span>
+                    <a class="summarize-link">Summarize</a></div></div>
+            </div>
+            <div class="sr-group">
+                <div class="__srgi">
+                    <div class="__sri-title">
+                        <h3 class="__srgi-title"><a class="_0_URL"
+                            href="https://example.com/group">Group</a></h3>
+                    </div>
+                    <div class="__sri-body">
+                        <div class="__sri-desc">Group description
+                            <a class="summarize-link">Summarize</a></div>
+                    </div>
+                </div>
+            </div>
+        "#;
+
+        let results = parse_search_results_html(html);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "Top");
+        assert_eq!(results[0].description, "Before highlighted after");
+        assert_eq!(results[1].title, "Group");
+        assert_eq!(results[1].url, "https://example.com/group");
+        assert_eq!(results[1].description, "Group description");
+    }
+
+    #[test]
+    fn decodes_image_titles_once() {
+        let html = r#"
+            <div class="_0_img-results">
+                <div class="item" data-title="Fish &amp;amp; Chips"
+                     data-host_url="https://example.com/page"
+                     data-content_url="https://example.com/image.jpg" data-width="100"
+                     data-height="50" data-host="example.com" data-rank="0">
+                    <img class="_0_img_src" src="https://p.kagi.com/real">
+                </div>
+            </div>
+        "#;
+
+        let results = parse_image_results_html(html);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Fish &amp; Chips");
+    }
+
+    #[test]
+    fn keeps_the_no_preview_sentinel() {
+        let html = r##"
+            <div class="_0_img-results">
+                <div class="item" data-title="No preview"
+                     data-host_url="https://example.com/page" data-content_url="#no_preview"
+                     data-width="100" data-height="50" data-host="example.com" data-rank="0">
+                    <img class="_0_img_src" src="https://p.kagi.com/real">
+                </div>
+            </div>
+        "##;
+
+        let results = parse_image_results_html(html);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].image_url, "#no_preview");
+    }
+
+    #[test]
+    fn skips_the_image_preview_item() {
+        let html = r#"
+            <div class="_0_img-results">
+                <div class="item item_img_preview" data-title="Preview">
+                    <img class="_0_img_src" src="https://p.kagi.com/preview">
+                </div>
+                <div class="item" data-title="Real" data-host_url="https://example.com/page"
+                     data-content_url="https://example.com/image.jpg" data-width="100"
+                     data-height="50" data-host="example.com" data-rank="1">
+                    <img class="_0_img_src" src="https://p.kagi.com/real">
+                </div>
+            </div>
+        "#;
+
+        let results = parse_image_results_html(html);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Real");
     }
 
     #[test]
@@ -479,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn extracts_the_nonce_from_the_landing_page() {
+    fn extracts_the_nonce_from_a_page() {
         let nonce = extract_nonce(&read_fixture("landing.html")).expect("could not extract nonce");
 
         assert_eq!(nonce, "0123456789abcdef0123456789abcdef");

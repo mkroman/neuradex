@@ -35,6 +35,8 @@ async fn search_fetches_a_session_and_parses_the_results() {
                           \"Hello, world\" program in a given programming language. This is one \
                           measure of a programming language's ease of use."
                 .to_owned(),
+            rank: 1,
+            source: "en.wikipedia.org".to_owned(),
         }
     );
 
