@@ -144,6 +144,12 @@ fn consume(
             let remaining = cap - body.len();
             let take = remaining.min(chunk.len());
             body.extend_from_slice(&chunk[..take]);
+
+            // The final chunk crossed the cap: bytes were cut even though the loop ends before
+            // the next `at_limit` check.
+            if take < chunk.len() {
+                truncated = true;
+            }
         }
 
         if body.as_ref().is_some_and(|body| body.len() >= cap) {
@@ -297,6 +303,38 @@ mod tests {
 
         assert_eq!(read.bytes_read, 8);
         assert_eq!(read.body.as_deref().map(<[u8]>::len), Some(8));
+        assert!(read.truncated);
+    }
+
+    #[test]
+    fn reports_truncation_when_the_only_chunk_crosses_the_cap() {
+        let read = consume(std::iter::once(Ok(vec![b'x'; 12].into())), true, 8).expect("reads");
+
+        assert_eq!(read.bytes_read, 12);
+        assert_eq!(read.body.as_deref().map(<[u8]>::len), Some(8));
+        assert!(read.truncated);
+    }
+
+    #[test]
+    fn does_not_report_truncation_when_the_only_chunk_fits_exactly() {
+        let read = consume(std::iter::once(Ok(vec![b'x'; 8].into())), true, 8).expect("reads");
+
+        assert_eq!(read.bytes_read, 8);
+        assert_eq!(read.body.as_deref().map(<[u8]>::len), Some(8));
+        assert!(!read.truncated);
+    }
+
+    #[test]
+    fn reports_truncation_when_the_final_chunk_crosses_the_cap() {
+        let read = consume(
+            [Ok(vec![b'x'; 4].into()), Ok(vec![b'y'; 8].into())].into_iter(),
+            true,
+            8,
+        )
+        .expect("reads");
+
+        assert_eq!(read.bytes_read, 12);
+        assert_eq!(read.body.as_deref(), Some(&b"xxxxyyyy"[..]));
         assert!(read.truncated);
     }
 
