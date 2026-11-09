@@ -256,7 +256,7 @@ async fn method_not_allowed(method: Method, uri: Uri) -> (StatusCode, Json<Error
 mod tests {
     use std::collections::HashMap;
     use std::fmt;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
 
     use axum::body::Body;
@@ -273,12 +273,12 @@ mod tests {
     /// One captured event: its name and its `field name -> rendered value` fields.
     type CapturedEvent = (String, HashMap<String, String>);
 
-    /// Captures the events emitted through a thread-local subscriber.
+    /// Captures emitted events. Installed as the process-global subscriber.
     #[derive(Clone, Default)]
     struct EventLog(Arc<Mutex<Vec<CapturedEvent>>>);
 
     impl EventLog {
-        /// Takes the captured events.
+        /// Takes the events captured so far.
         fn events(&self) -> Vec<CapturedEvent> {
             self.0
                 .lock()
@@ -328,6 +328,34 @@ mod tests {
                 .entry(field.name().to_owned())
                 .or_insert_with(|| format!("{value:?}"));
         }
+    }
+
+    /// The shared audit log, installed as the process-global subscriber on first use.
+    ///
+    /// A global subscriber is required for determinism: the `tracing` macros gate dispatch
+    /// through a process-wide callsite-interest cache that concurrent tests rebuild from
+    /// whatever dispatcher is registered at the time, so a thread-local subscriber misses
+    /// events whose callsites were rebuilt on other threads. A global subscriber takes part
+    /// in every rebuild, and events from parallel tests only ever add entries, which the
+    /// assertions below account for.
+    static AUDIT_LOG: OnceLock<EventLog> = OnceLock::new();
+
+    /// Returns the shared audit log, installing it as the global subscriber once.
+    fn audit_log() -> &'static EventLog {
+        AUDIT_LOG.get_or_init(|| {
+            let log = EventLog::default();
+
+            // The first install wins; nothing else in the test binary sets a subscriber.
+            let _ = tracing::subscriber::set_global_default(log.clone());
+
+            log
+        })
+    }
+
+    /// Whether a captured event is a request audit event for `path`.
+    fn is_audit_for(event: &CapturedEvent, path: &str) -> bool {
+        event.0 == "neuradex.http.request"
+            && event.1.get("url.path").map(String::as_str) == Some(path)
     }
 
     /// Builds a router around a state constructed with test settings.
@@ -528,49 +556,48 @@ mod tests {
 
     #[tokio::test]
     async fn audits_every_request_except_health_probes() {
-        let log = EventLog::default();
+        let log = audit_log();
         let router = router_for_test();
 
-        {
-            // The thread-local default covers the whole request handling: the test runtime is
-            // current-thread, so the middleware's events are emitted on this thread.
-            let _guard = tracing::subscriber::set_default(log.clone());
-            send(router.clone(), "GET", "/healthz").await;
-            send(router.clone(), "GET", "/nope").await;
-            send(router, "POST", "/v1/search").await;
-        }
+        send(router.clone(), "GET", "/healthz").await;
+        send(router.clone(), "GET", "/nope").await;
+        send(router, "POST", "/v1/search").await;
 
         let events = log.events();
 
+        // Health probes are never audited. No other test requests /healthz, so any such
+        // event could only come from this request.
         assert!(
-            !events
-                .iter()
-                .any(|(_, fields)| fields.get("url.path").map(String::as_str) == Some("/healthz")),
+            !events.iter().any(|event| is_audit_for(event, "/healthz")),
             "the health probe was audited: {events:?}"
         );
 
-        // The unmatched path is audited, but its route must not leak the raw path: the
-        // fallback has no route, and `http.route` must stay low-cardinality.
-        let not_found = events
+        // Unmatched requests are audited, but the raw path never leaks into `http.route`:
+        // the fallback has no route, and the attribute must stay low-cardinality.
+        let unmatched: Vec<_> = events
             .iter()
-            .find(|(_, fields)| fields.get("url.path").map(String::as_str) == Some("/nope"))
-            .expect("unmatched requests are audited");
+            .filter(|event| is_audit_for(event, "/nope"))
+            .collect();
 
-        assert_ne!(
-            not_found.1.get("http.route").map(String::as_str),
-            Some("/nope"),
+        assert!(
+            !unmatched.is_empty(),
+            "unmatched requests are not audited: {events:?}"
+        );
+        assert!(
+            unmatched
+                .iter()
+                .all(|(_, fields)| fields.get("http.route").map(String::as_str) != Some("/nope")),
             "the raw path leaked into http.route: {events:?}"
         );
 
         // Matched API routes carry their route template.
-        let search = events
-            .iter()
-            .find(|(_, fields)| fields.get("url.path").map(String::as_str) == Some("/v1/search"))
-            .expect("API requests are audited");
-
-        assert_eq!(
-            search.1.get("http.route").map(String::as_str),
-            Some("/v1/search")
+        assert!(
+            events
+                .iter()
+                .any(|(_, fields)| fields.get("url.path").map(String::as_str)
+                    == Some("/v1/search")
+                    && fields.get("http.route").map(String::as_str) == Some("/v1/search")),
+            "API requests are not audited with their route: {events:?}"
         );
     }
 
