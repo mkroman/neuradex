@@ -49,7 +49,10 @@ pub struct FetchMetrics {
     pub content_type: Option<String>,
     /// The content length announced by the final response, if any.
     pub content_length: Option<u64>,
-    /// The number of body bytes read (decompressed).
+    /// The number of decompressed body bytes read from the upstream response.
+    ///
+    /// This includes bytes discarded when the body is truncated, so it may exceed the length
+    /// of the returned body.
     pub bytes_read: u64,
     /// The time until the headers of the final response were received, in milliseconds.
     pub ttfb_ms: u64,
@@ -60,7 +63,7 @@ pub struct FetchMetrics {
     /// The intermediate redirect hops, when requested through `include=redirects`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub redirects: Vec<RedirectHop>,
-    /// Whether the response was cut short by a size limit.
+    /// Whether the returned body was cut short by a size limit.
     pub truncated: bool,
 }
 
