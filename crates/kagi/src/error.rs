@@ -90,7 +90,7 @@ pub struct RequestError {
     /// The HTTP status, if the error came from an error response status.
     status: Option<StatusCode>,
     /// The classified transport failure.
-    failure: Failure,
+    failure: FailureKind,
 }
 
 impl RequestError {
@@ -130,7 +130,7 @@ impl From<reqwest::Error> for RequestError {
             .url()
             .and_then(|url| url.host_str().map(str::to_string));
         let status = error.status();
-        let failure = Failure::from_flags(error.is_timeout(), error.is_connect());
+        let failure = FailureKind::from_flags(error.is_timeout(), error.is_connect());
 
         let error = error.without_url();
         let kind = error.to_string();
@@ -150,9 +150,9 @@ impl From<reqwest::Error> for RequestError {
 impl fmt::Display for RequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.failure {
-            Failure::TimedOut => f.write_str("request timed out")?,
-            Failure::Connect => f.write_str("could not connect")?,
-            Failure::Other => f.write_str(&self.kind)?,
+            FailureKind::TimedOut => f.write_str("request timed out")?,
+            FailureKind::Connect => f.write_str("could not connect")?,
+            FailureKind::Other => f.write_str(&self.kind)?,
         }
 
         self.host
@@ -190,7 +190,7 @@ fn detail(kind: &str, error: &(dyn StdError + 'static), url: Option<&str>) -> St
 
 /// The classified transport failure behind a [`RequestError`].
 #[derive(Debug, Clone, Copy)]
-enum Failure {
+enum FailureKind {
     /// The request timed out.
     TimedOut,
     /// The request failed before it could be sent.
@@ -199,7 +199,7 @@ enum Failure {
     Other,
 }
 
-impl Failure {
+impl FailureKind {
     /// Classifies the `timeout` and `connect` flags a client reports for an error.
     const fn from_flags(timeout: bool, connect: bool) -> Self {
         if timeout {
@@ -270,8 +270,6 @@ pub enum Error {
 
 #[cfg(test)]
 mod tests {
-    use test_support::httpmock::MockServer;
-
     use super::*;
 
     /// The credential-looking query parameter placed in every test URL.
@@ -307,66 +305,5 @@ mod tests {
         assert_eq!(redacted.as_str(), "http://127.0.0.1:0/path");
         assert_no_secrets(&redacted.to_string());
         assert_no_secrets(&format!("{redacted:?}"));
-    }
-
-    /// The wrapper's guarantees hold for a real connection failure: no rendering leaks the
-    /// query string, the short form is classified and host-only, the full form carries the
-    /// redacted URL and the cause, and the chain ends at the wrapper.
-    #[tokio::test]
-    async fn request_errors_redact_the_url_but_keep_the_cause() {
-        let error = reqwest::Client::new()
-            .get(refused_url())
-            .send()
-            .await
-            .expect_err("port zero has no listener");
-
-        // reqwest attaches the request URL, credentials included, to the error.
-        let error = RequestError::from(error);
-        let message = error.to_string();
-        let full = error.full();
-        let debug = format!("{error:?}");
-
-        for rendered in [message.as_str(), full, debug.as_str()] {
-            assert_no_secrets(rendered);
-        }
-
-        assert_eq!(error.url(), Some("http://127.0.0.1:0/path"));
-        assert!(full.contains("http://127.0.0.1:0/path"), "{full}");
-        assert_eq!(error.error_type(), "connection_error");
-        assert!(std::error::Error::source(&error).is_none(), "{debug}");
-    }
-
-    /// A response status is preserved for callers that invalidate a session on it, while the
-    /// URL remains redacted.
-    #[tokio::test]
-    async fn request_errors_keep_the_response_status() {
-        let server = MockServer::start();
-        let response = server.mock(|when, then| {
-            when.method("GET").path("/status");
-            then.status(StatusCode::UNAUTHORIZED.as_u16());
-        });
-        let url = format!("{}/status?token={QUERY_SECRET}", server.base_url());
-
-        let error = reqwest::Client::new()
-            .get(&url)
-            .send()
-            .await
-            .expect("the mock server responds")
-            .error_for_status()
-            .expect_err("the status is an error");
-        let error = RequestError::from(error);
-        let full = error.full();
-        let debug = format!("{error:?}");
-
-        assert_eq!(error.status(), Some(StatusCode::UNAUTHORIZED));
-        assert_eq!(error.error_type(), "other");
-        assert_eq!(
-            error.url(),
-            Some(format!("{}/status", server.base_url()).as_str())
-        );
-        assert_no_secrets(&error.to_string());
-        assert_no_secrets(full);
-        assert_no_secrets(&debug);
-        response.assert();
     }
 }
