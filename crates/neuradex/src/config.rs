@@ -22,6 +22,12 @@ const KAGI_TOKEN_ENV: &str = "KAGI_SESSION_TOKEN";
 /// The default listen address.
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:8080";
 
+/// The largest accepted `KAGI_MAX_SESSIONS` value.
+///
+/// Searches are network-bound, so a small ceiling is enough; rejecting absurd values keeps an
+/// operator typo from reaching `Semaphore::new`, which panics above Tokio's permit limit.
+pub(crate) const MAX_SEARCH_SESSIONS: usize = 64;
+
 /// The configuration of the HTTP service.
 #[derive(Debug)]
 pub struct Config {
@@ -73,7 +79,7 @@ impl Config {
                 .trim()
                 .parse::<usize>()
                 .ok()
-                .filter(|count| *count > 0)
+                .filter(|count| (1..=MAX_SEARCH_SESSIONS).contains(count))
                 .ok_or_else(|| ConfigError::InvalidMaxSessions(value.clone()))?,
             None => kagi::DEFAULT_MAX_SESSIONS,
         };
@@ -106,8 +112,8 @@ pub enum ConfigError {
     /// The listen address is not a valid socket address.
     #[error("invalid LISTEN_ADDR: expected a socket address, got {0:?}")]
     InvalidListenAddr(String),
-    /// The maximum session count is not a positive integer.
-    #[error("invalid KAGI_MAX_SESSIONS: expected a positive integer, got {0:?}")]
+    /// The maximum session count is not an integer between 1 and 64.
+    #[error("invalid KAGI_MAX_SESSIONS: expected an integer between 1 and 64, got {0:?}")]
     InvalidMaxSessions(String),
     /// The Privacy Pass setting is not a boolean.
     #[error("invalid KAGI_PRIVACY_PASS: expected a boolean, got {0:?}")]
@@ -184,7 +190,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_session_counts() {
-        for value in ["0", "-1", "many", ""] {
+        for value in ["0", "-1", "many", "", "65", "18446744073709551615"] {
             let error = parse_env(&[(KAGI_MAX_SESSIONS_ENV, value), (KAGI_TOKEN_ENV, "token")])
                 .expect_err("invalid session count");
 
@@ -194,9 +200,19 @@ mod tests {
             );
             assert_eq!(
                 error.to_string(),
-                format!("invalid KAGI_MAX_SESSIONS: expected a positive integer, got {value:?}")
+                format!(
+                    "invalid KAGI_MAX_SESSIONS: expected an integer between 1 and 64, got {value:?}"
+                )
             );
         }
+    }
+
+    #[test]
+    fn accepts_the_maximum_session_count() {
+        let config = parse_env(&[(KAGI_MAX_SESSIONS_ENV, "64"), (KAGI_TOKEN_ENV, "token")])
+            .expect("the upper bound is valid");
+
+        assert_eq!(config.max_sessions, MAX_SEARCH_SESSIONS);
     }
 
     #[test]

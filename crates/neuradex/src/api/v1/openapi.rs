@@ -59,6 +59,14 @@ pub(crate) fn base() -> utoipa::openapi::OpenApi {
 
 #[cfg(test)]
 mod tests {
+    //! The OpenAPI test suite.
+    //!
+    //! `matches_the_checked_in_spec` is the broad contract check: it compares the whole
+    //! generated document against the checked-in fixture, so any wire change fails there.
+    //! `passes_the_structural_lints` validates the document's internal references and its
+    //! response/tag/component consistency. The focused tests left here document intent; they
+    //! do not repeat the fixture's field-by-field assertions.
+
     use std::collections::BTreeSet;
 
     use serde_json::{Value, json};
@@ -146,22 +154,19 @@ mod tests {
         assert!(search.post.is_some(), "POST /v1/search must be documented");
     }
 
+    /// The golden fixture pins the exact IDs; this keeps the semantic properties the fixture
+    /// cannot express: every operation has a URL-safe, unique ID.
     #[test]
-    fn pins_the_operation_ids() {
+    fn operation_ids_are_unique_and_url_safe() {
         let document = document();
         let mut ids = Vec::new();
 
-        for &(path, method, expected, _, _) in EXPECTED_OPERATIONS {
+        for &(path, method, _, _, _) in EXPECTED_OPERATIONS {
             let id = operation(&document, path, method)
                 .operation_id
                 .as_deref()
                 .unwrap_or_else(|| panic!("the operation for {method} {path} has no operationId"));
 
-            assert_eq!(
-                id, expected,
-                "the operationId for {method} {path} changed; it is part of the generated \
-                 clients' API"
-            );
             assert!(
                 id.chars()
                     .all(|character| character.is_ascii_alphanumeric()
@@ -178,98 +183,6 @@ mod tests {
             EXPECTED_OPERATIONS.len(),
             "operationIds must be unique"
         );
-    }
-
-    #[test]
-    fn documents_the_error_responses_on_every_endpoint() {
-        let document = document();
-
-        for &(path, method, _, _, _) in EXPECTED_OPERATIONS {
-            if path == "/healthz" {
-                continue;
-            }
-
-            let responses = &operation(&document, path, method).responses;
-
-            for status in ["400", "415", "500", "502"] {
-                assert!(
-                    responses.responses.contains_key(status),
-                    "the {status} response is missing from {path}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn documents_the_query_parameters() {
-        let document = document();
-
-        for &(path, method, _, expected, _) in EXPECTED_OPERATIONS {
-            let rendered =
-                serde_json::to_value(operation(&document, path, method)).expect("serializes");
-
-            let mut names: Vec<&str> =
-                rendered["parameters"]
-                    .as_array()
-                    .map_or_default(|parameters| {
-                        parameters
-                            .iter()
-                            .filter_map(|parameter| parameter["name"].as_str())
-                            .collect()
-                    });
-            names.sort_unstable();
-
-            assert_eq!(names, expected, "unexpected query parameters for {path}");
-        }
-    }
-
-    #[test]
-    fn registers_the_schemas() {
-        let document = document();
-        let components = document.components.as_ref().expect("components");
-
-        for schema in [
-            "ErrorBody",
-            "ErrorDetail",
-            "ErrorKind",
-            "FetchResponse",
-            "Metrics",
-            "OpenWebUiSearchRequest",
-            "OpenWebUiSearchResult",
-            "PeekResponse",
-            "SearchRequest",
-            "SearchResponse",
-            "SearchResult",
-        ] {
-            assert!(
-                components.schemas.contains_key(schema),
-                "the components are missing {schema}"
-            );
-        }
-    }
-
-    #[test]
-    fn summarizes_the_operations() {
-        let document = document();
-
-        for &(path, method, _, _, _) in EXPECTED_OPERATIONS {
-            let operation = operation(&document, path, method);
-
-            assert!(
-                operation
-                    .summary
-                    .as_deref()
-                    .is_some_and(|s| !s.trim().is_empty()),
-                "the operation for {path} is missing a summary"
-            );
-            assert!(
-                operation
-                    .description
-                    .as_deref()
-                    .is_some_and(|s| !s.trim().is_empty()),
-                "the operation for {path} is missing a description"
-            );
-        }
     }
 
     #[test]
@@ -302,91 +215,6 @@ mod tests {
         assert_eq!(request["properties"]["query"]["type"], "string");
         assert_eq!(request["properties"]["count"]["default"], 5);
         assert_eq!(request["required"], json!(["query"]));
-    }
-
-    #[test]
-    fn documents_the_search_request_body() {
-        let document = document();
-        let rendered =
-            serde_json::to_value(operation(&document, "/v1/search", "post")).expect("serializes");
-
-        assert_eq!(rendered["requestBody"]["required"], true);
-        assert_eq!(
-            rendered["requestBody"]["content"]["application/json"]["schema"]["$ref"],
-            "#/components/schemas/SearchRequest"
-        );
-
-        let schemas = &document.components.as_ref().expect("components").schemas;
-        let request = serde_json::to_value(&schemas["SearchRequest"]).expect("serializes");
-
-        for field in ["query", "limit", "timeout"] {
-            assert!(
-                request["properties"][field].is_object(),
-                "the SearchRequest schema is missing {field}"
-            );
-        }
-
-        let required = request["required"].as_array().expect("required fields");
-        assert_eq!(required.len(), 1);
-        assert!(required.contains(&json!("query")));
-
-        assert_eq!(request["properties"]["timeout"]["minimum"], 1);
-        assert_eq!(request["properties"]["timeout"]["maximum"], 30);
-    }
-
-    #[test]
-    fn references_the_shared_error_body_from_every_error_response() {
-        let document = document();
-
-        for &(path, method, _, _, _) in EXPECTED_OPERATIONS {
-            if path == "/healthz" {
-                continue;
-            }
-
-            let operation = operation(&document, path, method);
-
-            for status in ["400", "415", "500", "502"] {
-                let response = &operation.responses.responses[status];
-                let rendered = serde_json::to_value(response).expect("serializes");
-
-                assert_eq!(
-                    rendered["content"]["application/json"]["schema"]["$ref"],
-                    "#/components/schemas/ErrorBody",
-                    "the {status} response of {method} {path} does not reference ErrorBody"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn documents_the_error_type_values() {
-        let document = document();
-        let schemas = &document.components.as_ref().expect("components").schemas;
-        let detail = serde_json::to_value(&schemas["ErrorDetail"]).expect("serializes");
-        assert_eq!(
-            detail["properties"]["type"]["$ref"],
-            "#/components/schemas/ErrorKind"
-        );
-
-        let kind = serde_json::to_value(&schemas["ErrorKind"]).expect("serializes");
-        let values: Vec<&str> = kind["enum"]
-            .as_array()
-            .expect("the error type is documented as an enum")
-            .iter()
-            .filter_map(Value::as_str)
-            .collect();
-
-        assert_eq!(
-            values,
-            [
-                "invalid_param",
-                "unsupported_media_type",
-                "upstream_error",
-                "internal_error",
-                "not_found",
-                "method_not_allowed",
-            ]
-        );
     }
 
     /// Collects every local `$ref` in `value`, checks that it resolves, and records the

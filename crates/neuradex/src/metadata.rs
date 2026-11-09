@@ -337,7 +337,10 @@ impl HeadSink {
             return;
         };
 
-        if rel.eq_ignore_ascii_case("canonical") {
+        if rel
+            .split_ascii_whitespace()
+            .any(|token| token.eq_ignore_ascii_case("canonical"))
+        {
             self.metadata
                 .borrow_mut()
                 .canonical
@@ -510,6 +513,18 @@ mod tests {
         let metadata = parse_metadata(
             r#"<head><link rel="canonical" href="https://example.com/page">
             <link rel="stylesheet" href="style.css"></head>"#,
+        );
+
+        assert_eq!(
+            metadata.canonical.as_deref(),
+            Some("https://example.com/page")
+        );
+    }
+
+    #[test]
+    fn recognizes_canonical_in_a_rel_token_list() {
+        let metadata = parse_metadata(
+            r#"<head><link rel="nofollow canonical" href="https://example.com/page"></head>"#,
         );
 
         assert_eq!(

@@ -80,7 +80,7 @@ impl ErrorBody {
 /// the 404 and 405 fallbacks produce them too.
 #[derive(Clone, Copy, Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
-enum ErrorKind {
+pub(crate) enum ErrorKind {
     /// A request parameter is missing, malformed, or out of range.
     InvalidParam,
     /// The request body or target response has an unsupported content type.
@@ -93,6 +93,23 @@ enum ErrorKind {
     NotFound,
     /// The route exists but does not accept the request method.
     MethodNotAllowed,
+}
+
+impl ErrorKind {
+    /// Returns the wire name of this kind.
+    ///
+    /// This must stay in step with the `#[serde(rename_all = "snake_case")]` output; the
+    /// `serialized_kinds_match_as_str` test pins the two together.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidParam => "invalid_param",
+            Self::UnsupportedMediaType => "unsupported_media_type",
+            Self::UpstreamError => "upstream_error",
+            Self::InternalError => "internal_error",
+            Self::NotFound => "not_found",
+            Self::MethodNotAllowed => "method_not_allowed",
+        }
+    }
 }
 
 /// The details of an error response.
@@ -171,16 +188,22 @@ impl ApiError {
         Self::internal(MessageError(message.into()))
     }
 
+    /// Returns the kind of this error.
+    #[must_use]
+    pub(crate) const fn kind(&self) -> ErrorKind {
+        match self {
+            Self::InvalidParam(_) => ErrorKind::InvalidParam,
+            Self::UnsupportedMediaType(_) => ErrorKind::UnsupportedMediaType,
+            Self::Upstream(_) => ErrorKind::UpstreamError,
+            Self::Internal(_) => ErrorKind::InternalError,
+        }
+    }
+
     /// Returns the machine-readable error type used by the API envelope and as `error.type`
     /// on spans and log events.
     #[must_use]
     pub(crate) const fn error_type(&self) -> &'static str {
-        match self {
-            Self::InvalidParam(_) => "invalid_param",
-            Self::UnsupportedMediaType(_) => "unsupported_media_type",
-            Self::Upstream(_) => "upstream_error",
-            Self::Internal(_) => "internal_error",
-        }
+        self.kind().as_str()
     }
 }
 
@@ -190,43 +213,38 @@ impl From<tokio::task::JoinError> for ApiError {
     }
 }
 
+/// Logs a 5xx failure with its source chain.
+///
+/// The source is logged here and never rendered into the response body: 5xx bodies stay
+/// generic per the API invariants. Callers must redact URLs before boxing an upstream error
+/// (`wreq::Error::without_uri` at the fetch boundary); the `Debug` rendering is used so the
+/// cause chain is visible to operators.
+fn log_failure(kind: ErrorKind, source: &(dyn Error + Send + Sync)) {
+    tracing::error!(
+        "error.type" = kind.as_str(),
+        "exception.message" = ?source,
+        "request failed"
+    );
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let error_type = self.error_type();
-        let (status, kind, message) = match self {
-            Self::InvalidParam(message) => {
-                (StatusCode::BAD_REQUEST, ErrorKind::InvalidParam, message)
-            }
-            Self::UnsupportedMediaType(message) => (
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                ErrorKind::UnsupportedMediaType,
-                message,
-            ),
-            Self::Upstream(source) => {
-                // 5xx bodies stay generic per the "Invariants" rule: the details are for the
-                // logs, never for the client.
-                tracing::error!(
-                    "error.type" = error_type,
-                    "exception.message" = %source,
-                    "request failed"
-                );
+        let kind = self.kind();
 
+        let (status, message) = match self {
+            Self::InvalidParam(message) => (StatusCode::BAD_REQUEST, message),
+            Self::UnsupportedMediaType(message) => (StatusCode::UNSUPPORTED_MEDIA_TYPE, message),
+            Self::Upstream(source) => {
+                log_failure(kind, source.as_ref());
                 (
                     StatusCode::BAD_GATEWAY,
-                    ErrorKind::UpstreamError,
                     "the upstream request failed".to_owned(),
                 )
             }
             Self::Internal(source) => {
-                tracing::error!(
-                    "error.type" = error_type,
-                    "exception.message" = %source,
-                    "request failed"
-                );
-
+                log_failure(kind, source.as_ref());
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    ErrorKind::InternalError,
                     "an internal error occurred".to_owned(),
                 )
             }
@@ -305,6 +323,24 @@ mod tests {
 
             assert_eq!(rendered["error"]["type"], kind);
             assert_eq!(rendered["error"]["message"], expected);
+        }
+    }
+
+    #[test]
+    fn serialized_kinds_match_as_str() {
+        let kinds = [
+            ErrorKind::InvalidParam,
+            ErrorKind::UnsupportedMediaType,
+            ErrorKind::UpstreamError,
+            ErrorKind::InternalError,
+            ErrorKind::NotFound,
+            ErrorKind::MethodNotAllowed,
+        ];
+
+        for kind in kinds {
+            let value = serde_json::to_value(kind).expect("the kind serializes");
+
+            assert_eq!(value, Value::from(kind.as_str()));
         }
     }
 

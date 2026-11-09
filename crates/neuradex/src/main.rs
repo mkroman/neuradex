@@ -128,9 +128,20 @@ fn is_json_format(value: Option<&str>) -> bool {
 }
 
 /// Builds the application state and serves the HTTP service.
+///
+/// The telemetry providers are shut down on every path after initialization, including
+/// configuration and state-build failures, so buffered records are flushed.
 fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let telemetry = otel::init(json_logs())?;
+    let result = run_service();
 
+    telemetry.shutdown();
+
+    result
+}
+
+/// Reads the configuration, builds the application state, and runs the server.
+fn run_service() -> Result<(), Box<dyn std::error::Error>> {
     // Keep the startup errors the CLI printed before the config extraction: the plain message,
     // not the error type's `Debug` representation.
     let config = match Config::from_env() {
@@ -158,7 +169,6 @@ fn serve() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let served = runtime.block_on(http::serve(state, config.listen_addr));
-    telemetry.shutdown();
 
     Ok(served?)
 }

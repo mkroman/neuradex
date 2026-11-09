@@ -285,6 +285,9 @@ impl KagiHarness {
                 .header("accept-language", LANGUAGE)
                 .header("user-agent", USER_AGENT)
                 .header("accept", "text/event-stream")
+                // The client enables reqwest's compression features, which also makes it
+                // advertise the header a real browser sends.
+                .header_count("accept-encoding", ".*", 1)
                 .header("referer", referer)
                 .header("sec-fetch-dest", "empty")
                 .header("sec-fetch-mode", "cors")

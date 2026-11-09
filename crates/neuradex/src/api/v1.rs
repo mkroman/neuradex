@@ -84,9 +84,15 @@ async fn trace_request(request: Request, next: Next) -> Response {
         .extensions()
         .get::<MatchedPath>()
         .map(|matched| matched.as_str().to_owned());
+    // The OpenTelemetry HTTP conventions name a server span `{method} {route}`, falling back
+    // to the method when the fallback handlers have no matched route.
+    let span_name = route
+        .as_deref()
+        .map_or_else(|| method.to_string(), |route| format!("{method} {route}"));
     let span = tracing::info_span!(
         target: "neuradex::http",
         "http.server",
+        "otel.name" = %span_name,
         "otel.kind" = "server",
         "http.request.method" = %method,
         "http.route" = tracing::field::Empty,
@@ -108,6 +114,10 @@ async fn trace_request(request: Request, next: Next) -> Response {
     span.record("http.response.status_code", status.as_u16());
     if let Some(error_type) = &error_type {
         span.record("error.type", error_type.as_str());
+    }
+    // Server-span status follows the HTTP conventions: 5xx is an error, 4xx is a client
+    // outcome and leaves the status unset. The audit event still records both.
+    if status.is_server_error() {
         span.record("otel.status_code", "ERROR");
     }
 
@@ -413,14 +423,20 @@ mod tests {
         send_body(router, "POST", path, "application/json", &body.to_string()).await
     }
 
+    /// Reads `response`'s body as a JSON value.
+    async fn body_json(response: Response) -> Value {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+
+        serde_json::from_slice(&body).expect("valid json")
+    }
+
     /// Asserts that `response` is a JSON error of `kind` with the given `message`.
     async fn assert_error(response: Response, status: StatusCode, kind: &str, message: &str) {
         assert_eq!(response.status(), status);
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body");
-        let error: Value = serde_json::from_slice(&body).expect("valid json");
+        let error = body_json(response).await;
 
         assert_eq!(error["error"]["type"], kind);
         assert_eq!(error["error"]["message"], message);
@@ -430,10 +446,7 @@ mod tests {
     async fn assert_error_kind(response: Response, status: StatusCode, kind: &str) {
         assert_eq!(response.status(), status);
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body");
-        let error: Value = serde_json::from_slice(&body).expect("valid json");
+        let error = body_json(response).await;
 
         assert_eq!(error["error"]["type"], kind);
         assert!(
@@ -614,10 +627,7 @@ mod tests {
             "expected the JSON error envelope, not a plain-text rejection",
         );
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body");
-        let error: Value = serde_json::from_slice(&body).expect("valid json");
+        let error = body_json(response).await;
 
         assert_eq!(error["error"]["type"], "invalid_param");
         assert!(

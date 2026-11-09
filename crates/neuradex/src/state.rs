@@ -44,6 +44,8 @@ pub struct AppState {
 impl AppState {
     /// Constructs the application state: the shared HTTP client and the Kagi client.
     ///
+    /// `max_sessions` is clamped to the service's accepted range (1 through 64).
+    ///
     /// # Errors
     ///
     /// Returns an error if the HTTP or Kagi clients fail to build.
@@ -54,11 +56,14 @@ impl AppState {
         max_sessions: usize,
         privacy_pass: bool,
     ) -> Result<Self, BuildError> {
+        let max_sessions = max_sessions.clamp(1, crate::config::MAX_SEARCH_SESSIONS);
         let kagi_client = kagi::Client::with_token_and_options(
             kagi_token,
             &kagi::ClientOptions {
                 max_sessions,
                 privacy_pass: privacy_pass.then(kagi::PrivacyPassOptions::default),
+                // Keep the Kagi client on the same timeout as the page-fetch client.
+                timeout,
                 ..kagi::ClientOptions::default()
             },
         )?;
@@ -72,9 +77,9 @@ impl AppState {
     /// [`AppState::try_new`]. This is the injection point for a Kagi client pointed at another
     /// endpoint, such as a local test server.
     ///
-    /// The search gate capacity is taken from [`kagi::Client::max_sessions`] — clamped to at
-    /// least one — so the service admits exactly as many simultaneous searches as the client
-    /// allows.
+    /// The search gate capacity is taken from [`kagi::Client::max_sessions`], clamped to the
+    /// service's accepted range (1 through 64), so the service admits no more simultaneous
+    /// searches than either limit allows.
     ///
     /// # Errors
     ///
@@ -85,7 +90,9 @@ impl AppState {
         timeout: Duration,
     ) -> Result<Self, BuildError> {
         let default_headers = default_headers(user_agent)?;
-        let max_sessions = kagi_client.max_sessions().max(1);
+        let max_sessions = kagi_client
+            .max_sessions()
+            .clamp(1, crate::config::MAX_SEARCH_SESSIONS);
 
         let client = wreq::Client::builder()
             // The newest Firefox profile wreq-util ships; the snapshot that the Kagi client
@@ -163,6 +170,20 @@ mod tests {
 
         assert_eq!(state.kagi_client().max_sessions(), 1);
         assert_eq!(state.search_gate.available_permits(), 1);
+    }
+
+    #[test]
+    fn clamps_the_search_gate_to_the_service_limit() {
+        let state = state_with_max_sessions(crate::config::MAX_SEARCH_SESSIONS + 1);
+
+        assert_eq!(
+            state.kagi_client().max_sessions(),
+            crate::config::MAX_SEARCH_SESSIONS + 1
+        );
+        assert_eq!(
+            state.search_gate.available_permits(),
+            crate::config::MAX_SEARCH_SESSIONS
+        );
     }
 
     #[test]

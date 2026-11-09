@@ -47,39 +47,34 @@ struct Operation<'a> {
 pub fn build_page(spec: &Value) -> Page {
     let mut operations = collect_operations(spec);
 
-    let doc_tag_order: Vec<&str> =
-        spec.get("tags")
-            .and_then(Value::as_array)
-            .map_or_default(|tags| {
-                tags.iter()
-                    .filter_map(|tag| html::str_field(tag, "name"))
-                    .collect()
-            });
+    let tags = spec.get("tags").and_then(Value::as_array);
+    let doc_tag_order: Vec<&str> = tags.map_or_default(|tags| {
+        tags.iter()
+            .filter_map(|tag| html::str_field(tag, "name"))
+            .collect()
+    });
     let group_index = |tag: &str| -> usize {
         TAG_PRIORITY
             .iter()
             .position(|prioritized| *prioritized == tag)
             .unwrap_or_else(|| {
-                TAG_PRIORITY.len()
-                    + doc_tag_order
-                        .iter()
-                        .position(|documented| *documented == tag)
-                        .unwrap_or(999)
+                doc_tag_order
+                    .iter()
+                    .position(|documented| *documented == tag)
+                    .map_or(usize::MAX, |index| TAG_PRIORITY.len() + index)
             })
     };
     operations.sort_by_key(|operation| group_index(operation.tag));
 
     let tag_description = |tag: &str| -> Option<String> {
-        spec.get("tags")
-            .and_then(Value::as_array)
-            .and_then(|tags| {
-                tags.iter().find_map(|documented| {
-                    (html::str_field(documented, "name") == Some(tag))
-                        .then(|| html::str_field(documented, "description"))
-                        .flatten()
-                })
+        tags.and_then(|tags| {
+            tags.iter().find_map(|documented| {
+                (html::str_field(documented, "name") == Some(tag))
+                    .then(|| html::str_field(documented, "description"))
+                    .flatten()
             })
-            .map(str::to_owned)
+        })
+        .map(str::to_owned)
     };
 
     let mut toc_groups: Vec<TocGroup> = Vec::new();

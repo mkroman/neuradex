@@ -58,6 +58,7 @@ voprf = { version = "0.6.0-pre.2", default-features = false, features = ["ristre
 # `openapi::schema` references the macros-gated internal `crate::utoipa` module.
 # Re-check whether `macros` can be dropped again on version bumps.
 utoipa = { version = "6.0.0", default-features = false, features = ["macros"] }
+# state.rs hard-codes the matching `Accept-Encoding` value; keep this compression set in sync.
 wreq = { version = "0.16.1", default-features = false, features = [
     "tokio-rt",
     "webpki-roots",

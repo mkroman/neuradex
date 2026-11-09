@@ -3,7 +3,9 @@
 //! [`serve`] starts the axum server; the application state and its clients are constructed at
 //! startup (see [`crate::state::AppState`]).
 
+use std::future::IntoFuture;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 #[cfg(unix)]
 use tokio::signal::unix::{SignalKind, signal};
@@ -11,7 +13,13 @@ use tokio::signal::unix::{SignalKind, signal};
 use crate::api::v1::router;
 use crate::state::AppState;
 
+/// The longest the server waits for in-flight requests to finish after a shutdown signal.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Starts the axum server on `addr` and drives it until a shutdown signal is received.
+///
+/// After the signal, in-flight requests are given ten seconds to finish. If they are still
+/// running when that bound is reached, the server stops waiting for them and logs a warning.
 ///
 /// # Errors
 ///
@@ -26,9 +34,33 @@ pub async fn serve(state: AppState, addr: SocketAddr) -> std::io::Result<()> {
         "listening"
     );
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
+    // The server's graceful-shutdown future waits on this channel instead of the signal
+    // directly, so the drain can be timed from the moment the signal arrives.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.await;
+        })
+        .into_future();
+    tokio::pin!(server);
+
+    tokio::select! {
+        result = &mut server => return result,
+        () = shutdown_signal() => {}
+    }
+
+    let _ = shutdown_tx.send(());
+
+    tokio::time::timeout(SHUTDOWN_TIMEOUT, &mut server)
         .await
+        .unwrap_or_else(|_| {
+            tracing::warn!(
+                "error.type" = "shutdown_timeout",
+                "graceful shutdown timed out; abandoning remaining connections"
+            );
+
+            Ok(())
+        })
 }
 
 /// Resolves when a shutdown signal is received (ctrl-c or SIGTERM).

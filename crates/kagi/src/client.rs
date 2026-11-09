@@ -394,7 +394,7 @@ impl Client {
         let language = HeaderValue::from_str(&options.language)?;
         let user_agent = HeaderValue::from_str(&options.user_agent)?;
         let token = Arc::new(token.into());
-        let max_sessions = options.max_sessions.max(1);
+        let max_sessions = options.max_sessions.clamp(1, Semaphore::MAX_PERMITS);
         let privacy_pass = match &options.privacy_pass {
             Some(privacy_pass) => Some(Arc::new(PrivacyPassClient::new(
                 base_url.clone(),
@@ -1369,6 +1369,17 @@ mod tests {
         assert_eq!(backoff_after_failures(5), Duration::from_secs(8));
         assert_eq!(backoff_after_failures(7), BACKOFF_MAX);
         assert_eq!(backoff_after_failures(100), BACKOFF_MAX);
+    }
+
+    #[test]
+    fn clamps_max_sessions_to_the_semaphore_limit() {
+        let options = ClientOptions {
+            max_sessions: usize::MAX,
+            ..ClientOptions::default()
+        };
+        let client = Client::with_token_and_options("token", &options).expect("valid options");
+
+        assert_eq!(client.max_sessions(), Semaphore::MAX_PERMITS);
     }
 
     #[test]

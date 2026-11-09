@@ -31,7 +31,15 @@ app = [
 axum = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 httpmock = { workspace = true, optional = true }
-kagi = { path = "../kagi", default-features = false, features = ["rustls"], optional = true }
+# Keep the test client on the same transport features the service uses: the
+# compression features also make reqwest advertise `Accept-Encoding`.
+kagi = { path = "../kagi", default-features = false, features = [
+    "rustls",
+    "gzip",
+    "brotli",
+    "deflate",
+    "zstd",
+], optional = true }
 neuradex = { path = "../neuradex", default-features = false, optional = true }
 rand = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
