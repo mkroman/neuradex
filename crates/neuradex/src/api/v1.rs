@@ -118,7 +118,9 @@ impl AppState {
         let default_headers = default_headers(user_agent)?;
 
         let client = wreq::Client::builder()
-            .emulation(Emulation::Firefox142)
+            // The newest Firefox profile wreq-util ships; the snapshot that the Kagi client
+            // mirrors was captured from Firefox 159.
+            .emulation(Emulation::Firefox151)
             .default_headers(default_headers.clone())
             // Redirects are followed manually by the fetch handlers, which count each hop and
             // report the chain in the response metrics.
