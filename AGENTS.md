@@ -22,9 +22,12 @@ axum 0.8 HTTP service exposing LLM-agent tools as JSON: `GET /v1/{fetch,peek}`, 
 - Keep the module graph acyclic and one-way: a consumer imports the producer, never the reverse.
   The producer owns the shared types. For example, `parser_pool` owns `StreamedBody` and
   `HEAD_MAX_BYTES`; `stream` imports them.
-- Use the narrowest visibility. Items used only inside `api::v1` are `pub(super)`, not
-  `pub(crate)`; `pub(crate)` inside a private module trips `clippy::redundant_pub_crate`. A
-  `pub(crate)` function must not return a type that is less visible than the function.
+- Use the narrowest visibility that reaches the callers. Items in a private child module that
+  sibling modules use are `pub(super)`; items declared in `api/v1.rs` that only its children use
+  stay private. `pub(crate)` inside a private module trips `clippy::redundant_pub_crate`.
+- A function's signature must not expose a type less visible than the function itself:
+  `pub(crate) fn` returning a `pub(super)` type trips the warn-by-default
+  `private_interfaces` lint, which CI denies.
 - Read runtime configuration only in `src/config.rs`; CLI arguments stay in `main.rs`. Library
   modules must not read `std::env`. A hidden environment variable is a drift, not a feature.
 
