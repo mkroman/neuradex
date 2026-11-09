@@ -125,15 +125,15 @@ mod tests {
         for &(path, expected, _) in EXPECTED_OPERATIONS {
             let rendered = serde_json::to_value(operation(&document, path)).expect("serializes");
 
-            let mut names: Vec<&str> = rendered["parameters"]
-                .as_array()
-                .map(|parameters| {
-                    parameters
-                        .iter()
-                        .filter_map(|parameter| parameter["name"].as_str())
-                        .collect()
-                })
-                .unwrap_or_default();
+            let mut names: Vec<&str> =
+                rendered["parameters"]
+                    .as_array()
+                    .map_or_default(|parameters| {
+                        parameters
+                            .iter()
+                            .filter_map(|parameter| parameter["name"].as_str())
+                            .collect()
+                    });
             names.sort_unstable();
 
             assert_eq!(names, expected, "unexpected query parameters for {path}");
