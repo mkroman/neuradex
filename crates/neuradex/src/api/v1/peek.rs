@@ -17,9 +17,8 @@ use crate::metadata::PageMetadata;
 use crate::metrics::Metrics;
 
 /// The response of the peek endpoint.
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "utoipa", schema(examples(json!({
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(examples(json!({
     "url": "https://example.com/",
     "metadata": {
         "title": "Maero",
@@ -42,10 +41,10 @@ use crate::metrics::Metrics;
         "redirects": [],
         "truncated": false
     }
-}))))]
+})))]
 pub struct PeekResponse {
     /// The requested URL.
-    #[cfg_attr(feature = "utoipa", schema(format = "uri"))]
+    #[schema(format = "uri")]
     pub url: String,
     /// The metadata extracted from the document head.
     pub metadata: PageMetadata,
@@ -62,23 +61,20 @@ pub struct PeekResponse {
 /// # Errors
 ///
 /// Returns an error for invalid parameters, binary content types, and failed requests.
-#[cfg_attr(
-    feature = "utoipa",
-    utoipa::path(
-        get,
-        path = "/v1/peek",
-        tag = "peek",
-        summary = "Fetch a page's head metadata.",
-        description = "Fetches the page and returns only its document-head metadata. The response \
-                       is streamed through the head parser and the download is aborted as soon as \
-                       the head has been received — through `</head>` or the start of `<body>` — so \
-                       the endpoint returns as early as possible. Unlike `/v1/fetch`, the body is \
-                       not returned and `include=headers` is not supported.",
-        params(FetchParams),
-        responses(
-            (status = 200, description = "The page head was fetched", body = PeekResponse),
-            ApiError,
-        )
+#[utoipa::path(
+    get,
+    path = "/v1/peek",
+    tag = "peek",
+    summary = "Fetch a page's head metadata.",
+    description = "Fetches the page and returns only its document-head metadata. The response \
+                   is streamed through the head parser and the download is aborted as soon as \
+                   the head has been received — through `</head>` or the start of `<body>` — so \
+                   the endpoint returns as early as possible. Unlike `/v1/fetch`, the body is \
+                   not returned and `include=headers` is not supported.",
+    params(FetchParams),
+    responses(
+        (status = 200, description = "The page head was fetched", body = PeekResponse),
+        ApiError,
     )
 )]
 pub(crate) async fn peek(

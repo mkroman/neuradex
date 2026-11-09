@@ -18,9 +18,8 @@ use crate::metrics::Metrics;
 pub(crate) const FETCH_MAX_BYTES: u64 = 25 * 1024 * 1024;
 
 /// The response of the fetch endpoint.
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "utoipa", schema(examples(json!({
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(examples(json!({
     "url": "https://example.com/",
     "metadata": {
         "title": "Maero",
@@ -47,10 +46,10 @@ pub(crate) const FETCH_MAX_BYTES: u64 = 25 * 1024 * 1024;
         "redirects": [],
         "truncated": false
     }
-}))))]
+})))]
 pub struct FetchResponse {
     /// The requested URL.
-    #[cfg_attr(feature = "utoipa", schema(format = "uri"))]
+    #[schema(format = "uri")]
     pub url: String,
     /// The metadata extracted from the document head.
     pub metadata: PageMetadata,
@@ -77,24 +76,21 @@ pub struct FetchResponse {
 /// # Errors
 ///
 /// Returns an error for invalid parameters, binary content types, and failed requests.
-#[cfg_attr(
-    feature = "utoipa",
-    utoipa::path(
-        get,
-        path = "/v1/fetch",
-        tag = "fetch",
-        summary = "Fetch a page.",
-        description = "Fetches the page and returns its document-head metadata, body, and request \
-                       metrics. Up to `redirects` redirects are followed by hand, and each hop can \
-                       be reported through `include=redirects`. The body is decoded as UTF-8 text \
-                       with invalid sequences replaced; binary content types are rejected, and \
-                       bodies beyond 25 MiB are cut short with `truncated: true`. The request and \
-                       response headers are returned when `include=headers` is requested.",
-        params(FetchParams),
-        responses(
-            (status = 200, description = "The page was fetched", body = FetchResponse),
-            ApiError,
-        )
+#[utoipa::path(
+    get,
+    path = "/v1/fetch",
+    tag = "fetch",
+    summary = "Fetch a page.",
+    description = "Fetches the page and returns its document-head metadata, body, and request \
+                   metrics. Up to `redirects` redirects are followed by hand, and each hop can \
+                   be reported through `include=redirects`. The body is decoded as UTF-8 text \
+                   with invalid sequences replaced; binary content types are rejected, and \
+                   bodies beyond 25 MiB are cut short with `truncated: true`. The request and \
+                   response headers are returned when `include=headers` is requested.",
+    params(FetchParams),
+    responses(
+        (status = 200, description = "The page was fetched", body = FetchResponse),
+        ApiError,
     )
 )]
 pub(crate) async fn fetch(

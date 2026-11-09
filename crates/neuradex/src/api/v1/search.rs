@@ -13,9 +13,8 @@ use crate::api::v1::{AppState, redirect};
 use crate::metrics::SearchMetrics;
 
 /// The response of the search endpoint.
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "utoipa", schema(examples(json!({
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(examples(json!({
     "query": "rust programming",
     "results": [
         {
@@ -25,7 +24,7 @@ use crate::metrics::SearchMetrics;
         }
     ],
     "metrics": {"queue_ms": 12, "total_ms": 340, "result_count": 1}
-}))))]
+})))]
 pub struct SearchResponse {
     /// The search query.
     pub query: String,
@@ -36,18 +35,17 @@ pub struct SearchResponse {
 }
 
 /// A single search result.
-#[derive(Clone, Debug, Serialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-#[cfg_attr(feature = "utoipa", schema(examples(json!({
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
+#[schema(examples(json!({
     "title": "The Rust Programming Language",
     "url": "https://doc.rust-lang.org/book/",
     "description": "Learn Rust with an official book."
-}))))]
+})))]
 pub struct SearchResult {
     /// The title of the search result.
     pub title: String,
     /// The URL of the search result.
-    #[cfg_attr(feature = "utoipa", schema(format = "uri"))]
+    #[schema(format = "uri")]
     pub url: String,
     /// The description of the search result.
     pub description: String,
@@ -76,29 +74,26 @@ impl From<kagi::SearchResult> for SearchResult {
 ///
 /// Returns an error for an invalid request body, failed searches, and searches that exceed the
 /// requested timeout.
-#[cfg_attr(
-    feature = "utoipa",
-    utoipa::path(
-        post,
-        path = "/v1/search",
-        tag = "search",
-        summary = "Search the web.",
-        description = "Searches the web through Kagi for a JSON request body. Searches are \
-                       queued: at most two run at once, and the request blocks until a slot and \
-                       the results are ready. The optional `timeout` covers the whole of it — \
-                       the queue wait, the session wait, and the search itself; without it, the \
-                       request stays pending until the client disconnects. Results are truncated \
-                       to `limit`.",
-        request_body(
-            content = SearchRequest,
-            content_type = "application/json",
-            description = "The query to search for, the maximum number of results, and the \
-                           timeout.",
-        ),
-        responses(
-            (status = 200, description = "The search completed", body = SearchResponse),
-            ApiError,
-        )
+#[utoipa::path(
+    post,
+    path = "/v1/search",
+    tag = "search",
+    summary = "Search the web.",
+    description = "Searches the web through Kagi for a JSON request body. Searches are \
+                   queued: at most two run at once, and the request blocks until a slot and \
+                   the results are ready. The optional `timeout` covers the whole of it — \
+                   the queue wait, the session wait, and the search itself; without it, the \
+                   request stays pending until the client disconnects. Results are truncated \
+                   to `limit`.",
+    request_body(
+        content = SearchRequest,
+        content_type = "application/json",
+        description = "The query to search for, the maximum number of results, and the \
+                       timeout.",
+    ),
+    responses(
+        (status = 200, description = "The search completed", body = SearchResponse),
+        ApiError,
     )
 )]
 pub(crate) async fn search(
