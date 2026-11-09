@@ -268,6 +268,33 @@ pub enum Error {
     PrivacyPass(#[from] PrivacyPassError),
 }
 
+impl Error {
+    /// Returns the low-cardinality [`error.type`] value for this failure.
+    ///
+    /// The values are stable identifiers for the variant, not the error's rendered message:
+    /// telemetry backends group and alert on `error.type`, so it must stay low-cardinality.
+    ///
+    /// [`error.type`]: https://opentelemetry.io/docs/specs/semconv/registry/attributes/error/
+    #[must_use]
+    pub const fn error_type(&self) -> &'static str {
+        match self {
+            Self::StreamRequest(_) => "stream_request",
+            Self::StreamStatus(_) => "stream_status",
+            Self::StreamRequestBody(_) => "stream_request_body",
+            Self::ParseTask(_) => "parse_task",
+            Self::RequestNonce(_) => "request_nonce",
+            Self::ReadNonce(_) => "read_nonce",
+            Self::RequestSession(_) => "request_session",
+            Self::SessionCookies => "session_cookies",
+            Self::Nonce => "nonce",
+            Self::InvalidHeader(_) => "invalid_header",
+            Self::InvalidBaseUrl(_) => "invalid_base_url",
+            Self::BuildClient(_) => "build_client",
+            Self::PrivacyPass(_) => "privacy_pass",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

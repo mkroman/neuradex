@@ -14,6 +14,17 @@ use tracing::debug;
 
 use crate::model::{ImageResult, SearchResult};
 
+/// The maximum number of characters of an unparseable payload included in a debug log.
+const LOG_PAYLOAD_MAX_CHARS: usize = 256;
+
+/// Truncates a payload for logging without splitting a UTF-8 character.
+fn log_payload(payload: &str) -> &str {
+    match payload.char_indices().nth(LOG_PAYLOAD_MAX_CHARS) {
+        Some((index, _)) => &payload[..index],
+        None => payload,
+    }
+}
+
 /// Represents a message parsed from a Kagi socket stream.
 ///
 /// Messages arrive either framed as standard server-sent events or as `Tag:JSON_BODY\0\n`
@@ -126,8 +137,8 @@ fn parse_sse_stream(raw_body: &str) -> Vec<KagiMessage> {
             serde_json::from_str::<Vec<KagiMessage>>(json)
                 .inspect_err(|error| {
                     debug!(
-                        event = json,
-                        exception.message = %error,
+                        event = %log_payload(json),
+                        "exception.message" = %error,
                         "dropping an unparseable Kagi SSE event"
                     );
                 })
@@ -150,7 +161,10 @@ fn parse_legacy_stream(raw_body: &str) -> Vec<KagiMessage> {
         .filter_map(|chunk| {
             // Split wire format: "tag:json_data"
             let Some((wire_tag, json_str)) = chunk.split_once(':') else {
-                debug!(chunk, "dropping a Kagi chunk without a wire tag");
+                debug!(
+                    chunk = %log_payload(chunk),
+                    "dropping a Kagi chunk without a wire tag"
+                );
                 return None;
             };
             // Parse JSON body
@@ -159,7 +173,7 @@ fn parse_legacy_stream(raw_body: &str) -> Vec<KagiMessage> {
                 Err(error) => {
                     debug!(
                         wire_tag,
-                        exception.message = %error,
+                        "exception.message" = %error,
                         "dropping an unparseable Kagi chunk"
                     );
                     return None;

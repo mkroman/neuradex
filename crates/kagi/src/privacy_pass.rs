@@ -24,7 +24,7 @@ use reqwest::header::{
 };
 use secrecy::{ExposeSecret, SecretString};
 use tokio::sync::Mutex as AsyncMutex;
-use tracing::debug;
+use tracing::{Instrument, debug, warn};
 
 use self::wire::{
     Challenge, finalize_tokens, parse_challenge, parse_token_response, prepare_request,
@@ -342,6 +342,13 @@ impl PrivacyPassClient {
         let (request, pending) = prepare_request(&challenge, self.batch_size)?;
         let request_body = URL_SAFE.encode(serialize_token_request(&request)?);
         let url = self.endpoint(ISSUANCE_PATH)?;
+        let span = crate::client::http_client_span(
+            "POST",
+            &url,
+            "/pp/gettokens",
+            "privacy_pass_tokens",
+            0,
+        );
 
         let response = self
             .http
@@ -352,16 +359,31 @@ impl PrivacyPassClient {
             .header(AUTHORIZATION, self.token.expose_secret())
             .body(request_body)
             .send()
+            .instrument(span.clone())
             .await
             .map_err(|error| {
-                PrivacyPassError::TokenRequest(crate::client::log_request_error(error))
+                let error = crate::client::log_request_error(error);
+                crate::client::record_request_error(&span, &error);
+
+                PrivacyPassError::TokenRequest(error)
             })?;
+        crate::client::record_response(&span, &response);
         let response = response.error_for_status().map_err(|error| {
-            PrivacyPassError::TokenStatus(crate::client::log_request_error(error))
+            let error = crate::client::log_request_error(error);
+            crate::client::record_request_error(&span, &error);
+
+            PrivacyPassError::TokenStatus(error)
         })?;
-        let body = response.text().await.map_err(|error| {
-            PrivacyPassError::TokenBody(crate::client::log_request_error(error))
-        })?;
+        let body = response
+            .text()
+            .instrument(span.clone())
+            .await
+            .map_err(|error| {
+                let error = crate::client::log_request_error(error);
+                crate::client::record_request_error(&span, &error);
+
+                PrivacyPassError::TokenBody(error)
+            })?;
         let response_bytes = URL_SAFE
             .decode(body.trim())
             .map_err(|_| PrivacyPassError::InvalidTokenResponse)?;
@@ -382,20 +404,29 @@ impl PrivacyPassClient {
     /// Fetches and parses the issuer challenge.
     async fn fetch_challenge(&self) -> Result<Challenge, PrivacyPassError> {
         let url = self.endpoint(CHALLENGE_PATH)?;
+        let span =
+            crate::client::http_client_span("GET", &url, "/pp/wwwa", "privacy_pass_challenge", 0);
         let response = self
             .http
             .get(url)
             .header(CLIENT_HEADER, CLIENT_HEADER_VALUE)
             .header(ACCEPT_LANGUAGE, self.language.clone())
             .send()
+            .instrument(span.clone())
             .await
             .map_err(|error| {
-                PrivacyPassError::ChallengeRequest(crate::client::log_request_error(error))
+                let error = crate::client::log_request_error(error);
+                crate::client::record_request_error(&span, &error);
+
+                PrivacyPassError::ChallengeRequest(error)
             })?;
-        let header = response
-            .headers()
-            .get(WWW_AUTHENTICATE)
-            .ok_or(PrivacyPassError::MissingChallenge)?;
+        crate::client::record_response(&span, &response);
+        let Some(header) = response.headers().get(WWW_AUTHENTICATE) else {
+            span.record("error.type", "missing_challenge");
+            span.record("otel.status_code", "ERROR");
+
+            return Err(PrivacyPassError::MissingChallenge);
+        };
 
         parse_challenge(header)
     }
@@ -426,7 +457,13 @@ impl PrivacyPassClient {
             if client.store.is_low()
                 && let Err(error) = client.issue_locked().await
             {
-                debug!(%error, "could not replenish Privacy Pass tokens");
+                // The refill is best-effort, but a failure leaves the store low and the next
+                // search may fail; this is degraded state rather than routine diagnostics.
+                warn!(
+                    "error.type" = "privacy_pass",
+                    "exception.message" = %error,
+                    "could not replenish Privacy Pass tokens"
+                );
             }
 
             drop(guard);

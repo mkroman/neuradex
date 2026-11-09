@@ -5,12 +5,14 @@
 
 use std::time::{Duration, Instant};
 
+use tracing::Instrument;
 use url::Url;
 use wreq::StatusCode;
 use wreq::header::{CONTENT_LENGTH, CONTENT_TYPE, LOCATION};
 
 use crate::api::v1::error::ApiError;
 use crate::metrics::{FetchMetrics, RedirectHop, duration_ms};
+use crate::telemetry;
 
 /// The facts of the final response, captured before the body is consumed.
 pub(crate) struct ResponseInfo {
@@ -114,11 +116,18 @@ pub(crate) async fn fetch_with_redirects(
     let mut followed: u32 = 0;
 
     loop {
+        let span = telemetry::http_client_span("GET", &current, followed);
         let response = client
             .get(current.as_str())
             .send()
+            .instrument(span.clone())
             .await
-            .map_err(ApiError::upstream)?;
+            .map_err(|error| {
+                telemetry::record_error(&span, &error);
+
+                ApiError::upstream(error)
+            })?;
+        telemetry::record_response(&span, &response);
 
         if let Some(target) = redirect_target(&response, &current)
             && followed < max_redirects

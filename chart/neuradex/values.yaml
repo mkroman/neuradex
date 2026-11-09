@@ -103,6 +103,18 @@ kagiMaxSessions: 2
 ## `neuradex=debug,hyper=warn`.
 rustLog: "info"
 
+## @param logFormat Log line format: `text` or `json`. JSON is recommended for structured
+## log pipelines.
+logFormat: "json"
+
+## @param otelExporterOtlpEndpoint OTLP/HTTP endpoint for traces and logs, for example
+## `http://otel-collector:4318`. Empty disables export.
+otelExporterOtlpEndpoint: ""
+
+## @param otelResourceAttributes OTel resource attributes, for example
+## `deployment.environment.name=production,service.version=1.2.3`.
+otelResourceAttributes: ""
+
 ## @param podAnnotations Extra annotations on the Deployment's pod template.
 ## Example:
 ##   podAnnotations:

@@ -14,13 +14,20 @@ futures = { version = "0.3.31", default-features = false, features = ["std"] }
 html5ever = "0.40.0"
 kagi = { path = "../kagi", default-features = false, features = ["rustls"] }
 neuradex-docs = { path = "../neuradex-docs", optional = true }
+opentelemetry.workspace = true
+opentelemetry-appender-tracing.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry-resource-detectors.workspace = true
+opentelemetry-semantic-conventions.workspace = true
+opentelemetry_sdk.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["signal", "net"] }
 tracing.workspace = true
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-opentelemetry.workspace = true
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 url.workspace = true
 # utoipa 6.0.0 cannot compile without its `macros` feature; the service always uses the
 # derives for its OpenAPI document.

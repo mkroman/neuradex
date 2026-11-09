@@ -20,7 +20,11 @@ pub async fn serve(state: AppState, addr: SocketAddr) -> std::io::Result<()> {
     let router = router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    tracing::info!(%addr, "listening");
+    tracing::info!(
+        "server.address" = %addr.ip(),
+        "server.port" = addr.port(),
+        "listening"
+    );
 
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())

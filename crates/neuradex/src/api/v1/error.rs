@@ -170,6 +170,18 @@ impl ApiError {
     pub fn internal_message(message: impl Into<String>) -> Self {
         Self::internal(MessageError(message.into()))
     }
+
+    /// Returns the machine-readable error type used by the API envelope and as `error.type`
+    /// on spans and log events.
+    #[must_use]
+    pub(crate) const fn error_type(&self) -> &'static str {
+        match self {
+            Self::InvalidParam(_) => "invalid_param",
+            Self::UnsupportedMediaType(_) => "unsupported_media_type",
+            Self::Upstream(_) => "upstream_error",
+            Self::Internal(_) => "internal_error",
+        }
+    }
 }
 
 impl From<tokio::task::JoinError> for ApiError {
@@ -180,6 +192,7 @@ impl From<tokio::task::JoinError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        let error_type = self.error_type();
         let (status, kind, message) = match self {
             Self::InvalidParam(message) => {
                 (StatusCode::BAD_REQUEST, ErrorKind::InvalidParam, message)
@@ -192,7 +205,11 @@ impl IntoResponse for ApiError {
             Self::Upstream(source) => {
                 // 5xx bodies stay generic per the "Invariants" rule: the details are for the
                 // logs, never for the client.
-                tracing::error!(error = ?source, "request failed");
+                tracing::error!(
+                    "error.type" = error_type,
+                    "exception.message" = %source,
+                    "request failed"
+                );
 
                 (
                     StatusCode::BAD_GATEWAY,
@@ -201,7 +218,11 @@ impl IntoResponse for ApiError {
                 )
             }
             Self::Internal(source) => {
-                tracing::error!(error = ?source, "request failed");
+                tracing::error!(
+                    "error.type" = error_type,
+                    "exception.message" = %source,
+                    "request failed"
+                );
 
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -269,6 +290,9 @@ mod tests {
                 documented.contains_key(status.as_str()),
                 "the {status} response is missing from ApiError::responses()"
             );
+
+            // Span and log telemetry must classify the failure the same way the envelope does.
+            assert_eq!(error.error_type(), kind);
 
             let response = error.into_response();
 

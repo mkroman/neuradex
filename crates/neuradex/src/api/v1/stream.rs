@@ -106,7 +106,21 @@ pub(crate) async fn read_body(
     if let Err(error) = reader.await
         && !error.is_cancelled()
     {
-        tracing::warn!(%error, "reader task failed");
+        // A failing read already becomes an API error and is logged once at error level;
+        // only a reader failure on an otherwise successful read needs a warning.
+        if matches!(&read, Ok(Ok(_))) {
+            tracing::warn!(
+                "error.type" = "reader_task",
+                "exception.message" = %error,
+                "reader task failed"
+            );
+        } else {
+            tracing::debug!(
+                "error.type" = "reader_task",
+                "exception.message" = %error,
+                "reader task failed while the request was already failing"
+            );
+        }
     }
 
     read?
