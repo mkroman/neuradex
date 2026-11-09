@@ -196,6 +196,18 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
     api().1
 }
 
+/// Returns the OpenAPI document as the JSON value `/docs` renders from.
+///
+/// # Panics
+///
+/// Panics if the OpenAPI document cannot be serialized to JSON, which cannot happen for a
+/// document derived by `utoipa`.
+#[cfg(feature = "docs")]
+#[must_use]
+pub fn openapi_spec() -> serde_json::Value {
+    serde_json::to_value(openapi_document()).expect("the OpenAPI document is always serializable")
+}
+
 /// Builds the router for the whole service: the v1 API plus the documentation endpoints.
 ///
 /// Every error response — including the router-level `404` and `405` fallbacks — renders the
@@ -243,7 +255,7 @@ pub fn router(state: AppState) -> Router {
 /// Renders the documentation page from the OpenAPI document.
 #[cfg(feature = "docs")]
 fn render_docs_page() -> String {
-    neuradex_docs::render(&openapi_document())
+    neuradex_docs::render(&openapi_spec())
 }
 
 /// Serves the API documentation page at `GET /docs`.
@@ -475,6 +487,28 @@ mod tests {
             page.contains(r#"data-docs="neuradex""#),
             "the page is missing the data-docs marker"
         );
+    }
+
+    #[cfg(feature = "docs")]
+    #[test]
+    fn renders_every_documented_path_and_schema() {
+        let document = openapi_spec();
+        let page = neuradex_docs::render(&document);
+
+        for path in document["paths"].as_object().expect("paths").keys() {
+            assert!(page.contains(path), "the page is missing {path}");
+        }
+
+        for schema in document["components"]["schemas"]
+            .as_object()
+            .expect("schemas")
+            .keys()
+        {
+            assert!(
+                page.contains(&format!("id=\"schema-{schema}\"")),
+                "the page is missing the {schema} schema"
+            );
+        }
     }
 
     #[cfg(feature = "docs")]
