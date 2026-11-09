@@ -10,6 +10,8 @@ pub mod redirect;
 pub mod search;
 pub mod stream;
 
+mod parser_pool;
+
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -36,10 +38,10 @@ use crate::metrics::duration_ms;
 use crate::state::AppState;
 
 /// The maximum number of redirects the fetch endpoints will follow.
-pub(crate) const MAX_REDIRECTS: u32 = 5;
+const MAX_REDIRECTS: u32 = 5;
 
 /// The maximum value accepted by the search endpoint's `timeout` parameter, in seconds.
-pub(crate) const MAX_SEARCH_TIMEOUT_SECS: u64 = 30;
+const MAX_SEARCH_TIMEOUT_SECS: u64 = 30;
 
 /// Builds the v1 API router together with the OpenAPI document derived from its routes.
 ///

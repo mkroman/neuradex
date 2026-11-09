@@ -14,6 +14,23 @@ axum 0.8 HTTP service exposing LLM-agent tools as JSON: `GET /v1/{fetch,peek}`, 
 - `neuradex` and `test-support` enable `kagi`'s four compression features on purpose: reqwest only advertises `Accept-Encoding` — and decodes compressed responses — when they are on. Do not trim them when changing TLS features; the Kagi harness pins the header.
 - utoipa's `macros` feature can't be dropped (utoipa 6.0.0 doesn't compile without it); only the service uses the derives.
 
+## Module boundaries
+
+- Use the post-2018 layout: `foo.rs` for a leaf module, and `foo.rs` plus `foo/bar.rs` for a
+  module with children. Never add `foo/mod.rs`. Module names and their files are `snake_case`;
+  Cargo target files such as `benches/http-stack.rs` follow their target name and are not modules.
+- Keep the module graph acyclic and one-way: a consumer imports the producer, never the reverse.
+  The producer owns the shared types. For example, `parser_pool` owns `StreamedBody` and
+  `HEAD_MAX_BYTES`; `stream` imports them.
+- Use the narrowest visibility that reaches the callers. Items in a private child module that
+  sibling modules use are `pub(super)`; items declared in `api/v1.rs` that only its children use
+  stay private. `pub(crate)` inside a private module trips `clippy::redundant_pub_crate`.
+- A function's signature must not expose a type less visible than the function itself:
+  `pub(crate) fn` returning a `pub(super)` type trips the warn-by-default
+  `private_interfaces` lint, which CI denies.
+- Read runtime configuration only in `src/config.rs`; CLI arguments stay in `main.rs`. Library
+  modules must not read `std::env`. A hidden environment variable is a drift, not a feature.
+
 ## Verify
 
 Build needs `cmake`, `clang` and `libclang-dev` (wreq compiles BoringSSL). Full builds are slow, so iterate with targeted tests (`cargo test -p neuradex <name>`, `-p kagi`, `-p neuradex-docs`). Run fmt and clippy only once, at the end, in this order:
@@ -41,7 +58,7 @@ Also in CI: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-fe
 - **Never extract `Query<T>`/`Json<T>` directly.** Use `ApiQuery<T>`/`ApiJson<T>` (`extract.rs`), which turn rejections into the JSON envelope. `ApiQuery` wraps `axum_extra::extract::Query` (serde_html_form) so repeated keys work. Optional lists are `Vec<T>` + `#[serde(default)]`, never `Option<Vec<T>>`.
 - **The wire types are the single source of truth**: `PageParams` (shared by fetch and peek)/`SearchRequest`/`OpenWebUiSearchRequest` handle deserialization, validation methods, and OpenAPI docs (`IntoParams` for query types, `ToSchema` + `request_body` for JSON bodies). A new field needs all three. Each endpoint owns its `include` allow-list (`FETCH_INCLUDES` vs `PEEK_INCLUDES`).
 - Tests must go through the real extraction path (`Query::try_from_uri` on the real types), not a hand-rolled deserializer. That mismatch once shipped a production 400.
-- `html5ever` is `!Send`: `HeadParser` runs on `spawn_blocking`, fed by a bounded `tokio::sync::mpsc` (async `send` / `blocking_recv`) in `stream.rs`. Never use `std::sync::mpsc` or blocking sends in tokio tasks. Abort the reader when the parser finishes, even on success: dropping the receiver does not interrupt a reader parked in `bytes_stream().next()`, so peek would otherwise wait for a stalled body.
+- `html5ever` is `!Send`: `HeadParser` runs on a process-wide `LocalSet` pool (`api/v1/parser_pool.rs`), fed by a bounded `tokio::sync::mpsc` in `stream.rs`. Waiting for a chunk is async, so slow responses do not park one blocking thread each; do not move the parse back to `spawn_blocking`, whose 512-thread cap head-of-line blocks fast requests behind slow ones. Dropping the body future cancels the parser job. Never use `std::sync::mpsc` or blocking sends in tokio tasks. Abort the reader when the parser finishes, even on success: dropping the receiver does not interrupt a reader parked in `bytes_stream().next()`, so peek would otherwise wait for a stalled body.
 - `wreq::Error` renderings include the request URI. Call `without_uri()` before boxing one in `ApiError`; 5xx logs render the source chain, while the response body stays generic.
 - Peek stops at `</head>`/`<body>` (cap `HEAD_MAX_BYTES` 2 MiB); the parser also stops early, but fetch keeps collecting the body up to `FETCH_MAX_BYTES` (25 MiB). The returned body is capped at `FETCH_MAX_BYTES`, while `bytes_read` counts the decompressed bytes pulled from upstream and may exceed the cap by the final chunk. `truncated: true` only when bytes were actually cut.
 - The wreq client uses `Policy::none()` because redirects are followed manually in `redirect.rs`, so each hop is counted in metrics.
