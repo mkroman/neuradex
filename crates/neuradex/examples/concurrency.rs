@@ -27,7 +27,7 @@ use clap::{Parser, ValueEnum};
 use neuradex::state::AppState;
 use secrecy::SecretString;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::runtime::Runtime;
 use tokio::sync::Barrier;
 
@@ -228,28 +228,20 @@ impl Drop for Upstream {
 ///
 /// `std::net::TcpListener`, and therefore `tokio::net::TcpListener::bind`, listens with a
 /// backlog of 128. Bursts of concurrent connections overflow that queue, drop SYNs, and show up
-/// as one-second retransmit delays. The harness needs a larger queue so it measures the service
-/// instead of the kernel's default.
-fn bind_listener() -> std::io::Result<std::net::TcpListener> {
-    let socket = socket2::Socket::new(
-        socket2::Domain::IPV4,
-        socket2::Type::STREAM,
-        Some(socket2::Protocol::TCP),
-    )?;
-    socket.set_reuse_address(true)?;
-    socket.bind(&SocketAddr::from(([127, 0, 0, 1], 0)).into())?;
-    socket.listen(4096)?;
-    socket.set_nonblocking(true)?;
-
-    Ok(socket.into())
+/// as one-second retransmit delays. `TcpSocket::listen` takes the backlog explicitly; the harness
+/// needs a larger queue so it measures the service instead of the kernel's default.
+fn bind_listener() -> std::io::Result<TcpListener> {
+    let socket = TcpSocket::new_v4()?;
+    socket.set_reuseaddr(true)?;
+    socket.bind(SocketAddr::from(([127, 0, 0, 1], 0)))?;
+    socket.listen(4096)
 }
 
 /// Serves the configured page until the process is killed.
 async fn serve_upstream(cli: Cli) {
     let page = Arc::new(make_page(cli.head_bytes, cli.body_bytes));
     let cli = Arc::new(cli);
-    let listener = TcpListener::from_std(bind_listener().expect("bind the upstream listener"))
-        .expect("register the upstream listener");
+    let listener = bind_listener().expect("bind the upstream listener");
     let address = listener.local_addr().expect("read the upstream address");
 
     println!("READY {address}");
@@ -730,10 +722,8 @@ fn run(cli: &Cli) {
             .build()
             .expect("build the service runtime"),
     );
-    let listener = service_runtime.block_on(async {
-        TcpListener::from_std(bind_listener().expect("bind the service listener"))
-            .expect("register the service listener")
-    });
+    let listener =
+        service_runtime.block_on(async { bind_listener().expect("bind the service listener") });
     let address = listener.local_addr().expect("read the service address");
 
     let state = AppState::try_new(

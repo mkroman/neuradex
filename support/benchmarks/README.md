@@ -73,7 +73,8 @@ to the upstream response headers, and `probe_p99_ms` is the queueing delay of an
 `spawn_blocking` task submitted to the service runtime. The probe isolates blocking-pool
 saturation from the request work. `fast_*` reports the fast control group separately.
 
-Both loopback listeners are bound with a 4096 connection backlog through `socket2`. Rust's
+Both loopback listeners are bound with a 4096 connection backlog through tokio's
+`TcpSocket::listen`. Rust's
 `std::net::TcpListener` (and therefore tokio's `TcpListener::bind`) uses a backlog of 128, so
 concurrent bursts overflow the queue, drop SYNs, and show up as one-second retransmit delays that
 look like service latency but are not.
