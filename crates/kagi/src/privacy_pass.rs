@@ -56,6 +56,11 @@ const TOKEN_KEY_ID_LEN: usize = 32;
 const AUTHENTICATOR_LEN: usize = 64;
 /// The length of a blinded or evaluated group element.
 const ELEMENT_LEN: usize = 32;
+/// The maximum number of tokens that fit in one issuance request.
+///
+/// The request's 16-bit length field counts the serialized blinded elements, which are 32
+/// bytes each.
+pub const MAX_TOKENS_PER_BATCH: usize = u16::MAX as usize / ELEMENT_LEN;
 /// The length of a VOPRF proof.
 const PROOF_LEN: usize = 64;
 /// The serialized length of a token.
@@ -79,7 +84,7 @@ const TOKEN_REQUEST_CONTENT_TYPE: HeaderValue =
 pub struct PrivacyPassOptions {
     /// The number of tokens requested in one issuance batch.
     ///
-    /// Zero is treated as one; values above [`u16::MAX`] are clamped.
+    /// Zero is treated as one; values above [`MAX_TOKENS_PER_BATCH`] are clamped.
     pub tokens_to_stash: usize,
     /// The maximum number of unspent tokens kept in memory.
     ///
@@ -104,9 +109,9 @@ impl Default for PrivacyPassOptions {
 impl PrivacyPassOptions {
     /// Returns the normalized batch size, store capacity, and low-water mark.
     fn normalized(&self) -> (u16, usize, usize) {
-        let batch = u16::try_from(self.tokens_to_stash)
-            .unwrap_or(u16::MAX)
-            .max(1);
+        let batch = self.tokens_to_stash.clamp(1, MAX_TOKENS_PER_BATCH);
+        let batch =
+            u16::try_from(batch).expect("the maximum batch size fits in a 16-bit length field");
         let capacity = self.max_tokens.max(usize::from(batch)).max(1);
         let low = self.low_token_count.min(capacity);
 
@@ -246,6 +251,22 @@ impl PrivacyPassClient {
         self.store.clear();
     }
 
+    /// Clears the store and issues a fresh batch while holding the issuance lock.
+    ///
+    /// Serializing the clear with issuance keeps a concurrent [`Self::acquire_token`] from
+    /// losing a batch that was issued between the clear and the take.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PrivacyPassError`] if the challenge cannot be fetched or parsed, the issuer
+    /// request fails, or the token response is invalid.
+    pub(crate) async fn reset_and_replenish(&self) -> Result<usize, PrivacyPassError> {
+        let _guard = self.issuance.lock().await;
+
+        self.store.clear();
+        self.issue_locked().await
+    }
+
     /// Returns the cookie-free HTTP client used for Privacy Pass requests.
     pub(crate) const fn http(&self) -> &reqwest::Client {
         &self.http
@@ -273,27 +294,46 @@ impl PrivacyPassClient {
     ///
     /// Returns a [`PrivacyPassError`] if the store is empty and issuance fails.
     pub(crate) async fn acquire_token(self: &Arc<Self>) -> Result<PrivacyToken, PrivacyPassError> {
-        if let Some(token) = self.store.take() {
-            self.maybe_replenish();
+        let mut retried = false;
 
-            return Ok(token);
-        }
+        loop {
+            if let Some(token) = self.store.take() {
+                self.maybe_replenish();
 
-        let guard = self.issuance.lock().await;
+                return Ok(token);
+            }
 
-        if self.store.is_empty() {
+            let guard = self.issuance.lock().await;
+
+            // Another request may have issued or cleared the store while this request waited
+            // for the issuance lock, so re-check before issuing.
+            if let Some(token) = self.store.take() {
+                drop(guard);
+                self.maybe_replenish();
+
+                return Ok(token);
+            }
+
             self.issue_locked().await?;
+            // Take the token before releasing the issuance lock: a waiter must not steal the
+            // batch this request just issued.
+            let token = self.store.take();
+            drop(guard);
+
+            if let Some(token) = token {
+                self.maybe_replenish();
+
+                return Ok(token);
+            }
+
+            // A concurrent `clear` discarded the batch. Issue another one once; a store that
+            // keeps getting cleared is not making progress.
+            if retried {
+                return Err(PrivacyPassError::NoTokens);
+            }
+
+            retried = true;
         }
-
-        drop(guard);
-
-        if let Some(token) = self.store.take() {
-            self.maybe_replenish();
-
-            return Ok(token);
-        }
-
-        Err(PrivacyPassError::NoTokens)
     }
 
     /// Issues a batch while the issuance lock is held.
@@ -395,5 +435,73 @@ impl PrivacyPassClient {
             drop(guard);
             client.replenishing.store(false, Ordering::Release);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use reqwest::header::HeaderValue;
+    use secrecy::SecretString;
+
+    use super::{MAX_TOKENS_PER_BATCH, PrivacyPassClient, PrivacyPassOptions};
+
+    #[test]
+    fn batch_size_is_clamped_to_the_request_limit() {
+        let options = PrivacyPassOptions {
+            tokens_to_stash: usize::MAX,
+            max_tokens: 0,
+            low_token_count: 0,
+        };
+        let (batch, capacity, low) = options.normalized();
+
+        assert_eq!(usize::from(batch), MAX_TOKENS_PER_BATCH);
+        assert_eq!(capacity, MAX_TOKENS_PER_BATCH);
+        assert_eq!(low, 0);
+
+        let options = PrivacyPassOptions {
+            tokens_to_stash: 0,
+            max_tokens: 0,
+            low_token_count: 0,
+        };
+
+        assert_eq!(options.normalized().0, 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_acquisitions_get_one_token_each() {
+        let harness = test_support::privacy_pass::PrivacyPassHarness::start();
+        let _challenge = harness.mock_challenge();
+        let _issuance = harness.mock_issuance();
+        let client = Arc::new(
+            PrivacyPassClient::new(
+                reqwest::Url::parse(&harness.server.base_url()).expect("the mock url is valid"),
+                Arc::new(SecretString::from(test_support::kagi::TOKEN)),
+                HeaderValue::from_static("en-US"),
+                Duration::from_secs(5),
+                HeaderValue::from_static("test-agent"),
+                &PrivacyPassOptions {
+                    tokens_to_stash: 1,
+                    max_tokens: 16,
+                    low_token_count: 0,
+                },
+            )
+            .expect("the privacy pass client builds"),
+        );
+        let mut tasks = Vec::new();
+
+        for _ in 0..16 {
+            let client = Arc::clone(&client);
+
+            tasks.push(tokio::spawn(async move { client.acquire_token().await }));
+        }
+
+        for task in tasks {
+            task.await
+                .expect("the acquisition task joins")
+                .expect("a token is acquired");
+        }
     }
 }

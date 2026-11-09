@@ -118,6 +118,9 @@ a time** — at most one creation request runs at any moment. When the pool is
 at capacity, further requests wait for a session to be checked back in; they
 stay pending for as long as the caller does, with no deadline of their own.
 
+The same [`ClientOptions::max_sessions`] limit bounds in-flight searches in
+Privacy Pass mode, which has no session pool.
+
 Sessions expire independently after `session_duration` and are refreshed in
 place with a new nonce on their next use. A failed fetch (session or nonce
 request) backs off exponentially for that session — 500 ms doubling up to

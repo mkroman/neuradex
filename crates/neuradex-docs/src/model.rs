@@ -183,15 +183,14 @@ struct Op<'a> {
 pub fn page(spec: &Value) -> Page {
     let mut ops = collect_ops(spec);
 
-    let doc_tag_order: Vec<&str> = spec
-        .get("tags")
-        .and_then(Value::as_array)
-        .map(|tags| {
-            tags.iter()
-                .filter_map(|tag| html::str_field(tag, "name"))
-                .collect()
-        })
-        .unwrap_or_default();
+    let doc_tag_order: Vec<&str> =
+        spec.get("tags")
+            .and_then(Value::as_array)
+            .map_or_default(|tags| {
+                tags.iter()
+                    .filter_map(|tag| html::str_field(tag, "name"))
+                    .collect()
+            });
     let group_index = |tag: &str| -> usize {
         TAG_PRIORITY
             .iter()
@@ -286,7 +285,7 @@ fn schemas(spec: &Value) -> Vec<SchemaDoc> {
     html::field(spec, "components")
         .and_then(|components| html::field(components, "schemas"))
         .and_then(Value::as_object)
-        .map(|schemas| {
+        .map_or_default(|schemas| {
             schemas
                 .iter()
                 .map(|(name, schema)| SchemaDoc {
@@ -296,7 +295,6 @@ fn schemas(spec: &Value) -> Vec<SchemaDoc> {
                 })
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 /// Collects every operation from the document, in registration order, with slugged and
@@ -339,15 +337,14 @@ fn collect_ops(spec: &Value) -> Vec<Op<'_>> {
                 params: op
                     .get("parameters")
                     .and_then(Value::as_array)
-                    .map(|parameters| {
+                    .map_or_default(|parameters| {
                         parameters
                             .iter()
                             .filter(|p| {
                                 html::str_field(p, "in").is_none_or(|location| location == "query")
                             })
                             .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default(),
+                    }),
                 operation: op,
             });
         }
