@@ -13,7 +13,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE;
 use httpmock::{HttpMockRequest, HttpMockResponse, Mock, MockServer};
 use kagi::{Client, ClientOptions, PrivacyPassOptions};
-use rand::rngs::OsRng;
+use rand::rngs::SysRng;
 use sha2::{Digest, Sha256};
 use voprf::{BlindedElement, Group, Ristretto255, VoprfServer};
 
@@ -299,7 +299,7 @@ impl TestIssuer {
             .collect::<Vec<_>>();
         let result = self
             .server
-            .batch_blind_evaluate_finish(&mut OsRng, blinded.iter(), &prepared)
+            .batch_blind_evaluate_finish(&mut SysRng, blinded.iter(), &prepared)
             .map_err(|error| format!("could not evaluate the token request: {error:?}"))?;
         let evaluated = result
             .messages

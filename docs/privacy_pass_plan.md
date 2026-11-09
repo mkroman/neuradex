@@ -13,7 +13,7 @@ Kagi uses the batched VOPRF token format from the older RFC 9578 drafts, not the
 token types published in `privacypass` 0.2.0-pre.1 and later.
 
 - Token type: `0xF91A` (batched Ristretto255 tokens).
-- VOPRF ciphersuite: `ristretto255-SHA512` from `voprf` 0.5.
+- VOPRF ciphersuite: `ristretto255-SHA512` from `voprf` 0.6 (RFC 9497 wire format).
 - `TokenChallenge`: TLS-serialized, URL-safe base64 in `WWW-Authenticate`.
 - `token-key`: TLS-serialized Ristretto255 public key, URL-safe base64.
 - Challenge digest: SHA-256 over the raw serialized `TokenChallenge` bytes.

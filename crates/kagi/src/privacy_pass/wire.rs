@@ -2,8 +2,8 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE;
-use rand::RngCore;
-use rand::rngs::OsRng;
+use rand::TryRng;
+use rand::rngs::SysRng;
 use reqwest::header::HeaderValue;
 use sha2::{Digest, Sha256};
 use voprf::{EvaluationElement, Group, Proof, Ristretto255, VoprfClient};
@@ -158,13 +158,14 @@ pub(super) fn prepare_request(
     count: u16,
 ) -> Result<(TokenRequest, Vec<PendingToken>), PrivacyPassError> {
     let challenge_digest: [u8; CHALLENGE_DIGEST_LEN] = Sha256::digest(&challenge.serialized).into();
-    let mut rng = OsRng;
+    let mut rng = SysRng;
     let mut blinded_elements = Vec::with_capacity(usize::from(count));
     let mut pending = Vec::with_capacity(usize::from(count));
 
     for _ in 0..count {
         let mut nonce = [0u8; NONCE_LEN];
-        rng.fill_bytes(&mut nonce);
+        rng.try_fill_bytes(&mut nonce)
+            .map_err(|_| PrivacyPassError::Random)?;
 
         let input = token_input(nonce, challenge_digest, challenge.token_key_id);
         let blinded =

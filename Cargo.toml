@@ -18,8 +18,8 @@ base64 = "0.22.1"
 htmlize = { version = "1.1.0", features = ["unescape"] }
 httpmock = "0.9.0"
 predicates = "3.1.4"
-# Matches the rand_core 0.6 line required by voprf 0.5.
-rand = "0.8.5"
+# Matches the rand_core 0.10 line required by voprf 0.6.
+rand = "0.10.3"
 reqwest = { version = "0.13.1", default-features = false, features = ["charset", "http2", "system-proxy", "query"] }
 scraper = "0.29.0"
 secrecy = "0.10.3"
@@ -37,9 +37,9 @@ tokio = { version = "1.52.3", features = [
 tower = { version = "0.5.2", features = ["util"] }
 tracing = "0.1.41"
 url = "2.5.8"
-# Kagi's Privacy Pass tokens use the batched Ristretto255 ciphersuite from voprf 0.5;
-# newer voprf releases change the API (and the Privacypass token types built on it).
-voprf = { version = "0.5.0", default-features = false, features = ["ristretto255-ciphersuite", "std"] }
+# Kagi's Privacy Pass tokens use the Ristretto255/SHA-512 VOPRF ciphersuite. voprf 0.6 keeps
+# the RFC 9497 wire format while moving to elliptic-curve 0.14 / crypto-bigint 0.7.
+voprf = { version = "0.6.0-pre.2", default-features = false, features = ["ristretto255-ciphersuite", "std"] }
 # The OpenAPI object model with the `macros` feature (utoipa's only default feature).
 # `default-features = false` pins us to exactly this set, but `macros` itself is not
 # optional: utoipa 6.0.0 cannot compile without it — `openapi::schema` references the

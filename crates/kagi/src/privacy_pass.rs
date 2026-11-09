@@ -130,6 +130,9 @@ pub enum PrivacyPassError {
     /// The challenge or its token key was invalid.
     #[error("invalid Privacy Pass challenge")]
     InvalidChallenge,
+    /// A token nonce could not be generated.
+    #[error("could not generate a Privacy Pass token nonce")]
+    Random,
     /// A token could not be blinded.
     #[error("could not blind a Privacy Pass token")]
     Blinding,
