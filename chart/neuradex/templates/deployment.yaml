@@ -81,6 +81,8 @@ spec:
             - name: USER_AGENT
               value: {{ .Values.userAgent | quote }}
             {{- end }}
+            - name: KAGI_PRIVACY_PASS
+              value: {{ .Values.privacyPass | quote }}
             - name: KAGI_SESSION_TOKEN
               valueFrom:
                 secretKeyRef:

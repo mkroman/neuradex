@@ -89,11 +89,13 @@ impl AppState {
         kagi_token: SecretString,
         timeout: Duration,
         max_sessions: usize,
+        privacy_pass: bool,
     ) -> Result<Self, BuildError> {
         let kagi_client = kagi::Client::with_token_and_options(
             kagi_token,
             &kagi::ClientOptions {
                 max_sessions,
+                privacy_pass: privacy_pass.then(kagi::PrivacyPassOptions::default),
                 ..kagi::ClientOptions::default()
             },
         )?;
@@ -328,10 +330,34 @@ mod tests {
             SecretString::from("test-token"),
             Duration::from_secs(30),
             2,
+            false,
         )
         .expect("valid state");
 
         router(state)
+    }
+
+    #[test]
+    fn app_state_switches_the_search_authentication_mode() {
+        let session = AppState::try_new(
+            "test-agent",
+            SecretString::from("test-token"),
+            Duration::from_secs(30),
+            2,
+            false,
+        )
+        .expect("valid state");
+        assert!(session.kagi_client.privacy_pass().is_none());
+
+        let privacy_pass = AppState::try_new(
+            "test-agent",
+            SecretString::from("test-token"),
+            Duration::from_secs(30),
+            2,
+            true,
+        )
+        .expect("valid state");
+        assert!(privacy_pass.kagi_client.privacy_pass().is_some());
     }
 
     /// Sends a request with `method` to `path` through `router`.

@@ -90,6 +90,10 @@ service:
 ## empty uses the application default.
 userAgent: ""
 
+## @param privacyPass Use anonymous Privacy Pass tokens for searches. Disable to fall back to
+## session-cookie search authentication; the session token is required for issuance either way.
+privacyPass: true
+
 ## @param rustLog RUST_LOG consumed by the tracing EnvFilter. Examples: `info`,
 ## `neuradex=debug,hyper=warn`.
 rustLog: "info"

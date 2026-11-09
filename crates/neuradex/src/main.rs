@@ -31,6 +31,9 @@ const USER_AGENT_ENV: &str = "USER_AGENT";
 /// The environment variable holding the maximum number of simultaneous Kagi sessions.
 const KAGI_MAX_SESSIONS_ENV: &str = "KAGI_MAX_SESSIONS";
 
+/// The environment variable selecting anonymous Privacy Pass search authentication.
+const KAGI_PRIVACY_PASS_ENV: &str = "KAGI_PRIVACY_PASS";
+
 /// The default listen address.
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:8080";
 
@@ -45,7 +48,7 @@ const REQUEST_TIMEOUT: Duration = kagi::HTTP_TIMEOUT;
 #[command(
     name = "neuradex",
     version,
-    after_help = "Environment:\n  KAGI_SESSION_TOKEN   the Kagi session token; required to serve, never for export-docs\n  LISTEN_ADDR          the address to bind to (default: 127.0.0.1:8080)\n  USER_AGENT           the user agent sent with fetches (default: a current Firefox one)\n  KAGI_MAX_SESSIONS    simultaneous Kagi sessions (default: 2)\n"
+    after_help = "Environment:\n  KAGI_SESSION_TOKEN   the Kagi session token; required to serve, never for export-docs\n  LISTEN_ADDR          the address to bind to (default: 127.0.0.1:8080)\n  USER_AGENT           the user agent sent with fetches (default: a current Firefox one)\n  KAGI_MAX_SESSIONS    simultaneous Kagi sessions (default: 2)\n  KAGI_PRIVACY_PASS    use anonymous Privacy Pass search tokens (default: true)\n"
 )]
 struct Cli {
     /// The subcommand to run; without one, the HTTP service is served.
@@ -94,6 +97,15 @@ fn export_docs(_arguments: &ExportDocsArgs) -> Result<(), Box<dyn std::error::Er
     Err("this binary was built without the docs feature; rebuild with --features docs".into())
 }
 
+/// Parses a boolean environment setting.
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 /// Builds the application state and serves the HTTP service.
 fn serve() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
@@ -118,6 +130,12 @@ fn serve() -> Result<(), Box<dyn std::error::Error>> {
             })?,
         Err(_) => kagi::DEFAULT_MAX_SESSIONS,
     };
+    let privacy_pass = match env::var(KAGI_PRIVACY_PASS_ENV) {
+        Ok(value) => parse_bool(&value).ok_or_else(|| {
+            format!("invalid {KAGI_PRIVACY_PASS_ENV}: expected a boolean, got {value:?}")
+        })?,
+        Err(_) => true,
+    };
     let kagi_token = env::var(KAGI_TOKEN_ENV)
         .ok()
         .filter(|token| !token.is_empty())
@@ -130,7 +148,28 @@ fn serve() -> Result<(), Box<dyn std::error::Error>> {
         SecretString::from(kagi_token),
         REQUEST_TIMEOUT,
         max_sessions,
+        privacy_pass,
     )?;
 
     Ok(runtime.block_on(http::serve(state, addr))?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_bool;
+
+    #[test]
+    fn parses_boolean_environment_values() {
+        for value in ["1", "true", "TRUE", "yes", "on", " true "] {
+            assert_eq!(parse_bool(value), Some(true), "{value:?}");
+        }
+
+        for value in ["0", "false", "FALSE", "no", "off", " false "] {
+            assert_eq!(parse_bool(value), Some(false), "{value:?}");
+        }
+
+        for value in ["", "maybe", "2"] {
+            assert_eq!(parse_bool(value), None, "{value:?}");
+        }
+    }
 }

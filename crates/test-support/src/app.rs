@@ -53,6 +53,20 @@ impl TestApp {
         let kagi = KagiHarness::with_server(Arc::clone(&server));
         let kagi_client = kagi.client_with(max_sessions, Duration::from_secs(60));
 
+        Self::with_kagi_client(server, kagi_client)
+    }
+
+    /// Starts an application around an existing Kagi client and mock server.
+    ///
+    /// The caller keeps ownership of the harness that configures the Kagi mocks; this
+    /// constructor only wraps the client in the production router.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the test application state fails to build.
+    #[must_use]
+    pub fn with_kagi_client(server: Arc<MockServer>, kagi_client: kagi::Client) -> Self {
+        let kagi = KagiHarness::with_server(Arc::clone(&server));
         let state = AppState::try_new_with_kagi_client(
             USER_AGENT_VALUE,
             kagi_client,

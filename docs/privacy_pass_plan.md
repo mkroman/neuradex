@@ -74,6 +74,13 @@ client mirrors those defaults and triggers a background refill below the low-wat
   mutex that is never held across an await point.
 - Background replenishment is best-effort and never blocks a request that already has a token.
 
+## Service integration
+
+`neuradex` enables Privacy Pass by default when it builds the Kagi client. The
+`KAGI_PRIVACY_PASS` environment variable accepts a boolean and can disable it to fall back to
+session-cookie search authentication. The Helm chart exposes the same switch as
+`privacyPass` (default `true`). The session token remains required for token issuance.
+
 ## Testing
 
 - Unit tests for the token store, header formatting, challenge parsing, and redacted `Debug`.
@@ -91,5 +98,3 @@ client mirrors those defaults and triggers a background refill below the low-wat
 
 - Persistent token storage (tokens live in memory for the client's lifetime).
 - The `.onion` issuer/origin.
-- Wiring a new environment variable into the `neuradex` service; the task is scoped to the
-  `kagi` crate.
