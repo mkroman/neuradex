@@ -51,18 +51,14 @@ const OTEL_TRACES_EXPORTER: &str = "OTEL_TRACES_EXPORTER";
 const OTEL_LOGS_EXPORTER: &str = "OTEL_LOGS_EXPORTER";
 
 /// The OpenTelemetry providers that must outlive the subscriber and be shut down explicitly.
-#[expect(
-    clippy::redundant_pub_crate,
-    reason = "the otel module is private, so pub(crate) states the effective reachability"
-)]
-pub(crate) struct Telemetry {
+pub struct Telemetry {
     tracer_provider: Option<SdkTracerProvider>,
     logger_provider: Option<SdkLoggerProvider>,
 }
 
 impl Telemetry {
     /// Flushes buffered spans and log records and stops the export pipelines.
-    pub(crate) fn shutdown(&self) {
+    pub fn shutdown(&self) {
         if let Some(provider) = &self.tracer_provider
             && let Err(error) = provider.shutdown()
         {
@@ -94,95 +90,62 @@ impl Telemetry {
 ///
 /// Returns an error if the subscriber is already installed or an OTLP exporter cannot be
 /// built from the configured environment.
-#[expect(
-    clippy::redundant_pub_crate,
-    reason = "the otel module is private, so pub(crate) states the effective reachability"
-)]
-pub(crate) fn init(json: bool) -> Result<Telemetry, Box<dyn std::error::Error>> {
-    if sdk_disabled() {
-        if json {
-            Registry::default()
-                .with(env_filter())
-                .with(json_fmt_layer())
-                .try_init()?;
-        } else {
-            Registry::default()
-                .with(env_filter())
-                .with(text_fmt_layer())
-                .try_init()?;
-        }
-
-        return Ok(Telemetry {
-            tracer_provider: None,
-            logger_provider: None,
-        });
-    }
-
-    let resource = resource();
-    let tracer_provider = tracer_provider(resource.clone())?;
-    let logger_provider = logger_provider(resource)?;
-
-    if json {
-        let tracer = tracer_provider.tracer("neuradex");
-        let log_layer = OpenTelemetryTracingBridge::new(&logger_provider);
-        // Events are exported as OTel log records by the appender. Sending them again as
-        // OTel span events would duplicate the same information in traces and logs.
-        let otel_layer = tracing_opentelemetry::layer()
-            .with_tracer(tracer)
-            .with_filter(filter_fn(spans_only));
-
-        Registry::default()
-            .with(env_filter())
-            .with(json_fmt_layer())
-            .with(otel_layer)
-            .with(log_layer)
-            .try_init()?;
+pub fn init(json: bool) -> Result<Telemetry, Box<dyn std::error::Error>> {
+    let (tracer_provider, logger_provider) = if sdk_disabled() {
+        (None, None)
     } else {
-        let tracer = tracer_provider.tracer("neuradex");
-        let log_layer = OpenTelemetryTracingBridge::new(&logger_provider);
-        let otel_layer = tracing_opentelemetry::layer()
-            .with_tracer(tracer)
-            .with_filter(filter_fn(spans_only));
+        let resource = resource();
 
-        Registry::default()
-            .with(env_filter())
-            .with(text_fmt_layer())
-            .with(otel_layer)
-            .with(log_layer)
-            .try_init()?;
-    }
+        (
+            Some(tracer_provider(resource.clone())?),
+            Some(logger_provider(resource)?),
+        )
+    };
+
+    // Events are exported as OTel log records by the appender. Sending them again as
+    // OTel span events would duplicate the same information in traces and logs.
+    let otel_layer = tracer_provider.as_ref().map(|provider| {
+        tracing_opentelemetry::layer()
+            .with_tracer(provider.tracer("neuradex"))
+            .with_filter(filter_fn(spans_only))
+    });
+    let log_layer = logger_provider
+        .as_ref()
+        .map(OpenTelemetryTracingBridge::new);
+
+    Registry::default()
+        .with(env_filter())
+        .with(fmt_layer(json))
+        .with(otel_layer)
+        .with(log_layer)
+        .try_init()?;
 
     Ok(Telemetry {
-        tracer_provider: Some(tracer_provider),
-        logger_provider: Some(logger_provider),
+        tracer_provider,
+        logger_provider,
     })
 }
 
-/// Builds the JSON formatter layer with flattened event fields.
-fn json_fmt_layer<S>() -> impl Layer<S> + Send + Sync
+/// Builds the local formatter layer, JSON or plain text.
+fn fmt_layer<S>(json: bool) -> Box<dyn Layer<S> + Send + Sync>
 where
     S: tracing::Subscriber
         + for<'span> tracing_subscriber::registry::LookupSpan<'span>
         + Send
-        + Sync,
+        + Sync
+        + 'static,
 {
-    fmt::layer()
-        .json()
-        .flatten_event(true)
-        .with_current_span(true)
-        .with_span_list(true)
-        .with_span_events(FmtSpan::CLOSE)
-}
-
-/// Builds the plain-text formatter layer.
-fn text_fmt_layer<S>() -> impl Layer<S> + Send + Sync
-where
-    S: tracing::Subscriber
-        + for<'span> tracing_subscriber::registry::LookupSpan<'span>
-        + Send
-        + Sync,
-{
-    fmt::layer().with_span_events(FmtSpan::CLOSE)
+    if json {
+        fmt::layer()
+            .json()
+            .flatten_event(true)
+            .with_current_span(true)
+            .with_span_list(true)
+            .with_span_events(FmtSpan::CLOSE)
+            .boxed()
+    } else {
+        fmt::layer().with_span_events(FmtSpan::CLOSE).boxed()
+    }
 }
 
 /// Keeps spans in the trace pipeline; events are handled by the OTel log appender.

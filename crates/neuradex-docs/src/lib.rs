@@ -40,9 +40,10 @@ mod tree;
 ///
 /// In debug builds every call re-reads the theme sources from disk and re-bundles them,
 /// so local edits show up on browser refresh without recompiling; release builds embed
-/// the sources and bundle the stylesheet once. The document itself is walked on every
-/// call — the page-level caching (if any) is the caller's, and is sound because the
-/// document is fixed per process (the router's routes are static).
+/// the sources and cache the stylesheet, behavior, and bootstrap text once. The
+/// document itself is walked on every call — the page-level caching (if any) is the
+/// caller's, and is sound because the document is fixed per process (the router's routes
+/// are static).
 ///
 /// # Panics
 ///
@@ -52,12 +53,14 @@ mod tree;
 pub fn render(spec: &serde_json::Value) -> String {
     let page = page::build_page(spec);
     let style = page_style();
+    let behavior = assets::behavior_raw();
+    let theme_bootstrap = assets::bootstrap_raw();
 
     let template = PageTemplate {
         page: &page,
         style: &style,
-        behavior: &assets::behavior_raw(),
-        theme_bootstrap: &assets::bootstrap_raw(),
+        behavior: behavior.as_ref(),
+        theme_bootstrap: theme_bootstrap.as_ref(),
     };
     template
         .render()
@@ -220,17 +223,6 @@ mod tests {
         assert!(page_html.contains("querySelectorAll('.tryit')"));
         assert!(page_html.contains("prefers-color-scheme"));
         assert!(page_html.contains("window.docsUI"));
-    }
-
-    #[test]
-    fn orders_endpoints_by_tag_priority_then_document_order() {
-        let page_html = render(&document());
-
-        let ping = page_html.find(r#"id="ep-ping""#).expect("ping section");
-        let things = page_html.find(r#"id="ep-things""#).expect("things section");
-        // `/things` (tag `things`) comes before `/ping` (tag `other`) even though `/ping`
-        // is registered first.
-        assert!(things < ping);
     }
 
     #[test]

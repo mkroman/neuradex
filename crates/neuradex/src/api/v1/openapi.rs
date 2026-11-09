@@ -9,13 +9,13 @@
 use utoipa::OpenApi;
 
 use crate::api::v1::error::ErrorBody;
-use crate::api::v1::extract::SearchRequest;
+use crate::api::v1::extract::{OpenWebUiSearchRequest, SearchRequest};
 use crate::api::v1::fetch::FetchResponse;
-use crate::api::v1::openwebui_search::{OpenWebUiSearchRequest, OpenWebUiSearchResult};
+use crate::api::v1::openwebui_search::OpenWebUiSearchResult;
 use crate::api::v1::peek::PeekResponse;
 use crate::api::v1::search::{SearchResponse, SearchResult};
 use crate::metadata::PageMetadata;
-use crate::metrics::{FetchMetrics, RedirectHop, SearchMetrics};
+use crate::metrics::{PageMetrics, RedirectHop, SearchMetrics};
 
 /// The metadata of the OpenAPI documentation; the paths are collected by the router.
 #[derive(OpenApi)]
@@ -45,15 +45,15 @@ use crate::metrics::{FetchMetrics, RedirectHop, SearchMetrics};
         OpenWebUiSearchRequest,
         OpenWebUiSearchResult,
         PageMetadata,
-        FetchMetrics,
+        PageMetrics,
         SearchMetrics,
         RedirectHop,
     ))
 )]
-pub(crate) struct BaseDoc;
+pub struct BaseDoc;
 
 /// Returns the base document the router-derived paths are collected into.
-pub(crate) fn base() -> utoipa::openapi::OpenApi {
+pub fn base() -> utoipa::openapi::OpenApi {
     BaseDoc::openapi()
 }
 
@@ -355,9 +355,10 @@ mod tests {
     /// The checked-in document is the contract reviewers and client generators see; if
     /// this fails, regenerate it (the diff is the API change under review).
     ///
-    /// The comparison is semantic: `serde_json` preserves insertion order only when the
-    /// `preserve_order` feature happens to be enabled (the `docs` feature pulls it in),
-    /// so the same document can serialize its object keys in a different order.
+    /// The comparison is semantic: the docs crate enables `serde_json`'s `preserve_order`
+    /// feature, so with the `docs` feature the object keys keep their insertion order while
+    /// without it they serialize in an arbitrary order. Comparing `Value`s ignores key order,
+    /// which keeps the fixture check valid in both feature configurations.
     #[test]
     fn matches_the_checked_in_spec() {
         let generated = serde_json::to_value(document()).expect("the document serializes");

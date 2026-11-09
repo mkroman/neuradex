@@ -1,3 +1,4 @@
+{% import "partials/macros.html" as ui -%}
 <details class="schema-node"{% if node.open %} open{% endif %}>
   <summary>
     <span class="caret"></span>
@@ -22,13 +23,7 @@
     {%- if !body.description_html.is_empty() %}
     <p class="schema-desc">{{ body.description_html|safe }}</p>
     {%- endif %}
-    {%- if !body.anns.is_empty() %}
-    <span class="ann-list schema-anns">
-      {%- for ann in body.anns -%}
-      <span class="ann"><span class="ann-k">{{ ann.key }}</span> <span class="ann-v">{{ ann.value }}</span></span>
-      {%- endfor -%}
-    </span>
-    {%- endif %}
+    {{ ui::annotation_list(body.anns, "ann-list schema-anns") }}
     {%- if !body.props.is_empty() %}
     <ul class="schema-props">
       {%- for entry in body.props %}

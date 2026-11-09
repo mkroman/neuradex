@@ -402,6 +402,75 @@ mod tests {
     }
 
     #[test]
+    fn renders_array_items_as_nested_nodes_and_type_pills() {
+        let spec = json!({
+            "components": {"schemas": {
+                "Thing": {"type": "object", "properties": {
+                    "name": {"type": "string"}
+                }},
+                "Things": {"type": "array", "items": {"$ref": "#/components/schemas/Thing"}},
+                "Matrix": {"type": "array", "items": {
+                    "type": "array", "items": {"type": "integer"}
+                }}
+            }}
+        });
+
+        // An array whose items are a `$ref` expands the referenced item as a child node.
+        let things = &spec["components"]["schemas"]["Things"];
+        let html = root(&spec, "Things", things).render().expect("renders");
+        assert!(html.contains(r#"<span class="type-pill">array&#60;Thing&#62;</span>"#));
+        assert!(html.contains(r#"<span class="schema-name">items[]</span>"#));
+        assert!(html.contains(r#"<span class="type-pill ref">Thing</span>"#));
+        assert!(html.contains(r#"<span class="schema-name">name</span>"#));
+
+        // Nested arrays expand recursively and each level keeps its own item type pill.
+        let matrix = &spec["components"]["schemas"]["Matrix"];
+        let html = root(&spec, "Matrix", matrix).render().expect("renders");
+        assert!(
+            html.contains(
+                r#"<span class="type-pill">array&#60;array&#60;integer&#62;&#62;</span>"#
+            )
+        );
+        assert!(html.contains(r#"<span class="type-pill">array&#60;integer&#62;</span>"#));
+        assert!(html.contains(r#"<span class="type-pill">integer</span>"#));
+        assert_eq!(
+            html.matches(r#"<span class="schema-name">items[]</span>"#)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn renders_string_constraint_annotations() {
+        let spec = json!({
+            "components": {"schemas": {"Patterned": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 8,
+                "pattern": "^[a-z]+$",
+                "enum": ["alpha", "beta"]
+            }}}
+        });
+        let schema = &spec["components"]["schemas"]["Patterned"];
+        let html = root(&spec, "Patterned", schema).render().expect("renders");
+
+        assert!(
+            html.contains(r#"<span class="ann-k">min length</span> <span class="ann-v">2</span>"#)
+        );
+        assert!(
+            html.contains(r#"<span class="ann-k">max length</span> <span class="ann-v">8</span>"#)
+        );
+        assert!(
+            html.contains(
+                r#"<span class="ann-k">pattern</span> <span class="ann-v">^[a-z]+$</span>"#
+            )
+        );
+        assert!(html.contains(
+            r#"<span class="ann-k">enum</span> <span class="ann-v">&#34;alpha&#34; | &#34;beta&#34;</span>"#
+        ));
+    }
+
+    #[test]
     fn type_pill_keeps_null_union_members() {
         let schema = json!({"type": ["string", "null"]});
 

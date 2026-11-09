@@ -12,48 +12,12 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::api::v1::error::ApiError;
-use crate::api::v1::extract::ApiJson;
+use crate::api::v1::extract::{ApiJson, OpenWebUiSearchRequest};
 use crate::api::v1::search;
 use crate::state::AppState;
-
-/// The number of results returned when the request carries no `count`.
-pub(crate) const DEFAULT_COUNT: usize = 5;
-
-/// The request body of the Open WebUI external search endpoint, as it arrives on the wire.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[schema(examples(json!({"query": "rust programming", "count": 5})))]
-#[serde(deny_unknown_fields)]
-pub struct OpenWebUiSearchRequest {
-    /// The user's search query string.
-    #[schema(example = "rust programming")]
-    pub query: String,
-    /// The suggested maximum number of results; defaults to `DEFAULT_COUNT` when omitted.
-    #[schema(default = 5, example = 5)]
-    pub count: Option<usize>,
-}
-
-impl OpenWebUiSearchRequest {
-    /// Resolves the requested result count, defaulting to [`DEFAULT_COUNT`].
-    pub(crate) fn count(&self) -> usize {
-        self.count.unwrap_or(DEFAULT_COUNT)
-    }
-
-    /// Validates the request body.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the query is empty.
-    pub(crate) fn validate(&self) -> Result<(), ApiError> {
-        if self.query.is_empty() {
-            return Err(ApiError::invalid_param("the query is empty"));
-        }
-
-        Ok(())
-    }
-}
 
 /// A single search result, in the shape Open WebUI expects.
 #[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
@@ -86,7 +50,7 @@ impl From<kagi::SearchResult> for OpenWebUiSearchResult {
 ///
 /// Answers the external web search API's `POST` body — `{"query", "count"}` — with the bare
 /// JSON array of `{link, title, snippet}` results it expects, truncated to `count` (default
-/// [`DEFAULT_COUNT`]). Like [`search`](crate::api::v1::search::search), searches are queued: at
+/// `DEFAULT_COUNT`). Like [`search`](crate::api::v1::search::search), searches are queued: at
 /// most the configured `max_sessions` run at once, and the request blocks here until a slot
 /// and the results are ready.
 ///
@@ -119,7 +83,7 @@ impl From<kagi::SearchResult> for OpenWebUiSearchResult {
         ApiError,
     )
 )]
-pub(crate) async fn openwebui_search(
+pub async fn openwebui_search(
     State(state): State<Arc<AppState>>,
     ApiJson(request): ApiJson<OpenWebUiSearchRequest>,
 ) -> Result<Json<Vec<OpenWebUiSearchResult>>, ApiError> {
