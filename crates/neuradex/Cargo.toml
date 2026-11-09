@@ -66,6 +66,8 @@ assert_cmd.workspace = true
 criterion.workspace = true
 predicates.workspace = true
 scraper.workspace = true
+# The concurrency harness binds its loopback listeners with a larger backlog than std's 128.
+socket2 = "0.6"
 tempfile.workspace = true
 test-support = { path = "../test-support", features = ["app"] }
 tower.workspace = true
