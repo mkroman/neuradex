@@ -9,8 +9,8 @@ use axum::Json;
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
-use utoipa::openapi::{Content, RefOr, ResponseBuilder, ResponsesBuilder};
-use utoipa::{IntoResponses, PartialSchema};
+use utoipa::IntoResponses;
+use utoipa::openapi::{Content, Ref, RefOr, ResponseBuilder, ResponsesBuilder};
 
 /// An error produced while serving an API request.
 ///
@@ -50,7 +50,7 @@ impl ErrorBody {
     pub(crate) fn not_found(path: &str) -> Self {
         Self {
             error: ErrorDetail {
-                kind: "not_found",
+                kind: ErrorKind::NotFound,
                 message: format!("no route for {path}"),
             },
         }
@@ -60,11 +60,32 @@ impl ErrorBody {
     pub(crate) fn method_not_allowed(method: &Method, path: &str) -> Self {
         Self {
             error: ErrorDetail {
-                kind: "method_not_allowed",
+                kind: ErrorKind::MethodNotAllowed,
                 message: format!("method {method} is not allowed for {path}"),
             },
         }
     }
+}
+
+/// The machine-readable error type.
+///
+/// The router-level `not_found` and `method_not_allowed` values are included because
+/// the 404 and 405 fallbacks produce them too.
+#[derive(Clone, Copy, Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum ErrorKind {
+    /// A request parameter is missing, malformed, or out of range.
+    InvalidParam,
+    /// The request body or target response has an unsupported content type.
+    UnsupportedMediaType,
+    /// The upstream request failed.
+    UpstreamError,
+    /// An internal, unexpected failure.
+    InternalError,
+    /// No route matched the request.
+    NotFound,
+    /// The route exists but does not accept the request method.
+    MethodNotAllowed,
 }
 
 /// The details of an error response.
@@ -72,17 +93,22 @@ impl ErrorBody {
 struct ErrorDetail {
     /// The machine-readable error type.
     #[serde(rename = "type")]
-    #[schema(value_type = String)]
-    kind: &'static str,
+    kind: ErrorKind,
     /// The human-readable error message.
     message: String,
 }
 
 /// Builds the shared JSON error response with the given description.
+///
+/// The content references the registered `ErrorBody` component instead of inlining it:
+/// every error response uses the same schema, and the reference keeps the document (and
+/// its generated clients) from repeating it.
 fn error_response(description: &'static str) -> ResponseBuilder {
     ResponseBuilder::new().description(description).content(
         "application/json",
-        Content::builder().schema(Some(ErrorBody::schema())).build(),
+        Content::builder()
+            .schema(Some(RefOr::Ref(Ref::from_schema_name("ErrorBody"))))
+            .build(),
     )
 }
 
@@ -129,14 +155,15 @@ impl ApiError {
     }
 
     /// Returns the status code and machine-readable type for the error.
-    const fn classify(&self) -> (StatusCode, &'static str) {
+    const fn classify(&self) -> (StatusCode, ErrorKind) {
         match self {
-            Self::InvalidParam(_) => (StatusCode::BAD_REQUEST, "invalid_param"),
-            Self::UnsupportedMediaType(_) => {
-                (StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type")
-            }
-            Self::Upstream(_) => (StatusCode::BAD_GATEWAY, "upstream_error"),
-            Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
+            Self::InvalidParam(_) => (StatusCode::BAD_REQUEST, ErrorKind::InvalidParam),
+            Self::UnsupportedMediaType(_) => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                ErrorKind::UnsupportedMediaType,
+            ),
+            Self::Upstream(_) => (StatusCode::BAD_GATEWAY, ErrorKind::UpstreamError),
+            Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, ErrorKind::InternalError),
         }
     }
 }
@@ -154,7 +181,7 @@ impl IntoResponse for ApiError {
         // 5xx bodies stay generic per the "Invariants" rule: the details are for the logs,
         // never for the client.
         if status.is_server_error() {
-            tracing::error!(kind, message = %self, "request failed");
+            tracing::error!(kind = ?kind, message = %self, "request failed");
         }
 
         // 4xx variants already own their client-facing message; only the 5xx classes need a

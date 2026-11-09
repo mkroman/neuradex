@@ -64,6 +64,7 @@ pub struct PeekResponse {
 #[utoipa::path(
     get,
     path = "/v1/peek",
+    operation_id = "peek",
     tag = "peek",
     summary = "Fetch a page's head metadata.",
     description = "Fetches the page and returns only its document-head metadata. The response \

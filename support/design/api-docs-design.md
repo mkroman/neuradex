@@ -76,7 +76,8 @@ research grid). No shadows, no gradients, no rounded cards.
 The page fetches the spec at runtime and renders it — nothing is hardcoded:
 
 - `GET /openapi.json` by default; an optional `?spec=<url>` query override for local
-  preview (`support/design/openapi-fixture.json` is a checked-in sample). If the fetch
+  preview (`support/design/openapi-fixture.json` is the checked-in document, kept in
+  sync with the generated spec by a test). If the fetch
   fails, render a quiet inline notice in `--negative` with a retry link; never a blank page.
 - Endpoint sections are grouped by `tags` (order: fetch, peek, search, then the rest),
   numbered sequentially. `summary` is the section heading; `description` is the prose

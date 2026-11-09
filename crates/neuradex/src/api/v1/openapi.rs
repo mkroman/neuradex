@@ -59,20 +59,35 @@ pub(crate) fn base() -> utoipa::openapi::OpenApi {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use std::collections::BTreeSet;
 
-    /// The expected paths, their methods, query parameters, and tags.
-    const EXPECTED_OPERATIONS: &[(&str, &str, &[&str], &str)] = &[
-        ("/healthz", "get", &[], "healthz"),
+    use serde_json::{Value, json};
+
+    /// The expected paths, their methods, operation IDs, query parameters, and tags.
+    const EXPECTED_OPERATIONS: &[(&str, &str, &str, &[&str], &str)] = &[
+        ("/healthz", "get", "healthz", &[], "healthz"),
         (
             "/v1/fetch",
             "get",
+            "fetch",
             &["include", "redirects", "url"],
             "fetch",
         ),
-        ("/v1/peek", "get", &["include", "redirects", "url"], "peek"),
-        ("/v1/search", "post", &[], "search"),
-        ("/v1/openwebui_search", "post", &[], "search"),
+        (
+            "/v1/peek",
+            "get",
+            "peek",
+            &["include", "redirects", "url"],
+            "peek",
+        ),
+        ("/v1/search", "post", "search", &[], "search"),
+        (
+            "/v1/openwebui_search",
+            "post",
+            "openwebui_search",
+            &[],
+            "search",
+        ),
     ];
 
     /// The OpenAPI document derived from the API's routes.
@@ -112,7 +127,7 @@ mod tests {
 
         let mut expected: Vec<(&str, &str)> = EXPECTED_OPERATIONS
             .iter()
-            .map(|(path, method, _, _)| (*path, *method))
+            .map(|(path, method, _, _, _)| (*path, *method))
             .collect();
         documented.sort_unstable();
         expected.sort_unstable();
@@ -132,10 +147,44 @@ mod tests {
     }
 
     #[test]
+    fn pins_the_operation_ids() {
+        let document = document();
+        let mut ids = Vec::new();
+
+        for &(path, method, expected, _, _) in EXPECTED_OPERATIONS {
+            let id = operation(&document, path, method)
+                .operation_id
+                .as_deref()
+                .unwrap_or_else(|| panic!("the operation for {method} {path} has no operationId"));
+
+            assert_eq!(
+                id, expected,
+                "the operationId for {method} {path} changed; it is part of the generated \
+                 clients' API"
+            );
+            assert!(
+                id.chars()
+                    .all(|character| character.is_ascii_alphanumeric()
+                        || matches!(character, '_' | '-')),
+                "the operationId {id} is not URL-safe"
+            );
+            ids.push(id);
+        }
+
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(
+            ids.len(),
+            EXPECTED_OPERATIONS.len(),
+            "operationIds must be unique"
+        );
+    }
+
+    #[test]
     fn documents_the_error_responses_on_every_endpoint() {
         let document = document();
 
-        for &(path, method, _, _) in EXPECTED_OPERATIONS {
+        for &(path, method, _, _, _) in EXPECTED_OPERATIONS {
             if path == "/healthz" {
                 continue;
             }
@@ -155,7 +204,7 @@ mod tests {
     fn documents_the_query_parameters() {
         let document = document();
 
-        for &(path, method, expected, _) in EXPECTED_OPERATIONS {
+        for &(path, method, _, expected, _) in EXPECTED_OPERATIONS {
             let rendered =
                 serde_json::to_value(operation(&document, path, method)).expect("serializes");
 
@@ -181,6 +230,8 @@ mod tests {
 
         for schema in [
             "ErrorBody",
+            "ErrorDetail",
+            "ErrorKind",
             "FetchResponse",
             "OpenWebUiSearchRequest",
             "OpenWebUiSearchResult",
@@ -200,7 +251,7 @@ mod tests {
     fn summarizes_the_operations() {
         let document = document();
 
-        for &(path, method, _, _) in EXPECTED_OPERATIONS {
+        for &(path, method, _, _, _) in EXPECTED_OPERATIONS {
             let operation = operation(&document, path, method);
 
             assert!(
@@ -280,5 +331,207 @@ mod tests {
 
         assert_eq!(request["properties"]["timeout"]["minimum"], 1);
         assert_eq!(request["properties"]["timeout"]["maximum"], 30);
+    }
+
+    #[test]
+    fn references_the_shared_error_body_from_every_error_response() {
+        let document = document();
+
+        for &(path, method, _, _, _) in EXPECTED_OPERATIONS {
+            if path == "/healthz" {
+                continue;
+            }
+
+            let operation = operation(&document, path, method);
+
+            for status in ["400", "415", "500", "502"] {
+                let response = &operation.responses.responses[status];
+                let rendered = serde_json::to_value(response).expect("serializes");
+
+                assert_eq!(
+                    rendered["content"]["application/json"]["schema"]["$ref"],
+                    "#/components/schemas/ErrorBody",
+                    "the {status} response of {method} {path} does not reference ErrorBody"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn documents_the_error_type_values() {
+        let document = document();
+        let schemas = &document.components.as_ref().expect("components").schemas;
+        let detail = serde_json::to_value(&schemas["ErrorDetail"]).expect("serializes");
+        assert_eq!(
+            detail["properties"]["type"]["$ref"],
+            "#/components/schemas/ErrorKind"
+        );
+
+        let kind = serde_json::to_value(&schemas["ErrorKind"]).expect("serializes");
+        let values: Vec<&str> = kind["enum"]
+            .as_array()
+            .expect("the error type is documented as an enum")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+
+        assert_eq!(
+            values,
+            [
+                "invalid_param",
+                "unsupported_media_type",
+                "upstream_error",
+                "internal_error",
+                "not_found",
+                "method_not_allowed",
+            ]
+        );
+    }
+
+    /// Collects every local `$ref` in `value`, checks that it resolves, and records the
+    /// referenced component schemas.
+    fn collect_refs(document: &Value, value: &Value, schemas: &mut BTreeSet<String>) {
+        match value {
+            Value::Object(object) => {
+                if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+                    let pointer = reference.strip_prefix('#').unwrap_or_else(|| {
+                        panic!("the single-document spec contains the external $ref {reference}")
+                    });
+
+                    assert!(
+                        document.pointer(pointer).is_some(),
+                        "the $ref {reference} does not resolve"
+                    );
+
+                    if let Some(name) = reference.strip_prefix("#/components/schemas/") {
+                        schemas.insert(name.to_owned());
+                    }
+                }
+
+                for child in object.values() {
+                    collect_refs(document, child, schemas);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    collect_refs(document, item, schemas);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The structural subset of the recommended OpenAPI lint rules: declared tags,
+    /// resolvable `$ref`s, documented 2xx and error responses, and no unused components.
+    #[test]
+    fn passes_the_structural_lints() {
+        let document = serde_json::to_value(document()).expect("serializes");
+        let schemas = document
+            .pointer("/components/schemas")
+            .and_then(Value::as_object)
+            .expect("component schemas");
+        let declared_tags: BTreeSet<&str> = document["tags"]
+            .as_array()
+            .expect("tags")
+            .iter()
+            .filter_map(|tag| tag["name"].as_str())
+            .collect();
+        let methods = [
+            "get", "post", "put", "patch", "delete", "head", "options", "trace",
+        ];
+        let mut referenced = BTreeSet::new();
+
+        for (path, item) in document["paths"].as_object().expect("paths") {
+            let item = item.as_object().expect("a path item");
+            if let Some(parameters) = item.get("parameters") {
+                collect_refs(&document, parameters, &mut referenced);
+            }
+
+            for (method, operation) in item {
+                if !methods.contains(&method.as_str()) {
+                    continue;
+                }
+
+                let responses = operation["responses"]
+                    .as_object()
+                    .expect("operation responses");
+                assert!(
+                    responses.keys().any(|status| status.starts_with('2')),
+                    "{method} {path} has no 2xx response"
+                );
+
+                for (status, response) in responses {
+                    assert!(
+                        response["description"]
+                            .as_str()
+                            .is_some_and(|description| !description.trim().is_empty()),
+                        "{method} {path} response {status} has no description"
+                    );
+                    collect_refs(&document, response, &mut referenced);
+                }
+
+                let tags = operation["tags"].as_array().expect("operation tags");
+                assert!(!tags.is_empty(), "{method} {path} has no tags");
+
+                for tag in tags {
+                    let tag = tag.as_str().expect("a tag name");
+                    assert!(
+                        declared_tags.contains(tag),
+                        "{method} {path} uses the undeclared tag {tag}"
+                    );
+                }
+
+                for key in ["parameters", "requestBody"] {
+                    if let Some(value) = operation.get(key) {
+                        collect_refs(&document, value, &mut referenced);
+                    }
+                }
+            }
+        }
+
+        // Follow component-to-component references until the set stops growing.
+        loop {
+            let before = referenced.len();
+
+            for name in referenced.clone() {
+                let schema = schemas
+                    .get(&name)
+                    .unwrap_or_else(|| panic!("operations reference the missing schema {name}"));
+                collect_refs(&document, schema, &mut referenced);
+            }
+
+            if referenced.len() == before {
+                break;
+            }
+        }
+
+        for name in schemas.keys() {
+            assert!(
+                referenced.contains(name),
+                "the component schema {name} is not referenced from any operation"
+            );
+        }
+    }
+
+    /// The checked-in document is the contract reviewers and client generators see; if
+    /// this fails, regenerate it (the diff is the API change under review).
+    ///
+    /// The comparison is semantic: `serde_json` preserves insertion order only when the
+    /// `preserve_order` feature happens to be enabled (the `docs` feature pulls it in),
+    /// so the same document can serialize its object keys in a different order.
+    #[test]
+    fn matches_the_checked_in_spec() {
+        let generated = serde_json::to_value(document()).expect("the document serializes");
+        let checked_in: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../support/design/openapi-fixture.json"
+        )))
+        .expect("the checked-in document is valid JSON");
+
+        assert_eq!(
+            generated, checked_in,
+            "the checked-in OpenAPI document is stale; regenerate it with \
+             `cargo run -- export-docs /tmp/docs.html --spec support/design/openapi-fixture.json`"
+        );
     }
 }

@@ -93,25 +93,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The JSON body of an error response.",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorDetail",
-                      "description": "The error details."
-                    }
-                  },
-                  "examples": [
-                    {
-                      "error": {
-                        "type": "invalid_param",
-                        "message": "the timeout must be between 1 and 30 seconds"
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -121,25 +103,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The JSON body of an error response.",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorDetail",
-                      "description": "The error details."
-                    }
-                  },
-                  "examples": [
-                    {
-                      "error": {
-                        "type": "invalid_param",
-                        "message": "the timeout must be between 1 and 30 seconds"
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -149,25 +113,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The JSON body of an error response.",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorDetail",
-                      "description": "The error details."
-                    }
-                  },
-                  "examples": [
-                    {
-                      "error": {
-                        "type": "invalid_param",
-                        "message": "the timeout must be between 1 and 30 seconds"
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -177,25 +123,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The JSON body of an error response.",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorDetail",
-                      "description": "The error details."
-                    }
-                  },
-                  "examples": [
-                    {
-                      "error": {
-                        "type": "invalid_param",
-                        "message": "the timeout must be between 1 and 30 seconds"
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -241,25 +169,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The JSON body of an error response.",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorDetail",
-                      "description": "The error details."
-                    }
-                  },
-                  "examples": [
-                    {
-                      "error": {
-                        "type": "invalid_param",
-                        "message": "the timeout must be between 1 and 30 seconds"
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -269,25 +179,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The JSON body of an error response.",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorDetail",
-                      "description": "The error details."
-                    }
-                  },
-                  "examples": [
-                    {
-                      "error": {
-                        "type": "invalid_param",
-                        "message": "the timeout must be between 1 and 30 seconds"
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -297,25 +189,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The JSON body of an error response.",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorDetail",
-                      "description": "The error details."
-                    }
-                  },
-                  "examples": [
-                    {
-                      "error": {
-                        "type": "invalid_param",
-                        "message": "the timeout must be between 1 and 30 seconds"
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -325,25 +199,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The JSON body of an error response.",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorDetail",
-                      "description": "The error details."
-                    }
-                  },
-                  "examples": [
-                    {
-                      "error": {
-                        "type": "invalid_param",
-                        "message": "the timeout must be between 1 and 30 seconds"
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -419,25 +275,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The JSON body of an error response.",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorDetail",
-                      "description": "The error details."
-                    }
-                  },
-                  "examples": [
-                    {
-                      "error": {
-                        "type": "invalid_param",
-                        "message": "the timeout must be between 1 and 30 seconds"
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -447,25 +285,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The JSON body of an error response.",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorDetail",
-                      "description": "The error details."
-                    }
-                  },
-                  "examples": [
-                    {
-                      "error": {
-                        "type": "invalid_param",
-                        "message": "the timeout must be between 1 and 30 seconds"
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -475,25 +295,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The JSON body of an error response.",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorDetail",
-                      "description": "The error details."
-                    }
-                  },
-                  "examples": [
-                    {
-                      "error": {
-                        "type": "invalid_param",
-                        "message": "the timeout must be between 1 and 30 seconds"
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -503,25 +305,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The JSON body of an error response.",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorDetail",
-                      "description": "The error details."
-                    }
-                  },
-                  "examples": [
-                    {
-                      "error": {
-                        "type": "invalid_param",
-                        "message": "the timeout must be between 1 and 30 seconds"
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -564,25 +348,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The JSON body of an error response.",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorDetail",
-                      "description": "The error details."
-                    }
-                  },
-                  "examples": [
-                    {
-                      "error": {
-                        "type": "invalid_param",
-                        "message": "the timeout must be between 1 and 30 seconds"
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -592,25 +358,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The JSON body of an error response.",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorDetail",
-                      "description": "The error details."
-                    }
-                  },
-                  "examples": [
-                    {
-                      "error": {
-                        "type": "invalid_param",
-                        "message": "the timeout must be between 1 and 30 seconds"
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -620,25 +368,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The JSON body of an error response.",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorDetail",
-                      "description": "The error details."
-                    }
-                  },
-                  "examples": [
-                    {
-                      "error": {
-                        "type": "invalid_param",
-                        "message": "the timeout must be between 1 and 30 seconds"
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -648,25 +378,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "description": "The JSON body of an error response.",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "$ref": "#/components/schemas/ErrorDetail",
-                      "description": "The error details."
-                    }
-                  },
-                  "examples": [
-                    {
-                      "error": {
-                        "type": "invalid_param",
-                        "message": "the timeout must be between 1 and 30 seconds"
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -711,10 +423,22 @@
             "description": "The human-readable error message."
           },
           "type": {
-            "type": "string",
+            "$ref": "#/components/schemas/ErrorKind",
             "description": "The machine-readable error type."
           }
         }
+      },
+      "ErrorKind": {
+        "type": "string",
+        "description": "The machine-readable error type.\n\nThe router-level `not_found` and `method_not_allowed` values are included because\nthe 404 and 405 fallbacks produce them too.",
+        "enum": [
+          "invalid_param",
+          "unsupported_media_type",
+          "upstream_error",
+          "internal_error",
+          "not_found",
+          "method_not_allowed"
+        ]
       },
       "FetchResponse": {
         "type": "object",

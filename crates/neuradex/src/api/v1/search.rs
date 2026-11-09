@@ -77,6 +77,7 @@ impl From<kagi::SearchResult> for SearchResult {
 #[utoipa::path(
     post,
     path = "/v1/search",
+    operation_id = "search",
     tag = "search",
     summary = "Search the web.",
     description = "Searches the web through Kagi for a JSON request body. Searches are \
