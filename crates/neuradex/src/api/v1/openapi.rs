@@ -15,7 +15,7 @@ use crate::api::v1::openwebui_search::{OpenWebUiSearchRequest, OpenWebUiSearchRe
 use crate::api::v1::peek::PeekResponse;
 use crate::api::v1::search::{SearchResponse, SearchResult};
 use crate::metadata::PageMetadata;
-use crate::metrics::{Metrics, RedirectHop, SearchMetrics};
+use crate::metrics::{FetchMetrics, RedirectHop, SearchMetrics};
 
 /// The metadata of the OpenAPI documentation; the paths are collected by the router.
 #[derive(OpenApi)]
@@ -45,7 +45,7 @@ use crate::metrics::{Metrics, RedirectHop, SearchMetrics};
         OpenWebUiSearchRequest,
         OpenWebUiSearchResult,
         PageMetadata,
-        Metrics,
+        FetchMetrics,
         SearchMetrics,
         RedirectHop,
     ))
@@ -233,6 +233,7 @@ mod tests {
             "ErrorDetail",
             "ErrorKind",
             "FetchResponse",
+            "Metrics",
             "OpenWebUiSearchRequest",
             "OpenWebUiSearchResult",
             "PeekResponse",

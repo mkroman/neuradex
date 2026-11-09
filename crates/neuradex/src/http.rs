@@ -1,14 +1,15 @@
 //! The HTTP server.
 //!
-//! [`serve`] starts the axum server; the application state and its clients are constructed by
-//! the API layer (see [`crate::api::v1::AppState`]).
+//! [`serve`] starts the axum server; the application state and its clients are constructed at
+//! startup (see [`crate::state::AppState`]).
 
 use std::net::SocketAddr;
 
 #[cfg(unix)]
 use tokio::signal::unix::{SignalKind, signal};
 
-use crate::api::v1::{AppState, router};
+use crate::api::v1::router;
+use crate::state::AppState;
 
 /// Starts the axum server on `addr` and drives it until a shutdown signal is received.
 ///

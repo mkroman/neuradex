@@ -5,9 +5,27 @@
 //! network access nor a `KAGI_SESSION_TOKEN`: it works from any build with the `docs` feature.
 
 use std::fs;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use neuradex::api::v1;
+
+/// Errors that can occur while exporting the documentation.
+#[derive(Debug, thiserror::Error)]
+pub enum ExportError {
+    /// The OpenAPI document could not be serialized.
+    #[error("could not serialize the OpenAPI document: {0}")]
+    Serialize(#[from] serde_json::Error),
+    /// A file could not be written.
+    #[error("could not write {}: {source}", path.display())]
+    Write {
+        /// The path that could not be written.
+        path: PathBuf,
+        /// The underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+}
 
 /// Renders the documentation page and writes it to `output`.
 ///
@@ -17,15 +35,14 @@ use neuradex::api::v1;
 /// # Errors
 ///
 /// Returns an error when the OpenAPI document cannot be serialized or a file cannot be written.
-pub fn run(output: &Path, spec: Option<&Path>) -> Result<(), String> {
+pub fn run(output: &Path, spec: Option<&Path>) -> Result<(), ExportError> {
     let document = v1::openapi_spec();
 
     let page = neuradex_docs::render(&document);
     write(output, &page)?;
 
     if let Some(spec) = spec {
-        let json = serde_json::to_string_pretty(&document)
-            .map_err(|error| format!("could not serialize the OpenAPI document: {error}"))?;
+        let json = serde_json::to_string_pretty(&document)?;
         write(spec, &json)?;
     }
 
@@ -33,9 +50,11 @@ pub fn run(output: &Path, spec: Option<&Path>) -> Result<(), String> {
 }
 
 /// Writes `contents` to `path` and reports the number of bytes written.
-fn write(path: &Path, contents: &str) -> Result<(), String> {
-    fs::write(path, contents)
-        .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+fn write(path: &Path, contents: &str) -> Result<(), ExportError> {
+    fs::write(path, contents).map_err(|source| ExportError::Write {
+        path: path.to_owned(),
+        source,
+    })?;
 
     println!("wrote {} ({} bytes)", path.display(), contents.len());
 
@@ -84,5 +103,15 @@ mod tests {
         let expected = serde_json::to_value(v1::openapi_document()).expect("the spec serializes");
 
         assert_eq!(document, expected);
+    }
+
+    #[test]
+    fn reports_write_failures() {
+        let dir = tempdir().expect("a temporary directory");
+        let output = dir.path().join("missing").join("docs.html");
+
+        let error = run(&output, None).expect_err("the export fails");
+
+        assert!(matches!(error, ExportError::Write { .. }));
     }
 }

@@ -11,10 +11,11 @@ use axum::extract::State;
 use serde::Serialize;
 
 use crate::api::v1::error::ApiError;
-use crate::api::v1::extract::{ApiQuery, FetchParams, PEEK_INCLUDES};
-use crate::api::v1::{AppState, redirect, stream};
+use crate::api::v1::extract::{ApiQuery, PEEK_INCLUDES, PageParams};
+use crate::api::v1::{redirect, stream};
 use crate::metadata::PageMetadata;
-use crate::metrics::Metrics;
+use crate::metrics::FetchMetrics;
+use crate::state::AppState;
 
 /// The response of the peek endpoint.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -38,7 +39,6 @@ use crate::metrics::Metrics;
         "ttfb_ms": 87,
         "total_ms": 95,
         "redirects_followed": 0,
-        "redirects": [],
         "truncated": false
     }
 })))]
@@ -49,7 +49,7 @@ pub struct PeekResponse {
     /// The metadata extracted from the document head.
     pub metadata: PageMetadata,
     /// The request metrics and stats.
-    pub metrics: Metrics,
+    pub metrics: FetchMetrics,
 }
 
 /// Fetches a page and returns its document head metadata.
@@ -72,7 +72,7 @@ pub struct PeekResponse {
                    the head has been received — through `</head>` or the start of `<body>` — so \
                    the endpoint returns as early as possible. Unlike `/v1/fetch`, the body is \
                    not returned and `include=headers` is not supported.",
-    params(FetchParams),
+    params(PageParams),
     responses(
         (status = 200, description = "The page head was fetched", body = PeekResponse),
         ApiError,
@@ -80,7 +80,7 @@ pub struct PeekResponse {
 )]
 pub(crate) async fn peek(
     State(state): State<Arc<AppState>>,
-    ApiQuery(params): ApiQuery<FetchParams>,
+    ApiQuery(params): ApiQuery<PageParams>,
 ) -> Result<Json<PeekResponse>, ApiError> {
     let url = params.url()?;
     let redirects = params.redirects()?;
@@ -89,11 +89,11 @@ pub(crate) async fn peek(
 
     let started = Instant::now();
     let (response, fetched) =
-        redirect::fetch(&state.client, url, redirects, includes.redirects).await?;
+        redirect::fetch_with_redirects(&state.client, url, redirects, includes.redirects).await?;
 
     stream::ensure_text_content(fetched.info.content_type.as_deref())?;
 
-    let read = stream::read(response, stream::Mode::Head).await?;
+    let read = stream::read_body(response, stream::BodyMode::Head).await?;
     let metrics = fetched.into_metrics(read.bytes_read, read.truncated, started);
 
     Ok(Json(PeekResponse {

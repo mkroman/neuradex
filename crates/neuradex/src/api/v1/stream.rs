@@ -2,8 +2,9 @@
 //!
 //! The HTML tokenizer is not `Send`, so the response body is streamed through a bounded channel
 //! and parsed on a blocking thread. The channel is bounded so that the reader stalls — and the
-//! download is throttled — once the parser falls behind. Parsing stops as soon as the document
-//! head has been received, aborting the rest of the download.
+//! download is throttled — once the parser falls behind. In head-only mode, parsing stops as
+//! soon as the document head has been received, aborting the rest of the download; in full-body
+//! mode, the parser stops capturing at the head but the body keeps streaming up to its cap.
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -24,7 +25,7 @@ const TEXT_MEDIA_TYPES: &[&str] = &[
     "application/atom+xml",
     "application/ecmascript",
     "application/graphql",
-    "javascript",
+    "application/javascript",
     "application/json",
     "application/ld+json",
     "application/rss+xml",
@@ -38,7 +39,7 @@ const TEXT_MEDIA_TYPES: &[&str] = &[
 
 /// How a response body should be consumed.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum Mode {
+pub(crate) enum BodyMode {
     /// Stop as soon as the document head has been parsed.
     Head,
     /// Read the full body, up to a maximum number of bytes.
@@ -46,7 +47,7 @@ pub(crate) enum Mode {
 }
 
 /// The outcome of streaming a response through the head parser.
-pub(crate) struct Streamed {
+pub(crate) struct StreamedBody {
     /// The metadata captured from the document head.
     pub metadata: PageMetadata,
     /// The body bytes read, when collecting the full body.
@@ -59,13 +60,19 @@ pub(crate) struct Streamed {
 
 /// Streams `response` through the head parser according to `mode`.
 ///
+/// In [`BodyMode::Full`] the head parser stops capturing once the document head ends, but the
+/// body keeps streaming up to its cap.
+///
 /// # Errors
 ///
 /// Returns an error when the response body cannot be read or the parsing task fails.
-pub(crate) async fn read(response: wreq::Response, mode: Mode) -> Result<Streamed, ApiError> {
+pub(crate) async fn read_body(
+    response: wreq::Response,
+    mode: BodyMode,
+) -> Result<StreamedBody, ApiError> {
     let (collect_body, max_bytes) = match mode {
-        Mode::Head => (false, HEAD_MAX_BYTES),
-        Mode::Full(max_bytes) => (true, max_bytes),
+        BodyMode::Head => (false, HEAD_MAX_BYTES),
+        BodyMode::Full(max_bytes) => (true, max_bytes),
     };
 
     let (sender, mut receiver) = mpsc::channel::<Result<Bytes, wreq::Error>>(4);
@@ -86,15 +93,16 @@ pub(crate) async fn read(response: wreq::Response, mode: Mode) -> Result<Streame
 
         consume(chunks, collect_body, max_bytes)
     })
-    .await??;
+    .await;
 
-    // The reader finishes once the parser stops reading from the channel, aborting the rest of
-    // the response.
+    // Await the reader on every path — including a failed read — so it is never left detached.
+    // It finishes once the parser stops reading from the channel, aborting the rest of the
+    // response.
     if let Err(error) = reader.await {
         tracing::warn!(%error, "reader task failed");
     }
 
-    Ok(read)
+    read?
 }
 
 /// Consumes `chunks` through the head parser, collecting the body when `collect_body` is set.
@@ -106,7 +114,7 @@ fn consume(
     chunks: impl Iterator<Item = Result<Bytes, wreq::Error>>,
     collect_body: bool,
     max_bytes: u64,
-) -> Result<Streamed, ApiError> {
+) -> Result<StreamedBody, ApiError> {
     let mut parser = HeadParser::new();
     let mut body = if collect_body { Some(Vec::new()) } else { None };
     let mut bytes_read: u64 = 0;
@@ -125,26 +133,28 @@ fn consume(
             break;
         }
 
-        let chunk = chunk.map_err(|error| ApiError::upstream(error.to_string()))?;
+        let chunk = chunk.map_err(ApiError::upstream)?;
         bytes_read = bytes_read.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
 
         parser.feed(&chunk);
 
-        if let Some(body) = body.as_mut() {
-            if body.len() < cap {
-                let remaining = cap - body.len();
-                let take = remaining.min(chunk.len());
-                body.extend_from_slice(&chunk[..take]);
-            }
-
-            if body.len() >= cap {
-                at_limit = true;
-
-                continue;
-            }
+        if let Some(body) = body.as_mut()
+            && body.len() < cap
+        {
+            let remaining = cap - body.len();
+            let take = remaining.min(chunk.len());
+            body.extend_from_slice(&chunk[..take]);
         }
 
-        if parser.is_done() {
+        if body.as_ref().is_some_and(|body| body.len() >= cap) {
+            at_limit = true;
+
+            continue;
+        }
+
+        // Only the head-only mode can stop at the end of the head; the full mode keeps reading
+        // the body until its cap or the end of the response.
+        if !collect_body && parser.is_done() {
             break;
         }
 
@@ -155,7 +165,7 @@ fn consume(
 
     parser.finish();
 
-    Ok(Streamed {
+    Ok(StreamedBody {
         metadata: parser.into_metadata(),
         body,
         bytes_read,
@@ -231,6 +241,7 @@ mod tests {
     fn classifies_text_media_types() {
         assert!(is_text_media_type("text/html"));
         assert!(is_text_media_type("text/plain"));
+        assert!(is_text_media_type("application/javascript"));
         assert!(is_text_media_type("application/json"));
         assert!(is_text_media_type("application/vnd.api+json"));
         assert!(is_text_media_type("application/rss+xml"));
@@ -245,6 +256,7 @@ mod tests {
     #[test]
     fn rejects_binary_content_types() {
         assert!(ensure_text_content(Some("text/html")).is_ok());
+        assert!(ensure_text_content(Some("application/javascript")).is_ok());
         assert!(ensure_text_content(None).is_ok());
         assert!(ensure_text_content(Some("")).is_ok());
         assert_matches!(
@@ -317,20 +329,42 @@ mod tests {
     }
 
     #[test]
-    fn stops_reading_when_the_head_parses() {
+    fn keeps_reading_past_the_head_in_full_mode() {
+        let head = b"<html><head><title>Hello</title></head>".to_vec();
+        let tail = b"<body><p>Hello</p></body></html>".to_vec();
+        let mut expected = head.clone();
+        expected.extend_from_slice(&tail);
+        let expected_len = u64::try_from(expected.len()).expect("fits");
+
         let read = consume(
-            [
-                Ok(b"<html><head><title>Hello</title></head>".to_vec().into()),
-                Ok(vec![b'x'; 8].into()),
-            ]
-            .into_iter(),
+            [Ok(head.into()), Ok(tail.into())].into_iter(),
             true,
             HEAD_MAX_BYTES,
         )
         .expect("reads");
 
         assert_eq!(read.metadata.title.as_deref(), Some("Hello"));
+        assert_eq!(read.body.as_deref(), Some(expected.as_slice()));
+        assert_eq!(read.bytes_read, expected_len);
+        assert!(!read.truncated);
+    }
+
+    #[test]
+    fn stops_reading_at_the_head_in_head_mode() {
+        let read = consume(
+            [
+                Ok(b"<html><head><title>Hello</title></head>".to_vec().into()),
+                Ok(vec![b'x'; 8].into()),
+            ]
+            .into_iter(),
+            false,
+            HEAD_MAX_BYTES,
+        )
+        .expect("reads");
+
+        assert_eq!(read.metadata.title.as_deref(), Some("Hello"));
         assert_eq!(read.bytes_read, 39);
+        assert!(read.body.is_none());
         assert!(!read.truncated);
     }
 }

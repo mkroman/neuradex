@@ -137,7 +137,7 @@
           "search"
         ],
         "summary": "Search the web for Open WebUI.",
-        "description": "Searches the web through Kagi and answers in the shape Open WebUI's `external` web search engine expects: a bare JSON array of `{link, title, snippet}` objects, truncated to `count`. Searches are queued: at most two run at once, and the request blocks until a slot and the results are ready.",
+        "description": "Searches the web through Kagi and answers in the shape Open WebUI's `external` web search engine expects: a bare JSON array of `{link, title, snippet}` objects, truncated to `count`. Searches are queued: at most the configured limit run at once, and the request blocks until a slot and the results are ready.",
         "operationId": "openwebui_search",
         "requestBody": {
           "description": "The query to search for and the suggested maximum number of results.",
@@ -319,7 +319,7 @@
           "search"
         ],
         "summary": "Search the web.",
-        "description": "Searches the web through Kagi for a JSON request body. Searches are queued: at most two run at once, and the request blocks until a slot and the results are ready. The optional `timeout` covers the whole of it — the queue wait, the session wait, and the search itself; without it, the request stays pending until the client disconnects. Results are truncated to `limit`.",
+        "description": "Searches the web through Kagi for a JSON request body. Searches are queued: at most the configured limit run at once, and the request blocks until a slot and the results are ready. The optional `timeout` covers the whole of it — the queue wait, the session wait, and the search itself; without it, the request stays pending until the client disconnects. Results are truncated to `limit`.",
         "operationId": "search",
         "requestBody": {
           "description": "The query to search for, the maximum number of results, and the timeout.",
@@ -468,7 +468,7 @@
               "object",
               "null"
             ],
-            "description": "The request headers, when requested through `include=headers`.",
+            "description": "The configured default request headers, when requested through `include=headers`.",
             "additionalProperties": {
               "type": "string"
             },
@@ -534,7 +534,6 @@
               "ttfb_ms": 87,
               "total_ms": 120,
               "redirects_followed": 0,
-              "redirects": [],
               "truncated": false
             }
           }
@@ -634,7 +633,6 @@
             "ttfb_ms": 87,
             "total_ms": 120,
             "redirects_followed": 0,
-            "redirects": [],
             "truncated": false
           }
         ]
@@ -827,7 +825,6 @@
               "ttfb_ms": 87,
               "total_ms": 95,
               "redirects_followed": 0,
-              "redirects": [],
               "truncated": false
             }
           }

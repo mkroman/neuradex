@@ -9,10 +9,11 @@ use axum::extract::State;
 use serde::Serialize;
 
 use crate::api::v1::error::ApiError;
-use crate::api::v1::extract::{ApiQuery, FETCH_INCLUDES, FetchParams};
-use crate::api::v1::{AppState, redirect, stream};
+use crate::api::v1::extract::{ApiQuery, FETCH_INCLUDES, PageParams};
+use crate::api::v1::{redirect, stream};
 use crate::metadata::PageMetadata;
-use crate::metrics::Metrics;
+use crate::metrics::FetchMetrics;
+use crate::state::AppState;
 
 /// The maximum size of a fetched response body.
 pub(crate) const FETCH_MAX_BYTES: u64 = 25 * 1024 * 1024;
@@ -43,7 +44,6 @@ pub(crate) const FETCH_MAX_BYTES: u64 = 25 * 1024 * 1024;
         "ttfb_ms": 87,
         "total_ms": 120,
         "redirects_followed": 0,
-        "redirects": [],
         "truncated": false
     }
 })))]
@@ -57,14 +57,14 @@ pub struct FetchResponse {
     pub body: String,
     /// Whether the body was cut short by the size limit.
     pub truncated: bool,
-    /// The request headers, when requested through `include=headers`.
+    /// The configured default request headers, when requested through `include=headers`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_headers: Option<BTreeMap<String, String>>,
     /// The response headers, when requested through `include=headers`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_headers: Option<BTreeMap<String, String>>,
     /// The request metrics and stats.
-    pub metrics: Metrics,
+    pub metrics: FetchMetrics,
 }
 
 /// Fetches a page and returns its metadata, body, headers, and metrics.
@@ -88,7 +88,7 @@ pub struct FetchResponse {
                    with invalid sequences replaced; binary content types are rejected, and \
                    bodies beyond 25 MiB are cut short with `truncated: true`. The request and \
                    response headers are returned when `include=headers` is requested.",
-    params(FetchParams),
+    params(PageParams),
     responses(
         (status = 200, description = "The page was fetched", body = FetchResponse),
         ApiError,
@@ -96,7 +96,7 @@ pub struct FetchResponse {
 )]
 pub(crate) async fn fetch(
     State(state): State<Arc<AppState>>,
-    ApiQuery(params): ApiQuery<FetchParams>,
+    ApiQuery(params): ApiQuery<PageParams>,
 ) -> Result<Json<FetchResponse>, ApiError> {
     let url = params.url()?;
     let redirects = params.redirects()?;
@@ -105,7 +105,7 @@ pub(crate) async fn fetch(
 
     let started = Instant::now();
     let (response, fetched) =
-        redirect::fetch(&state.client, url, redirects, includes.redirects).await?;
+        redirect::fetch_with_redirects(&state.client, url, redirects, includes.redirects).await?;
 
     stream::ensure_text_content(fetched.info.content_type.as_deref())?;
 
@@ -113,7 +113,7 @@ pub(crate) async fn fetch(
         .headers
         .then(|| stream::headers_to_json(response.headers()));
 
-    let read = stream::read(response, stream::Mode::Full(FETCH_MAX_BYTES)).await?;
+    let read = stream::read_body(response, stream::BodyMode::Full(FETCH_MAX_BYTES)).await?;
     let body = String::from_utf8(read.body.expect("full mode collects the body"))
         .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
     let metrics = fetched.into_metrics(read.bytes_read, read.truncated, started);
