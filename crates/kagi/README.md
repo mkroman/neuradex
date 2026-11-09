@@ -18,6 +18,9 @@ authenticated browser session.
 * The session token is kept in memory as a `SecretString`
 * A pool of up to `max_sessions` persistent sessions, each with its own nonce
   and refresh cycle, grown one session at a time under load
+* Optional [Privacy Pass](#privacy-pass) authentication: searches redeem
+  anonymous batched VOPRF tokens instead of sending the session token or
+  cookies
 
 ## Quick Start
 
@@ -49,6 +52,30 @@ async fn main() -> Result<(), Error> {
     Ok(())
 }
 ```
+
+## Privacy Pass
+
+Privacy Pass mode issues anonymous batched VOPRF tokens (token type `0xF91A`)
+from Kagi's `/pp/wwwa` and `/pp/gettokens` endpoints and redeems one token per
+search request. The configured session token is used only to authorize
+issuance; searches send no cookies, no token query parameter, and no
+`X-Kagi-Authorization` header.
+
+```rust
+use kagi::{Client, Error};
+
+# async fn example() -> Result<(), Error> {
+// The token is still the kagi_session value from an authenticated session.
+let client = Client::with_privacy_pass("kagi session token")?;
+let results = client.search("rust programming language").await?;
+# Ok(())
+# }
+```
+
+`ClientOptions::privacy_pass` accepts a `PrivacyPassOptions` value to tune the
+batch size, store capacity, and low-water mark. Tokens live in memory, are
+consumed once, and are refilled on demand or in the background when the store
+runs low.
 
 ## Wire protocol
 

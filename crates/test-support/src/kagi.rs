@@ -46,7 +46,7 @@ pub fn read_fixture(name: &str) -> String {
 }
 
 /// Returns a minimal search document containing the fixture nonce.
-fn nonce_body() -> String {
+pub(crate) fn nonce_body() -> String {
     format!(
         r#"<!doctype html><html><head><script>window.sse_nonce = "{NONCE}";</script></head><body></body></html>"#
     )

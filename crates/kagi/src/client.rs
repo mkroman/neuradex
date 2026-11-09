@@ -15,6 +15,7 @@ use tracing::{debug, error};
 use super::parse::{
     extract_nonce, parse_image_result_messages, parse_search_result_messages, parse_stream,
 };
+use super::privacy_pass::{PrivacyPassClient, PrivacyPassOptions};
 use super::{ClientOptions, Error, ImageResult, RequestError, SearchResult};
 
 /// Wraps `error` in a [`RequestError`], whose URL keeps no credential from the query string:
@@ -22,7 +23,7 @@ use super::{ClientOptions, Error, ImageResult, RequestError, SearchResult};
 ///
 /// The failed request is logged once with its redacted URL and error type: the caller reports
 /// the short rendering, so this is the only line that names the request.
-fn request_error(error: reqwest::Error) -> RequestError {
+pub fn request_error(error: reqwest::Error) -> RequestError {
     let error = RequestError::from(error);
 
     if let Some(url) = error.url() {
@@ -190,6 +191,8 @@ pub struct Client {
     max_sessions: usize,
     /// The duration of a single session.
     session_duration: Duration,
+    /// Privacy Pass authentication, when enabled.
+    privacy_pass: Option<Arc<PrivacyPassClient>>,
     /// The duration before an HTTP request times out; used to build per-session clients.
     timeout: Duration,
     /// The `User-Agent` used to build per-session clients.
@@ -216,6 +219,25 @@ impl Client {
             .expect("the default client options are valid")
     }
 
+    /// Constructs a client that authenticates searches with anonymous Privacy Pass tokens.
+    ///
+    /// The token is still the value of the `kagi_session` cookie from an authenticated browser
+    /// session, but it is used only to authorize token issuance. Searches redeem tokens
+    /// instead of sending the token or session cookies.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if the default options are invalid or the Privacy Pass HTTP client
+    /// cannot be built.
+    pub fn with_privacy_pass(token: impl Into<SecretString>) -> Result<Client, Error> {
+        let options = ClientOptions {
+            privacy_pass: Some(PrivacyPassOptions::default()),
+            ..ClientOptions::default()
+        };
+
+        Self::with_token_and_options(token, &options)
+    }
+
     /// Constructs a new [`Client`] for searching with Kagi using the given session token and
     /// options.
     ///
@@ -230,19 +252,40 @@ impl Client {
         options: &ClientOptions,
     ) -> Result<Client, Error> {
         let base_url = parse_base_url(&options.base_url)?;
+        let language = HeaderValue::from_str(&options.language)?;
+        let user_agent = HeaderValue::from_str(&options.user_agent)?;
+        let token = Arc::new(token.into());
+        let privacy_pass = match &options.privacy_pass {
+            Some(privacy_pass) => Some(Arc::new(PrivacyPassClient::new(
+                base_url.clone(),
+                Arc::clone(&token),
+                language.clone(),
+                options.timeout,
+                user_agent.clone(),
+                privacy_pass,
+            )?)),
+            None => None,
+        };
 
         Ok(Client {
-            token: Arc::new(token.into()),
+            token,
             base_url,
-            language: HeaderValue::from_str(&options.language)?,
+            language,
             max_sessions: options.max_sessions.max(1),
             session_duration: options.session_duration,
+            privacy_pass,
             timeout: options.timeout,
-            user_agent: HeaderValue::from_str(&options.user_agent)?,
+            user_agent,
             slots: Mutex::new(Vec::new()),
             creation: AsyncMutex::new(()),
             check_in: Arc::new(Semaphore::new(0)),
         })
+    }
+
+    /// Returns the Privacy Pass client, or `None` when Privacy Pass mode is disabled.
+    #[must_use]
+    pub fn privacy_pass(&self) -> Option<&PrivacyPassClient> {
+        self.privacy_pass.as_deref()
     }
 
     /// Produces a fresh session: checks a slot out of the pool and returns a lease holding the
@@ -558,6 +601,10 @@ impl Client {
     /// Returns an [`Error`] if a session could not be established, the stream request could not
     /// be sent, or the response could not be read.
     async fn stream_body(&self, endpoint: &str, query: &str) -> Result<String, Error> {
+        if let Some(privacy_pass) = &self.privacy_pass {
+            return self.privacy_pass_body(privacy_pass, endpoint, query).await;
+        }
+
         let mut lease = self.acquire(endpoint, query).await?;
         let nonce = lease.take_nonce();
 
@@ -601,6 +648,114 @@ impl Client {
             .map_err(|error| Error::StreamRequestBody(request_error(error)))?;
 
         Ok(body)
+    }
+
+    /// Fetches a stream body through anonymous Privacy Pass tokens.
+    ///
+    /// A rejected token (401/403) drops the remaining batch and retries once with fresh tokens.
+    async fn privacy_pass_body(
+        &self,
+        privacy_pass: &Arc<PrivacyPassClient>,
+        endpoint: &str,
+        query: &str,
+    ) -> Result<String, Error> {
+        let mut retried = false;
+
+        loop {
+            let result = self.privacy_pass_once(privacy_pass, endpoint, query).await;
+            let retry = match &result {
+                Err(Error::StreamStatus(error) | Error::RequestNonce(error)) => {
+                    error.status().is_some_and(invalidates_session)
+                }
+                _ => false,
+            };
+
+            if !retry || retried {
+                return result;
+            }
+
+            retried = true;
+            privacy_pass.clear();
+            privacy_pass.replenish().await.map_err(Error::PrivacyPass)?;
+        }
+    }
+
+    /// Performs one Privacy Pass document and stream request pair.
+    async fn privacy_pass_once(
+        &self,
+        privacy_pass: &Arc<PrivacyPassClient>,
+        endpoint: &str,
+        query: &str,
+    ) -> Result<String, Error> {
+        let nonce = self
+            .privacy_pass_nonce(privacy_pass, endpoint, query)
+            .await?;
+        let token = privacy_pass
+            .acquire_token()
+            .await
+            .map_err(Error::PrivacyPass)?;
+        let url = url_with_query(
+            &self.base_url,
+            &format!("socket/{endpoint}"),
+            &[("q", query)],
+        );
+        let req = browser_stream_request(privacy_pass.http(), &self.language, url)
+            .query(&[("nonce", nonce)])
+            // The extension removes the referer and overrides the fetch site; both can link
+            // otherwise separate searches.
+            .header("Sec-Fetch-Site", HeaderValue::from_static("none"));
+        let req = PrivacyPassClient::authorize(req, &token).map_err(Error::PrivacyPass)?;
+
+        debug!(%endpoint, "connecting to stream with Privacy Pass");
+        let res = req
+            .send()
+            .await
+            .map_err(|error| Error::StreamRequest(request_error(error)))?;
+        let res = res
+            .error_for_status()
+            .map_err(|error| Error::StreamStatus(request_error(error)))?;
+        let body = res
+            .text()
+            .await
+            .map_err(|error| Error::StreamRequestBody(request_error(error)))?;
+
+        Ok(body)
+    }
+
+    /// Loads the target document with a Privacy Pass token and extracts its stream nonce.
+    async fn privacy_pass_nonce(
+        &self,
+        privacy_pass: &Arc<PrivacyPassClient>,
+        endpoint: &str,
+        query: &str,
+    ) -> Result<String, Error> {
+        let token = privacy_pass
+            .acquire_token()
+            .await
+            .map_err(Error::PrivacyPass)?;
+        let url = url_with_query(&self.base_url, endpoint, &[("q", query)]);
+        let req = browser_document_request(
+            privacy_pass.http(),
+            &self.language,
+            url.as_str(),
+            HeaderValue::from_static("none"),
+            None,
+        );
+        let req = PrivacyPassClient::authorize(req, &token).map_err(Error::PrivacyPass)?;
+
+        let res = req
+            .send()
+            .await
+            .map_err(|error| Error::RequestNonce(request_error(error)))?;
+        if let Err(error) = res.error_for_status_ref() {
+            return Err(Error::RequestNonce(request_error(error)));
+        }
+        let body = res
+            .text()
+            .await
+            .map_err(|error| Error::ReadNonce(request_error(error)))?;
+
+        extract_nonce(&body).ok_or(Error::Nonce)
     }
 
     /// Searches Kagi with the given query and returns the parsed search results.
@@ -736,7 +891,22 @@ fn document_request(
     site: HeaderValue,
     referer: Option<&str>,
 ) -> reqwest::RequestBuilder {
-    let request = authorize(http.get(url), token)
+    authorize(
+        browser_document_request(http, language, url, site, referer),
+        token,
+    )
+}
+
+/// Builds a request shaped like a browser document navigation without authentication headers.
+fn browser_document_request(
+    http: &reqwest::Client,
+    language: &HeaderValue,
+    url: &str,
+    site: HeaderValue,
+    referer: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let request = http
+        .get(url)
         .header(ACCEPT, ACCEPT_DOCUMENT)
         .header(ACCEPT_LANGUAGE, language.clone())
         .header("Sec-Fetch-Dest", HeaderValue::from_static("document"))
@@ -759,7 +929,16 @@ fn stream_request(
     language: &HeaderValue,
     url: reqwest::Url,
 ) -> reqwest::RequestBuilder {
-    authorize(http.get(url), token)
+    authorize(browser_stream_request(http, language, url), token)
+}
+
+/// Builds an `EventSource`-shaped request without authentication headers.
+fn browser_stream_request(
+    http: &reqwest::Client,
+    language: &HeaderValue,
+    url: reqwest::Url,
+) -> reqwest::RequestBuilder {
+    http.get(url)
         .header(ACCEPT, ACCEPT_EVENT_STREAM)
         .header(ACCEPT_LANGUAGE, language.clone())
         .header("Sec-Fetch-Dest", HeaderValue::from_static("empty"))

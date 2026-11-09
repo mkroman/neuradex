@@ -14,6 +14,8 @@
 pub mod app;
 #[cfg(feature = "client")]
 pub mod kagi;
+#[cfg(feature = "client")]
+pub mod privacy_pass;
 
 #[cfg(feature = "client")]
 pub use httpmock;

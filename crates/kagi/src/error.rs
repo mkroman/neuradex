@@ -6,6 +6,8 @@ use std::fmt::Write as _;
 
 use reqwest::StatusCode;
 
+use crate::privacy_pass::PrivacyPassError;
+
 /// A request URL rendered for logs and error messages, without its query string, fragment, or
 /// userinfo.
 ///
@@ -261,6 +263,9 @@ pub enum Error {
     /// The HTTP client could not be built.
     #[error("could not build http client")]
     BuildClient(#[source] RequestError),
+    /// Privacy Pass token issuance or redemption failed.
+    #[error("privacy pass authentication failed")]
+    PrivacyPass(#[from] PrivacyPassError),
 }
 
 #[cfg(test)]
