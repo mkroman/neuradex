@@ -5,11 +5,12 @@ pub mod extract;
 pub mod fetch;
 pub mod openapi;
 pub mod openwebui_search;
-mod parser_pool;
 pub mod peek;
 pub mod redirect;
 pub mod search;
 pub mod stream;
+
+mod parser_pool;
 
 use std::sync::Arc;
 use std::time::Instant;

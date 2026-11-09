@@ -16,11 +16,7 @@ use tokio::task::JoinSet;
 use wreq::header::HeaderMap;
 
 use crate::api::v1::error::ApiError;
-use crate::api::v1::parser_pool;
-use crate::metadata::PageMetadata;
-
-/// The maximum size of a response consumed while extracting document head metadata.
-pub(crate) const HEAD_MAX_BYTES: u64 = 2 * 1024 * 1024;
+use crate::api::v1::parser_pool::{self, HEAD_MAX_BYTES, StreamedBody};
 
 /// The largest body buffer reserved from a `Content-Length` hint.
 ///
@@ -52,18 +48,6 @@ pub(crate) enum BodyMode {
     Head,
     /// Read the full body, up to a maximum number of bytes.
     Full(u64),
-}
-
-/// The outcome of streaming a response through the head parser.
-pub(crate) struct StreamedBody {
-    /// The metadata captured from the document head.
-    pub metadata: PageMetadata,
-    /// The body bytes read, when collecting the full body.
-    pub body: Option<Vec<u8>>,
-    /// The number of body bytes read (decompressed).
-    pub bytes_read: u64,
-    /// Whether the read was cut short by a size limit.
-    pub truncated: bool,
 }
 
 /// The channel capacity for each body mode.
@@ -100,7 +84,7 @@ fn initial_body_capacity(content_length: Option<u64>, max_bytes: u64) -> usize {
 /// # Errors
 ///
 /// Returns an error when the response body cannot be read or the parsing task fails.
-pub(crate) async fn read_body(
+pub(super) async fn read_body(
     response: wreq::Response,
     mode: BodyMode,
     content_length: Option<u64>,

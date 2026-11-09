@@ -10,8 +10,8 @@
 //! are slow; only the actual tokenization occupies the thread. The pool is created on first use
 //! and lives for the rest of the process.
 //!
-//! The pool size defaults to `available_parallelism / 8`, clamped to 2 through 4. Set
-//! `NEURADEX_PARSER_THREADS` to override it; zero or invalid values fall back to the default.
+//! The pool size follows `available_parallelism`: one thread per eight CPUs, clamped to 2
+//! through 4.
 
 #![expect(
     clippy::future_not_send,
@@ -30,14 +30,23 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::LocalSet;
 
 use crate::api::v1::error::ApiError;
-use crate::api::v1::stream::StreamedBody;
-use crate::metadata::HeadParser;
+use crate::metadata::{HeadParser, PageMetadata};
 
-/// The environment variable that overrides the parser thread count.
-const PARSER_THREADS_ENV: &str = "NEURADEX_PARSER_THREADS";
+/// The maximum size of a response consumed while extracting document head metadata.
+pub(super) const HEAD_MAX_BYTES: u64 = 2 * 1024 * 1024;
 
-/// How many chunks a parser processes before yielding to the other parsers on its thread.
-///
+/// The outcome of streaming a response through the head parser.
+pub(super) struct StreamedBody {
+    /// The metadata captured from the document head.
+    pub metadata: PageMetadata,
+    /// The body bytes read, when collecting the full body.
+    pub body: Option<Vec<u8>>,
+    /// The number of body bytes read (decompressed).
+    pub bytes_read: u64,
+    /// Whether the read was cut short by a size limit.
+    pub truncated: bool,
+}
+
 /// How many chunks a parser processes before it yields to the other parsers on its thread.
 ///
 /// A yield costs a scheduler round trip, so it is amortized over a batch: a typical head fits in
@@ -76,7 +85,7 @@ impl Pool {
         POOL.get_or_init(Self::start)
     }
 
-    /// Starts one `LocalSet` thread per configured parser thread.
+    /// Starts one `LocalSet` thread per parser thread.
     fn start() -> Self {
         let threads = parser_threads();
         let mut senders = Vec::with_capacity(threads);
@@ -133,16 +142,10 @@ impl Pool {
     }
 }
 
-/// Returns the configured number of parser threads.
+/// Returns the number of parser threads.
 fn parser_threads() -> usize {
-    std::env::var(PARSER_THREADS_ENV)
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|&threads| threads > 0)
-        .unwrap_or_else(|| {
-            thread::available_parallelism()
-                .map_or(2, |parallelism| parallelism.get().div_ceil(8).clamp(2, 4))
-        })
+    thread::available_parallelism()
+        .map_or(2, |parallelism| parallelism.get().div_ceil(8).clamp(2, 4))
 }
 
 /// Parses `chunks` on the shared pool.
@@ -360,7 +363,6 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::api::v1::stream::HEAD_MAX_BYTES;
 
     /// Parses `chunks` through the real pool.
     async fn read_chunks(chunks: &[&[u8]], collect_body: bool, max_bytes: u64) -> StreamedBody {

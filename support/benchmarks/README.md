@@ -83,8 +83,7 @@ look like service latency but are not.
 
 The service parses heads on a process-wide `LocalSet` pool (`api/v1/parser_pool.rs`), not on
 `spawn_blocking`: each parser waits for its next chunk as a `!Send` future, so a slow upstream
-does not park an OS thread. `NEURADEX_PARSER_THREADS` overrides the pool size; the default is
-`available_parallelism / 8`, clamped to 2 through 4.
+does not park an OS thread. The pool size is `available_parallelism / 8`, clamped to 2 through 4.
 
 Before the pool, a `peek` parser held one blocking thread from the first body chunk until the
 head ended, and a `fetch` parser held one for the whole body. Tokio's blocking pool caps at 512
