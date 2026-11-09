@@ -171,6 +171,95 @@ async fn fetch_stops_when_the_redirect_budget_is_exhausted() {
 }
 
 #[tokio::test]
+async fn fetch_does_not_follow_300_multiple_choices() {
+    let app = TestApp::start();
+    let start = app.server.mock(|when, then| {
+        when.method("GET").path("/start");
+        then.status(300)
+            .header("content-type", "text/html; charset=utf-8")
+            .header("location", "/final")
+            .body("multiple choices");
+    });
+    let final_page = app.server.mock(|when, then| {
+        when.method("GET").path("/final");
+        then.status(200).body("should not be reached");
+    });
+
+    let response = app
+        .get(&format!("/v1/fetch?url={}", app.url("/start")))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = TestApp::json(response).await;
+
+    // 300 Multiple Choices carries a Location header but does not resend the request
+    // anywhere, so the response itself is final.
+    assert_eq!(body["metrics"]["status"], 300);
+    assert_eq!(body["metrics"]["final_url"], app.url("/start"));
+    assert_eq!(body["metrics"]["redirects_followed"], 0);
+    assert_eq!(body["body"], "multiple choices");
+
+    start.assert_calls(1);
+    final_page.assert_calls(0);
+}
+
+#[tokio::test]
+async fn fetch_does_not_follow_304_not_modified() {
+    let app = TestApp::start();
+    let start = app.server.mock(|when, then| {
+        when.method("GET").path("/start");
+        then.status(304).header("location", "/final");
+    });
+    let final_page = app.server.mock(|when, then| {
+        when.method("GET").path("/final");
+        then.status(200).body("should not be reached");
+    });
+
+    let response = app
+        .get(&format!("/v1/fetch?url={}", app.url("/start")))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = TestApp::json(response).await;
+
+    // 304 Not Modified can carry a Location header but is not a redirect to follow.
+    assert_eq!(body["metrics"]["status"], 304);
+    assert_eq!(body["metrics"]["final_url"], app.url("/start"));
+    assert_eq!(body["metrics"]["redirects_followed"], 0);
+    assert_eq!(body["body"], "");
+
+    start.assert_calls(1);
+    final_page.assert_calls(0);
+}
+
+#[tokio::test]
+async fn fetch_does_not_follow_non_http_redirect_targets() {
+    let app = TestApp::start();
+    let start = app.server.mock(|when, then| {
+        when.method("GET").path("/start");
+        then.status(302).header("location", "file:///etc/passwd");
+    });
+
+    let response = app
+        .get(&format!("/v1/fetch?url={}", app.url("/start")))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = TestApp::json(response).await;
+
+    // Only http(s) targets are followed; a file URL leaves the 302 as the final response.
+    assert_eq!(body["metrics"]["status"], 302);
+    assert_eq!(body["metrics"]["final_url"], app.url("/start"));
+    assert_eq!(body["metrics"]["redirects_followed"], 0);
+    assert_eq!(body["body"], "");
+
+    start.assert_calls(1);
+}
+
+#[tokio::test]
 async fn fetch_maps_connection_failures_to_the_error_envelope() {
     let app = TestApp::start();
 
@@ -332,6 +421,55 @@ async fn search_times_out_and_returns_the_error_envelope() {
     session.assert();
     nonce.assert();
     stream.assert();
+}
+
+#[tokio::test]
+async fn search_timeout_covers_the_queue_wait() {
+    let app = TestApp::with_kagi_sessions(1);
+    let session = app.mock_kagi_session();
+    let nonce = app.mock_kagi_nonce();
+    let stream = app.mock_kagi_search_stream_delayed(
+        "hello world",
+        "search_stream_sse.bin",
+        std::time::Duration::from_secs(2),
+    );
+
+    let request = json!({"query": "hello world"});
+    let first = app.post_json("/v1/search", &request);
+    let second = async {
+        // Wait until the first search is streaming from Kagi, so it holds the only service
+        // slot and the second request is guaranteed to queue behind it.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while stream.calls() == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the first search reaches the Kagi stream");
+
+        app.post_json("/v1/search", &json!({"query": "hello world", "timeout": 1}))
+            .await
+    };
+
+    let (first_response, second_response) = futures::future::join(first, second).await;
+
+    assert_eq!(first_response.status(), StatusCode::OK);
+
+    let first_body = TestApp::json(first_response).await;
+    assert_eq!(first_body["results"].as_array().map(Vec::len), Some(5));
+
+    // The second request times out while it is still waiting for the first search's slot,
+    // without ever reaching Kagi.
+    let second_body =
+        TestApp::assert_error(second_response, StatusCode::BAD_GATEWAY, "upstream_error").await;
+    assert_eq!(
+        second_body["error"]["message"],
+        "the upstream request failed"
+    );
+
+    stream.assert_calls(1);
+    session.assert_calls(1);
+    nonce.assert_calls(1);
 }
 
 #[tokio::test]
