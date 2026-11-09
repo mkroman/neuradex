@@ -1,9 +1,10 @@
 # neuradex opencode tools
 
 An [opencode](https://opencode.ai) v2 plugin that registers this service's
-`/v1/search` endpoint as a web search provider named `neuradex` and selects it
-as the default provider, so opencode's built-in `websearch` tool searches
-through Neuradex.
+`POST /v1/search` endpoint as a web search provider named `neuradex` and
+selects it as the default provider, so opencode's built-in `websearch` tool
+searches through Neuradex. The plugin sends a JSON body with the query and a
+result limit of 10.
 
 ## Setup
 
