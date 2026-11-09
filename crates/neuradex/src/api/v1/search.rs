@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use axum::Json;
 use axum::extract::State;
 use serde::Serialize;
+use tracing::Instrument;
 
 use crate::api::v1::error::ApiError;
 use crate::api::v1::extract::{ApiJson, SearchRequest};
@@ -145,6 +146,21 @@ pub(crate) async fn queued_search(
     timeout: Option<Duration>,
 ) -> Result<QueuedSearch, ApiError> {
     let queued = Instant::now();
+    let span = tracing::info_span!(
+        target: "neuradex::search",
+        "search",
+        "otel.kind" = "internal",
+        "neuradex.search.query.length" = query.chars().count(),
+        "neuradex.search.timeout_s" = tracing::field::Empty,
+        "neuradex.search.queue_ms" = tracing::field::Empty,
+        "neuradex.search.result_count" = tracing::field::Empty,
+        "error.type" = tracing::field::Empty,
+        "otel.status_code" = tracing::field::Empty,
+    );
+
+    if let Some(timeout) = timeout {
+        span.record("neuradex.search.timeout_s", timeout.as_secs());
+    }
 
     let search = async {
         let permit = state.search_gate.acquire().await.map_err(|error| {
@@ -164,10 +180,50 @@ pub(crate) async fn queued_search(
         Ok::<_, ApiError>(QueuedSearch { queue_ms, results })
     };
 
-    match timeout {
-        Some(timeout) => tokio::time::timeout(timeout, search).await.map_err(|_| {
-            ApiError::upstream_message(format!("the search timed out after {}s", timeout.as_secs()))
-        })?,
-        None => search.await,
+    let result = match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, search.instrument(span.clone()))
+            .await
+            .unwrap_or_else(|_| {
+                Err(ApiError::upstream_message(format!(
+                    "the search timed out after {}s",
+                    timeout.as_secs()
+                )))
+            }),
+        None => search.instrument(span.clone()).await,
+    };
+
+    match &result {
+        Ok(search) => {
+            span.record("neuradex.search.queue_ms", search.queue_ms);
+            span.record("neuradex.search.result_count", search.results.len());
+        }
+        Err(error) => {
+            span.record("error.type", error.error_type());
+            span.record("otel.status_code", "ERROR");
+        }
     }
+
+    let authentication = if state.kagi_client().privacy_pass().is_some() {
+        "privacy_pass"
+    } else {
+        "session"
+    };
+    // Named audit event: one record per search, independent of trace sampling.
+    span.in_scope(|| {
+        tracing::event!(
+            name: "neuradex.search.request",
+            tracing::Level::INFO,
+            "neuradex.search.query.length" = query.chars().count(),
+            "neuradex.search.authentication" = authentication,
+            "neuradex.search.timeout_s" = timeout.map(|timeout| timeout.as_secs()),
+            "neuradex.search.queue_ms" = result.as_ref().ok().map(|search| search.queue_ms),
+            "neuradex.search.result_count" = result
+                .as_ref()
+                .ok()
+                .map(|search| search.results.len()),
+            "error.type" = result.as_ref().err().map(ApiError::error_type),
+        );
+    });
+
+    result
 }

@@ -10,3 +10,4 @@ pub mod http;
 pub mod metadata;
 pub mod metrics;
 pub mod state;
+mod telemetry;

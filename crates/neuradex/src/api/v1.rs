@@ -11,22 +11,28 @@ pub mod search;
 pub mod stream;
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::Extension;
 use axum::body::Bytes;
+use axum::extract::MatchedPath;
+use axum::extract::Request;
 use axum::http::header;
 use axum::http::{Method, StatusCode, Uri};
-use axum::response::IntoResponse;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing;
 use axum::{Json, Router};
 #[cfg(feature = "docs")]
 use std::sync::LazyLock;
+use tracing::Instrument;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 pub use error::ApiError;
 use error::ErrorBody;
 
+use crate::metrics::duration_ms;
 use crate::state::AppState;
 
 /// The maximum number of redirects the fetch endpoints will follow.
@@ -41,13 +47,65 @@ pub(crate) const MAX_SEARCH_TIMEOUT_SECS: u64 = 30;
 /// [`utoipa_axum`], so the router and the document cannot drift apart; the document's metadata
 /// (info, tags, schemas) comes from [`openapi::base`].
 fn api() -> (Router<Arc<AppState>>, utoipa::openapi::OpenApi) {
-    OpenApiRouter::with_openapi(openapi::base())
+    let (router, openapi) = OpenApiRouter::with_openapi(openapi::base())
         .routes(routes!(healthz))
         .routes(routes!(peek::peek))
         .routes(routes!(fetch::fetch))
         .routes(routes!(search::search))
         .routes(routes!(openwebui_search::openwebui_search))
-        .split_for_parts()
+        .split_for_parts();
+
+    (router.layer(middleware::from_fn(trace_request)), openapi)
+}
+
+/// Wraps an API request in a server span and emits one audit event for it.
+///
+/// The event is emitted at `INFO` on every request, including failures, so a log pipeline can
+/// retain an unsampled request record independently of trace sampling.
+async fn trace_request(request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or_else(|| path.clone(), |matched| matched.as_str().to_owned());
+    let span = tracing::info_span!(
+        target: "neuradex::http",
+        "http.server",
+        "otel.kind" = "server",
+        "http.request.method" = %method,
+        "http.route" = %route,
+        "url.path" = %path,
+        "http.response.status_code" = tracing::field::Empty,
+        "error.type" = tracing::field::Empty,
+        "otel.status_code" = tracing::field::Empty,
+    );
+    let started = Instant::now();
+    let response = next.run(request).instrument(span.clone()).await;
+    let status = response.status();
+    let error_type =
+        (status.is_client_error() || status.is_server_error()).then(|| status.as_u16().to_string());
+
+    span.record("http.response.status_code", status.as_u16());
+    if let Some(error_type) = &error_type {
+        span.record("error.type", error_type.as_str());
+        span.record("otel.status_code", "ERROR");
+    }
+
+    span.in_scope(|| {
+        tracing::event!(
+            name: "neuradex.http.request",
+            tracing::Level::INFO,
+            "http.request.method" = %method,
+            "http.route" = %route,
+            "url.path" = %path,
+            "http.response.status_code" = status.as_u16(),
+            "neuradex.http.request.duration_ms" = duration_ms(started.elapsed()),
+            "error.type" = error_type.as_deref(),
+        );
+    });
+
+    response
 }
 
 /// Returns the OpenAPI document derived from the API routes.

@@ -77,6 +77,16 @@ spec:
               value: 0.0.0.0:{{ .Values.containerPort }}
             - name: RUST_LOG
               value: {{ .Values.rustLog | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.logFormat | quote }}
+            {{- if .Values.otelExporterOtlpEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otelExporterOtlpEndpoint | quote }}
+            {{- end }}
+            {{- if .Values.otelResourceAttributes }}
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: {{ .Values.otelResourceAttributes | quote }}
+            {{- end }}
             {{- if .Values.userAgent }}
             - name: USER_AGENT
               value: {{ .Values.userAgent | quote }}

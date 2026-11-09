@@ -10,7 +10,7 @@ use reqwest::redirect::Policy;
 use secrecy::{ExposeSecret, SecretString};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 use tokio::time::Instant;
-use tracing::{debug, error};
+use tracing::{Instrument, Span, debug, debug_span, field};
 
 use super::parse::{
     extract_nonce, parse_image_result_messages, parse_search_result_messages, parse_stream,
@@ -30,16 +30,144 @@ use super::{ClientOptions, Error, ImageResult, RequestError, SearchResult};
 pub(crate) fn log_request_error(error: reqwest::Error) -> RequestError {
     let error = RequestError::from(error);
 
-    if let Some(url) = error.url() {
-        debug!(
-            url.full = %url,
-            error.type = error.error_type(),
-            exception.message = %error.full(),
-            "request failed"
-        );
-    }
+    debug!(
+        "url.full" = error.url(),
+        "error.type" = error.error_type(),
+        "exception.message" = %error.full(),
+        "request failed"
+    );
 
     error
+}
+
+/// Builds an OpenTelemetry-compatible HTTP client span for one request attempt.
+///
+/// The span name sent to OpenTelemetry exporters is `{method} {path}`. Every Kagi endpoint has
+/// a static path, so the name stays low-cardinality. `url.full` is recorded with the userinfo,
+/// fragment, and query values redacted: Kagi puts its login token, the document nonce, and the
+/// user's search query in query parameters.
+///
+/// This helper and [`record_response`]/[`record_request_error`] are the only places that
+/// declare the standard HTTP fields. Keep it that way: `tracing` permits duplicate field
+/// names on one span, while OpenTelemetry attribute keys must be unique, so application code
+/// must not redeclare these fields on the same span.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the client module is private, so pub(crate) states the effective reachability"
+)]
+pub(crate) fn http_client_span(
+    method: &'static str,
+    url: &reqwest::Url,
+    path: &str,
+    purpose: &'static str,
+    resend_count: u32,
+) -> Span {
+    let span = debug_span!(
+        target: "kagi::http",
+        "http.client",
+        "otel.name" = %format!("{method} {path}"),
+        "otel.kind" = "client",
+        "http.request.method" = method,
+        "url.full" = %span_url(url),
+        "url.scheme" = url.scheme(),
+        "server.address" = field::Empty,
+        "server.port" = field::Empty,
+        "network.protocol.name" = "http",
+        "kagi.search.request" = purpose,
+        "http.request.resend_count" = field::Empty,
+        "http.response.status_code" = field::Empty,
+        "network.protocol.version" = field::Empty,
+        "error.type" = field::Empty,
+        "otel.status_code" = field::Empty,
+    );
+
+    if let Some(host) = url.host_str() {
+        span.record("server.address", host);
+    }
+    if let Some(port) = url.port_or_known_default() {
+        span.record("server.port", port);
+    }
+
+    if resend_count > 0 {
+        span.record("http.request.resend_count", resend_count);
+    }
+
+    span
+}
+
+/// Records the response facts carried by an HTTP client span.
+///
+/// A 4xx or 5xx status marks the span as failed for a client, as the stable HTTP semantic
+/// conventions require; 1xx–3xx leave the status unset.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the client module is private, so pub(crate) states the effective reachability"
+)]
+pub(crate) fn record_response(span: &Span, response: &reqwest::Response) {
+    let status = response.status();
+    span.record("http.response.status_code", status.as_u16());
+
+    if let Some(version) = protocol_version(response.version()) {
+        span.record("network.protocol.version", version);
+    }
+
+    if status.is_client_error() || status.is_server_error() {
+        span.record("error.type", field::display(status.as_u16()));
+        span.record("otel.status_code", "ERROR");
+    }
+}
+
+/// Records a failed request on its HTTP client span.
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the client module is private, so pub(crate) states the effective reachability"
+)]
+pub(crate) fn record_request_error(span: &Span, error: &RequestError) {
+    if let Some(status) = error.status() {
+        span.record("http.response.status_code", status.as_u16());
+        span.record("error.type", field::display(status.as_u16()));
+    } else {
+        span.record("error.type", error.error_type());
+    }
+
+    span.record("otel.status_code", "ERROR");
+}
+
+/// Maps an HTTP version to the `network.protocol.version` value, or `None` when it is unknown.
+const fn protocol_version(version: reqwest::Version) -> Option<&'static str> {
+    match version {
+        reqwest::Version::HTTP_09 => Some("0.9"),
+        reqwest::Version::HTTP_10 => Some("1.0"),
+        reqwest::Version::HTTP_11 => Some("1.1"),
+        reqwest::Version::HTTP_2 => Some("2"),
+        reqwest::Version::HTTP_3 => Some("3"),
+        _ => None,
+    }
+}
+
+/// Renders `url` for a span with its userinfo, fragment, and query values redacted.
+///
+/// Query parameter names are kept because they identify the kind of request (`token`, `q`,
+/// `nonce`), but their values never reach telemetry.
+fn span_url(url: &reqwest::Url) -> String {
+    let mut sanitized = url.clone();
+    sanitized.set_fragment(None);
+    let _ = sanitized.set_username("");
+    let _ = sanitized.set_password(None);
+
+    if sanitized.query().is_some() {
+        let keys: Vec<String> = sanitized
+            .query_pairs()
+            .map(|(key, _)| key.into_owned())
+            .collect();
+        let mut query = sanitized.query_pairs_mut();
+        query.clear();
+        for key in keys {
+            query.append_pair(&key, "REDACTED");
+        }
+    }
+
+    sanitized.to_string()
 }
 
 /// The base duration of the exponential backoff between session fetch retries.
@@ -305,6 +433,15 @@ impl Client {
     #[must_use]
     pub const fn max_sessions(&self) -> usize {
         self.max_sessions
+    }
+
+    /// Returns the search authentication mode for span fields.
+    const fn authentication(&self) -> &'static str {
+        if self.privacy_pass.is_some() {
+            "privacy_pass"
+        } else {
+            "session"
+        }
     }
 
     /// Produces a fresh session: checks a slot out of the pool and returns a lease holding the
@@ -643,6 +780,7 @@ impl Client {
             &format!("socket/{endpoint}"),
             &[("q", query)],
         );
+        let span = http_client_span("GET", &url, &format!("/socket/{endpoint}"), "stream", 0);
         let referer = url_with_query(&self.base_url, endpoint, &[("q", query)]);
         let req = stream_request(lease.http(), &self.token, &self.language, url)
             .header(REFERER, referer.as_str());
@@ -652,15 +790,18 @@ impl Client {
             req
         };
 
-        debug!(%endpoint, "connecting to stream");
-        let res = req
-            .send()
-            .await
-            .map_err(|error| Error::StreamRequest(log_request_error(error)))?;
+        let res = req.send().instrument(span.clone()).await.map_err(|error| {
+            let error = log_request_error(error);
+            record_request_error(&span, &error);
+
+            Error::StreamRequest(error)
+        })?;
+        record_response(&span, &res);
         let res = match res.error_for_status() {
             Ok(res) => res,
             Err(error) => {
                 let error = log_request_error(error);
+                record_request_error(&span, &error);
 
                 // A rejected session is dropped: the next request re-establishes
                 // it, after the slot's backoff. Other statuses keep the session —
@@ -672,10 +813,12 @@ impl Client {
                 return Err(Error::StreamStatus(error));
             }
         };
-        let body = res
-            .text()
-            .await
-            .map_err(|error| Error::StreamRequestBody(log_request_error(error)))?;
+        let body = res.text().instrument(span.clone()).await.map_err(|error| {
+            let error = log_request_error(error);
+            record_request_error(&span, &error);
+
+            Error::StreamRequestBody(error)
+        })?;
 
         Ok(body)
     }
@@ -689,10 +832,12 @@ impl Client {
         endpoint: &str,
         query: &str,
     ) -> Result<String, Error> {
-        let mut retried = false;
+        let mut resend_count = 0;
 
         loop {
-            let result = self.privacy_pass_once(privacy_pass, endpoint, query).await;
+            let result = self
+                .privacy_pass_once(privacy_pass, endpoint, query, resend_count)
+                .await;
             let retry = match &result {
                 Err(Error::StreamStatus(error) | Error::RequestNonce(error)) => {
                     error.status().is_some_and(invalidates_session)
@@ -700,11 +845,11 @@ impl Client {
                 _ => false,
             };
 
-            if !retry || retried {
+            if !retry || resend_count > 0 {
                 return result;
             }
 
-            retried = true;
+            resend_count = 1;
             privacy_pass
                 .reset_and_replenish()
                 .await
@@ -718,9 +863,10 @@ impl Client {
         privacy_pass: &Arc<PrivacyPassClient>,
         endpoint: &str,
         query: &str,
+        resend_count: u32,
     ) -> Result<String, Error> {
         let nonce = self
-            .privacy_pass_nonce(privacy_pass, endpoint, query)
+            .privacy_pass_nonce(privacy_pass, endpoint, query, resend_count)
             .await?;
         let token = privacy_pass
             .acquire_token()
@@ -730,6 +876,13 @@ impl Client {
             &self.base_url,
             &format!("socket/{endpoint}"),
             &[("q", query)],
+        );
+        let span = http_client_span(
+            "GET",
+            &url,
+            &format!("/socket/{endpoint}"),
+            "privacy_pass_stream",
+            resend_count,
         );
         // The extension removes the referer and overrides the fetch site; both can link
         // otherwise separate searches.
@@ -742,18 +895,25 @@ impl Client {
         .query(&[("nonce", nonce)]);
         let req = PrivacyPassClient::authorize(req, &token).map_err(Error::PrivacyPass)?;
 
-        debug!(%endpoint, "connecting to stream with Privacy Pass");
-        let res = req
-            .send()
-            .await
-            .map_err(|error| Error::StreamRequest(log_request_error(error)))?;
-        let res = res
-            .error_for_status()
-            .map_err(|error| Error::StreamStatus(log_request_error(error)))?;
-        let body = res
-            .text()
-            .await
-            .map_err(|error| Error::StreamRequestBody(log_request_error(error)))?;
+        let res = req.send().instrument(span.clone()).await.map_err(|error| {
+            let error = log_request_error(error);
+            record_request_error(&span, &error);
+
+            Error::StreamRequest(error)
+        })?;
+        record_response(&span, &res);
+        let res = res.error_for_status().map_err(|error| {
+            let error = log_request_error(error);
+            record_request_error(&span, &error);
+
+            Error::StreamStatus(error)
+        })?;
+        let body = res.text().instrument(span.clone()).await.map_err(|error| {
+            let error = log_request_error(error);
+            record_request_error(&span, &error);
+
+            Error::StreamRequestBody(error)
+        })?;
 
         Ok(body)
     }
@@ -764,12 +924,20 @@ impl Client {
         privacy_pass: &Arc<PrivacyPassClient>,
         endpoint: &str,
         query: &str,
+        resend_count: u32,
     ) -> Result<String, Error> {
         let token = privacy_pass
             .acquire_token()
             .await
             .map_err(Error::PrivacyPass)?;
         let url = url_with_query(&self.base_url, endpoint, &[("q", query)]);
+        let span = http_client_span(
+            "GET",
+            &url,
+            &format!("/{endpoint}"),
+            "privacy_pass_document",
+            resend_count,
+        );
         let req = browser_document_request(
             privacy_pass.http(),
             &self.language,
@@ -779,19 +947,35 @@ impl Client {
         );
         let req = PrivacyPassClient::authorize(req, &token).map_err(Error::PrivacyPass)?;
 
-        let res = req
-            .send()
-            .await
-            .map_err(|error| Error::RequestNonce(log_request_error(error)))?;
-        if let Err(error) = res.error_for_status_ref() {
-            return Err(Error::RequestNonce(log_request_error(error)));
-        }
-        let body = res
-            .text()
-            .await
-            .map_err(|error| Error::ReadNonce(log_request_error(error)))?;
+        let res = req.send().instrument(span.clone()).await.map_err(|error| {
+            let error = log_request_error(error);
+            record_request_error(&span, &error);
 
-        extract_nonce(&body).ok_or(Error::Nonce)
+            Error::RequestNonce(error)
+        })?;
+        record_response(&span, &res);
+        if let Err(error) = res.error_for_status_ref() {
+            let error = log_request_error(error);
+            record_request_error(&span, &error);
+
+            return Err(Error::RequestNonce(error));
+        }
+        let body = res.text().instrument(span.clone()).await.map_err(|error| {
+            let error = log_request_error(error);
+            record_request_error(&span, &error);
+
+            Error::ReadNonce(error)
+        })?;
+
+        extract_nonce(&body).map_or_else(
+            || {
+                span.record("error.type", "nonce_missing");
+                span.record("otel.status_code", "ERROR");
+
+                Err(Error::Nonce)
+            },
+            Ok,
+        )
     }
 
     /// Searches Kagi with the given query and returns the parsed search results.
@@ -801,15 +985,27 @@ impl Client {
     /// Returns an [`Error`] if a session could not be established, the stream request could not
     /// be sent, the response could not be read, or the response could not be parsed.
     pub async fn search(&self, query: &str) -> Result<Vec<SearchResult>, Error> {
-        let body = self.stream_body("search", query).await?;
+        let span = search_span("search", self.authentication(), query);
+        let result = async {
+            let body = self.stream_body("search", query).await?;
 
-        tokio::task::spawn_blocking(move || {
-            let messages = parse_stream(&body);
+            let parse_span = Span::current();
+            tokio::task::spawn_blocking(move || {
+                parse_span.in_scope(|| {
+                    let messages = parse_stream(&body);
 
-            parse_search_result_messages(&messages)
-        })
-        .await
-        .map_err(Error::ParseTask)
+                    parse_search_result_messages(&messages)
+                })
+            })
+            .await
+            .map_err(Error::ParseTask)
+        }
+        .instrument(span.clone())
+        .await;
+
+        record_search_result(&span, &result);
+
+        result
     }
 
     /// Searches Kagi images with the given query and returns the parsed image results.
@@ -819,22 +1015,68 @@ impl Client {
     /// Returns an [`Error`] if a session could not be established, the stream request could not
     /// be sent, the response could not be read, or the response could not be parsed.
     pub async fn images(&self, query: &str) -> Result<Vec<ImageResult>, Error> {
-        let body = self.stream_body("images", query).await?;
+        let span = search_span("images", self.authentication(), query);
+        let result = async {
+            let body = self.stream_body("images", query).await?;
 
-        tokio::task::spawn_blocking(move || {
-            let messages = parse_stream(&body);
+            let parse_span = Span::current();
+            tokio::task::spawn_blocking(move || {
+                parse_span.in_scope(|| {
+                    let messages = parse_stream(&body);
 
-            parse_image_result_messages(&messages)
-        })
-        .await
-        .map_err(Error::ParseTask)
+                    parse_image_result_messages(&messages)
+                })
+            })
+            .await
+            .map_err(Error::ParseTask)
+        }
+        .instrument(span.clone())
+        .await;
+
+        record_search_result(&span, &result);
+
+        result
+    }
+}
+
+/// Builds the internal span for a search operation.
+///
+/// The span is explicit rather than `#[instrument]` so later `record` calls target this span
+/// even when a filter disables it; `Span::current()` would otherwise fall back to the parent
+/// and append the same field to it. The custom fields are prefixed with `kagi.` because
+/// OpenTelemetry has no search convention yet and attribute keys must remain unique.
+fn search_span(endpoint: &'static str, authentication: &'static str, query: &str) -> Span {
+    debug_span!(
+        target: "kagi::search",
+        "search",
+        "otel.name" = endpoint,
+        "otel.kind" = "internal",
+        "kagi.search.endpoint" = endpoint,
+        "kagi.search.authentication" = authentication,
+        "kagi.search.query.length" = query.chars().count(),
+        "kagi.search.result_count" = field::Empty,
+        "error.type" = field::Empty,
+        "otel.status_code" = field::Empty,
+    )
+}
+
+/// Records the result count or failure on the search span that owns the operation.
+fn record_search_result<T>(span: &Span, result: &Result<Vec<T>, Error>) {
+    match result {
+        Ok(results) => {
+            span.record("kagi.search.result_count", results.len());
+        }
+        Err(error) => {
+            span.record("error.type", error.error_type());
+            span.record("otel.status_code", "ERROR");
+        }
     }
 }
 
 /// Fetches a fresh session with the given session HTTP client: issues a request with the login
-/// token to receive the session cookies — the token is part of the query string, so the
-/// request is intentionally not logged — and then requests the target search or images
-/// document to extract the nonce for the document's first stream request.
+/// token to receive the session cookies — the token is part of the query string, which the
+/// span redacts — and then requests the target search or images document to extract the nonce
+/// for the document's first stream request.
 async fn http_fetch_session(
     http: &reqwest::Client,
     base_url: &reqwest::Url,
@@ -844,7 +1086,7 @@ async fn http_fetch_session(
     query: &str,
 ) -> Result<String, Error> {
     let token_url = url_with_query(base_url, "search", &[("token", token.expose_secret())]);
-    debug!("requesting session cookies");
+    let span = http_client_span("GET", &token_url, "/search", "session_cookie", 0);
 
     let res = document_request(
         http,
@@ -855,19 +1097,39 @@ async fn http_fetch_session(
         None,
     )
     .send()
+    .instrument(span.clone())
     .await
-    .map_err(|error| Error::RequestSession(log_request_error(error)))?;
+    .map_err(|error| {
+        let error = log_request_error(error);
+        record_request_error(&span, &error);
+
+        Error::RequestSession(error)
+    })?;
+    record_response(&span, &res);
     if let Err(error) = res.error_for_status_ref() {
-        return Err(Error::RequestSession(log_request_error(error)));
+        let error = log_request_error(error);
+        record_request_error(&span, &error);
+
+        return Err(Error::RequestSession(error));
     }
     if !sets_session_cookie(res.headers()) {
-        error!("the response does not include a kagi_session cookie!");
+        span.record("error.type", "missing_session_cookie");
+        span.record("otel.status_code", "ERROR");
+
+        // The returned error tells the caller what happened; the span carries the failure
+        // without emitting a second error-level event from this library.
         return Err(Error::SessionCookies);
     }
 
     // Mirror the browser: the nonce is the target document's trace ID, not the landing page's.
-    debug!(%endpoint, "requesting document nonce");
     let document_url = url_with_query(base_url, endpoint, &[("q", query)]);
+    let span = http_client_span(
+        "GET",
+        &document_url,
+        &format!("/{endpoint}"),
+        "document_nonce",
+        0,
+    );
     let res = document_request(
         http,
         token,
@@ -877,17 +1139,37 @@ async fn http_fetch_session(
         Some(base_url.as_str()),
     )
     .send()
+    .instrument(span.clone())
     .await
-    .map_err(|error| Error::RequestNonce(log_request_error(error)))?;
-    if let Err(error) = res.error_for_status_ref() {
-        return Err(Error::RequestNonce(log_request_error(error)));
-    }
-    let body = res
-        .text()
-        .await
-        .map_err(|error| Error::ReadNonce(log_request_error(error)))?;
+    .map_err(|error| {
+        let error = log_request_error(error);
+        record_request_error(&span, &error);
 
-    extract_nonce(&body).ok_or(Error::Nonce)
+        Error::RequestNonce(error)
+    })?;
+    record_response(&span, &res);
+    if let Err(error) = res.error_for_status_ref() {
+        let error = log_request_error(error);
+        record_request_error(&span, &error);
+
+        return Err(Error::RequestNonce(error));
+    }
+    let body = res.text().instrument(span.clone()).await.map_err(|error| {
+        let error = log_request_error(error);
+        record_request_error(&span, &error);
+
+        Error::ReadNonce(error)
+    })?;
+
+    extract_nonce(&body).map_or_else(
+        || {
+            span.record("error.type", "nonce_missing");
+            span.record("otel.status_code", "ERROR");
+
+            Err(Error::Nonce)
+        },
+        Ok,
+    )
 }
 
 /// Returns whether the response sets the `kagi_session` cookie that authenticates the session.
@@ -1154,6 +1436,24 @@ mod tests {
             url_with_query(&client.base_url, "socket/search", &[("q", "hello world")]).as_str(),
             "https://example.com/kagi/socket/search?q=hello+world"
         );
+    }
+
+    #[test]
+    fn span_urls_redact_query_values_and_userinfo() {
+        let url = reqwest::Url::parse(
+            "https://user:password@example.com:8443/path?token=secret&q=hello#fragment",
+        )
+        .expect("the test URL parses");
+
+        let sanitized = span_url(&url);
+
+        assert_eq!(
+            sanitized,
+            "https://example.com:8443/path?token=REDACTED&q=REDACTED"
+        );
+        for secret in ["user", "password", "secret", "hello", "fragment"] {
+            assert!(!sanitized.contains(secret), "{sanitized}");
+        }
     }
 
     #[test]

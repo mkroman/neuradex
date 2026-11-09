@@ -8,10 +8,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
-use tracing_subscriber::EnvFilter;
 
 #[cfg(feature = "docs")]
 mod export;
+mod otel;
 
 use neuradex::config::Config;
 use neuradex::http;
@@ -20,12 +20,15 @@ use neuradex::state::AppState;
 /// The duration before an HTTP request times out, shared with the Kagi client.
 const REQUEST_TIMEOUT: Duration = kagi::HTTP_TIMEOUT;
 
+/// The environment variable selecting JSON log output.
+const LOG_FORMAT_ENV: &str = "LOG_FORMAT";
+
 /// A small API service implementing tools for LLM agents.
 #[derive(Parser)]
 #[command(
     name = "neuradex",
     version,
-    after_help = "Environment:\n  KAGI_SESSION_TOKEN   the Kagi session token; required to serve, never for export-docs\n  LISTEN_ADDR          the address to bind to (default: 127.0.0.1:8080)\n  USER_AGENT           the user agent sent with fetches (default: a current Firefox one)\n  KAGI_MAX_SESSIONS    simultaneous searches (default: 2)\n  KAGI_PRIVACY_PASS    use anonymous Privacy Pass search tokens (default: true)\n"
+    after_help = "Environment:\n  KAGI_SESSION_TOKEN   the Kagi session token; required to serve, never for export-docs\n  LISTEN_ADDR          the address to bind to (default: 127.0.0.1:8080)\n  USER_AGENT           the user agent sent with fetches (default: a current Firefox one)\n  KAGI_MAX_SESSIONS    simultaneous searches (default: 2)\n  KAGI_PRIVACY_PASS    use anonymous Privacy Pass search tokens (default: true)\n  RUST_LOG             tracing filter (default: info)\n  LOG_FORMAT           text or json for the log line format (default: text)\n  OTEL_SERVICE_NAME    service.name resource attribute (default: neuradex)\n  OTEL_RESOURCE_ATTRIBUTES  extra resource attributes, e.g. deployment.environment.name=production\n  OTEL_EXPORTER_OTLP_ENDPOINT  OTLP/HTTP endpoint for traces and logs; unset disables export\n  OTEL_TRACES_EXPORTER / OTEL_LOGS_EXPORTER  set none to disable a signal\n  OTEL_SDK_DISABLED    set true to disable OpenTelemetry entirely\n"
 )]
 struct Cli {
     /// The subcommand to run; without one, the HTTP service is served.
@@ -75,6 +78,19 @@ fn export_docs(_arguments: &ExportDocsArgs) -> Result<(), Box<dyn std::error::Er
     Err("this binary was built without the docs feature; rebuild with --features docs".into())
 }
 
+#[cfg(test)]
+mod log_format_tests {
+    use super::is_json_format;
+
+    #[test]
+    fn selects_json_logs() {
+        assert!(is_json_format(Some("json")));
+        assert!(is_json_format(Some(" JSON ")));
+        assert!(!is_json_format(Some("text")));
+        assert!(!is_json_format(None));
+    }
+}
+
 #[cfg(all(test, feature = "docs"))]
 mod tests {
     use super::*;
@@ -101,11 +117,19 @@ mod tests {
     }
 }
 
+/// Whether `LOG_FORMAT` selects JSON output.
+fn json_logs() -> bool {
+    is_json_format(std::env::var(LOG_FORMAT_ENV).ok().as_deref())
+}
+
+/// Whether `value` selects JSON output, ignoring ASCII case.
+fn is_json_format(value: Option<&str>) -> bool {
+    value.is_some_and(|value| value.trim().eq_ignore_ascii_case("json"))
+}
+
 /// Builds the application state and serves the HTTP service.
 fn serve() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+    let telemetry = otel::init(json_logs())?;
 
     // Keep the startup errors the CLI printed before the config extraction: the plain message,
     // not the error type's `Debug` representation.
@@ -114,7 +138,12 @@ fn serve() -> Result<(), Box<dyn std::error::Error>> {
         Err(error) => return Err(error.to_string().into()),
     };
     tracing::info!(
-        privacy_pass = config.privacy_pass,
+        "neuradex.search.authentication" = if config.privacy_pass {
+            "privacy_pass"
+        } else {
+            "session"
+        },
+        "neuradex.search.max_sessions" = config.max_sessions,
         "Kagi search authentication configured"
     );
 
@@ -128,5 +157,8 @@ fn serve() -> Result<(), Box<dyn std::error::Error>> {
         config.privacy_pass,
     )?;
 
-    Ok(runtime.block_on(http::serve(state, config.listen_addr))?)
+    let served = runtime.block_on(http::serve(state, config.listen_addr));
+    telemetry.shutdown();
+
+    Ok(served?)
 }
