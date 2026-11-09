@@ -94,6 +94,11 @@ userAgent: ""
 ## session-cookie search authentication; the session token is required for issuance either way.
 privacyPass: true
 
+## @param kagiMaxSessions Maximum number of simultaneous searches. Bounds concurrency in both
+## authentication modes (Privacy Pass and session cookie); additional requests queue until a slot
+## frees up.
+kagiMaxSessions: 2
+
 ## @param rustLog RUST_LOG consumed by the tracing EnvFilter. Examples: `info`,
 ## `neuradex=debug,hyper=warn`.
 rustLog: "info"

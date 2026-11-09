@@ -83,6 +83,8 @@ spec:
             {{- end }}
             - name: KAGI_PRIVACY_PASS
               value: {{ .Values.privacyPass | quote }}
+            - name: KAGI_MAX_SESSIONS
+              value: {{ .Values.kagiMaxSessions | quote }}
             - name: KAGI_SESSION_TOKEN
               valueFrom:
                 secretKeyRef:
