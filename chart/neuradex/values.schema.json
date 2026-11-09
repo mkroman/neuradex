@@ -133,6 +133,12 @@
       "default": true,
       "description": "Use anonymous Privacy Pass tokens for searches. Disable to fall back to session-cookie search authentication; the session token is required for issuance either way."
     },
+    "kagiMaxSessions": {
+      "type": "integer",
+      "default": 2,
+      "minimum": 1,
+      "description": "Maximum number of simultaneous searches. Bounds concurrency in both authentication modes (Privacy Pass and session cookie); additional requests queue until a slot frees up."
+    },
     "rustLog": {
       "type": "string",
       "default": "info",
