@@ -41,4 +41,15 @@ spec:
           protocol: TCP
         - port: 443
           protocol: TCP
+    {{- with .Values.extraNetworkPolicyEgress }}
+    # Extra egress rules, for example an OTLP collector on its default port 4318:
+    #   extraNetworkPolicyEgress:
+    #     - to:
+    #         - ipBlock:
+    #             cidr: 0.0.0.0/0
+    #       ports:
+    #         - port: 4318
+    #           protocol: TCP
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 {{- end }}

@@ -51,7 +51,7 @@ Also in CI: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-fe
 - Helm chart `chart/neuradex`: `helm lint`/`template` fail unless `--set kagiSessionToken=ci-dummy` or `--set existingSecret=<name>` is passed.
 - `deployment-test.yaml` builds the image, installs the chart into kind, and pipes `hack/smoke-test.sh` into a curl pod. Update the script when you change `/healthz`, `/v1/fetch`, `/openapi.json` or `/docs`.
 - The image binds `LISTEN_ADDR=0.0.0.0:8080`. Runtime is distroless (CA bundle required by kagi's rustls-platform-verifier). The Docker build copies only `Cargo.toml`, `Cargo.lock` and `crates/` (and `.dockerignore` excludes `support/`, `chart/` etc.), so anything else the build needs must be added to the `Dockerfile`.
-- The chart's NetworkPolicy is on by default and only allows egress to DNS (53) and ports 80/443: fetches of URLs on other ports fail in-cluster but work locally.
+- The chart's NetworkPolicy is on by default and only allows egress to DNS (53) and ports 80/443: fetches of URLs on other ports fail in-cluster but work locally. Other egress (e.g. an OTLP collector on 4318) needs an `extraNetworkPolicyEgress` rule.
 - CI tool versions and checksums: `hack/tools.txt`; Docker build tools: `hack/docker-tools.txt`. Both are Renovate-managed; install with `hack/install-tools.sh`. In `tools.txt`, keep `repo`/`version`/`sha256` contiguous, because Renovate's regex depends on it.
 - `ci-success` is the branch-protection check. `zizmor` audits workflows (third-party actions must be SHA-pinned).
 

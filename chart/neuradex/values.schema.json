@@ -153,7 +153,7 @@
     "otelExporterOtlpEndpoint": {
       "type": "string",
       "default": "",
-      "description": "OTLP/HTTP endpoint for traces and logs. Empty disables export."
+      "description": "OTLP/HTTP endpoint for traces and logs. Empty disables export. The default NetworkPolicy only allows egress on ports 80/443 (plus DNS); allow the collector's port with extraNetworkPolicyEgress."
     },
     "otelResourceAttributes": {
       "type": "string",
@@ -320,6 +320,27 @@
       "type": "array",
       "default": [],
       "description": "Additional envFrom sources (ConfigMap/Secret refs)."
+    },
+    "extraNetworkPolicyEgress": {
+      "type": "array",
+      "default": [],
+      "description": "Extra egress rules appended to the NetworkPolicy (standard NetworkPolicyEgressRule objects, e.g. an OTLP collector on port 4318). Without a rule, egress is limited to DNS (53) and ports 80/443.",
+      "items": {
+        "type": "object",
+        "description": "A NetworkPolicyEgressRule.",
+        "properties": {
+          "ports": {
+            "type": "array",
+            "description": "Destination ports for the rule.",
+            "items": {"type": "object"}
+          },
+          "to": {
+            "type": "array",
+            "description": "Destinations (podSelector, namespaceSelector, or ipBlock).",
+            "items": {"type": "object"}
+          }
+        }
+      }
     },
     "extraVolumes": {
       "type": "array",
