@@ -136,6 +136,7 @@ fn serve() -> Result<(), Box<dyn std::error::Error>> {
         })?,
         Err(_) => true,
     };
+    tracing::info!(privacy_pass, "Kagi search authentication configured");
     let kagi_token = env::var(KAGI_TOKEN_ENV)
         .ok()
         .filter(|token| !token.is_empty())

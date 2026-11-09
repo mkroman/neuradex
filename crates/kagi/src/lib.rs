@@ -59,7 +59,8 @@ pub use client::Client;
 pub use error::{Error, RequestError};
 pub use model::{ImageResult, SearchResult};
 pub use privacy_pass::{
-    PrivacyPassClient, PrivacyPassError, PrivacyPassOptions, PrivacyToken, TokenStore,
+    MAX_TOKENS_PER_BATCH, PrivacyPassClient, PrivacyPassError, PrivacyPassOptions, PrivacyToken,
+    TokenStore,
 };
 
 /// Kagi base URL.

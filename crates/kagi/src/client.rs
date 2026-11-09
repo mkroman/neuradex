@@ -180,6 +180,9 @@ impl Drop for SessionLease {
 /// up. Sessions expire independently and are refreshed with a new nonce after their own
 /// duration; a stream response rejecting the session's credentials (401/403) drops the session
 /// so the next request re-establishes it.
+///
+/// With [`ClientOptions::privacy_pass`] set, searches redeem anonymous Privacy Pass tokens
+/// instead and the session pool is not used.
 pub struct Client {
     /// Kagi login token.
     token: Arc<SecretString>,
@@ -675,8 +678,10 @@ impl Client {
             }
 
             retried = true;
-            privacy_pass.clear();
-            privacy_pass.replenish().await.map_err(Error::PrivacyPass)?;
+            privacy_pass
+                .reset_and_replenish()
+                .await
+                .map_err(Error::PrivacyPass)?;
         }
     }
 
@@ -699,11 +704,15 @@ impl Client {
             &format!("socket/{endpoint}"),
             &[("q", query)],
         );
-        let req = browser_stream_request(privacy_pass.http(), &self.language, url)
-            .query(&[("nonce", nonce)])
-            // The extension removes the referer and overrides the fetch site; both can link
-            // otherwise separate searches.
-            .header("Sec-Fetch-Site", HeaderValue::from_static("none"));
+        // The extension removes the referer and overrides the fetch site; both can link
+        // otherwise separate searches.
+        let req = browser_stream_request(
+            privacy_pass.http(),
+            &self.language,
+            url,
+            HeaderValue::from_static("none"),
+        )
+        .query(&[("nonce", nonce)]);
         let req = PrivacyPassClient::authorize(req, &token).map_err(Error::PrivacyPass)?;
 
         debug!(%endpoint, "connecting to stream with Privacy Pass");
@@ -929,21 +938,28 @@ fn stream_request(
     language: &HeaderValue,
     url: reqwest::Url,
 ) -> reqwest::RequestBuilder {
-    authorize(browser_stream_request(http, language, url), token)
+    authorize(
+        browser_stream_request(http, language, url, HeaderValue::from_static("same-origin")),
+        token,
+    )
 }
 
 /// Builds an `EventSource`-shaped request without authentication headers.
+///
+/// `site` is the request's `Sec-Fetch-Site` value: `same-origin` for the session path and
+/// `none` for Privacy Pass redemption.
 fn browser_stream_request(
     http: &reqwest::Client,
     language: &HeaderValue,
     url: reqwest::Url,
+    site: HeaderValue,
 ) -> reqwest::RequestBuilder {
     http.get(url)
         .header(ACCEPT, ACCEPT_EVENT_STREAM)
         .header(ACCEPT_LANGUAGE, language.clone())
         .header("Sec-Fetch-Dest", HeaderValue::from_static("empty"))
         .header("Sec-Fetch-Mode", HeaderValue::from_static("cors"))
-        .header("Sec-Fetch-Site", HeaderValue::from_static("same-origin"))
+        .header("Sec-Fetch-Site", site)
         .header(PRAGMA, HeaderValue::from_static("no-cache"))
         .header(CACHE_CONTROL, HeaderValue::from_static("no-cache"))
         .header("Priority", HeaderValue::from_static("u=4"))

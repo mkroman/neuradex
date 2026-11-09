@@ -4,9 +4,12 @@
 //! responders redeem the `Authorization` header of both the document and stream requests, so a
 //! token that is not correctly blinded, unblinded, or bound to the challenge fails the test.
 
+use std::time::Duration;
+
 use kagi::SearchResult;
 use test_support::httpmock::Mock;
 use test_support::privacy_pass::PrivacyPassHarness;
+use tokio::time::{sleep, timeout};
 
 /// The query used by the stream fixtures.
 const QUERY: &str = "hello world";
@@ -124,5 +127,77 @@ async fn search_issues_another_batch_when_the_store_runs_out() {
     assert_eq!(results.len(), 5);
 
     // A batch of one cannot cover the document and the stream, so issuance runs twice.
+    flow.assert_batches(2);
+}
+
+#[tokio::test]
+async fn search_retries_when_the_document_is_rejected() {
+    let harness = PrivacyPassHarness::start();
+    let forbidden = harness.mock_session_path_forbidden();
+    let challenge = harness.mock_challenge();
+    let issuance = harness.mock_issuance();
+    let (document, stream) = harness.mock_search_flow_with_rejections(QUERY, SEARCH_FIXTURE, 1, 0);
+
+    let results = harness
+        .client()
+        .search(QUERY)
+        .await
+        .expect("the retried privacy pass search succeeds");
+
+    assert_eq!(results.len(), 5);
+    forbidden.assert_calls(0);
+    challenge.assert_calls(2);
+    issuance.assert_calls(2);
+    document.assert_calls(2);
+    stream.assert_calls(1);
+}
+
+#[tokio::test]
+async fn search_retries_when_the_stream_is_rejected() {
+    let harness = PrivacyPassHarness::start();
+    let forbidden = harness.mock_session_path_forbidden();
+    let challenge = harness.mock_challenge();
+    let issuance = harness.mock_issuance();
+    let (document, stream) = harness.mock_search_flow_with_rejections(QUERY, SEARCH_FIXTURE, 0, 1);
+
+    let results = harness
+        .client()
+        .search(QUERY)
+        .await
+        .expect("the retried privacy pass search succeeds");
+
+    assert_eq!(results.len(), 5);
+    forbidden.assert_calls(0);
+    challenge.assert_calls(2);
+    issuance.assert_calls(2);
+    document.assert_calls(2);
+    stream.assert_calls(2);
+}
+
+#[tokio::test]
+async fn the_low_water_mark_starts_a_background_refill() {
+    let harness = PrivacyPassHarness::start();
+    let flow = Flow::search(&harness);
+    // The first search leaves one of the three issued tokens; taking it drops the store below
+    // the low-water mark of two and starts the background refill.
+    let client = harness.client_with_options(3, 8, 2);
+
+    let results = client
+        .search(QUERY)
+        .await
+        .expect("the privacy pass search succeeds");
+
+    assert_eq!(results.len(), 5);
+
+    let privacy_pass = client.privacy_pass().expect("privacy pass is enabled");
+
+    timeout(Duration::from_secs(5), async {
+        while flow.challenge.calls() < 2 || privacy_pass.store().len() < 4 {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the background refill completes");
+
     flow.assert_batches(2);
 }

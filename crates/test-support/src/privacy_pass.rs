@@ -6,6 +6,7 @@
 //! fail the request when a token is invalid or reused.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -72,9 +73,24 @@ impl PrivacyPassHarness {
     ///
     /// # Panics
     ///
-    /// Panics if the test options are invalid; they are compile-time constants.
+    /// Panics if the test client cannot be built.
     #[must_use]
     pub fn client_with_tokens(&self, tokens_to_stash: usize) -> Client {
+        self.client_with_options(tokens_to_stash, tokens_to_stash.max(8), 0)
+    }
+
+    /// Builds a Privacy Pass client with explicit batch size, capacity, and low-water mark.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the test client cannot be built.
+    #[must_use]
+    pub fn client_with_options(
+        &self,
+        tokens_to_stash: usize,
+        max_tokens: usize,
+        low_token_count: usize,
+    ) -> Client {
         Client::with_token_and_options(
             TOKEN,
             &ClientOptions {
@@ -82,9 +98,8 @@ impl PrivacyPassHarness {
                 timeout: Duration::from_secs(5),
                 privacy_pass: Some(PrivacyPassOptions {
                     tokens_to_stash,
-                    max_tokens: tokens_to_stash.max(8),
-                    // Keep refills demand-driven so request counts are deterministic.
-                    low_token_count: 0,
+                    max_tokens,
+                    low_token_count,
                 }),
                 ..ClientOptions::default()
             },
@@ -153,30 +168,62 @@ impl PrivacyPassHarness {
     /// Mocks the search document and stream, redeeming a token for each request.
     #[must_use]
     pub fn mock_search_flow(&self, query: &str, fixture: &str) -> (Mock<'_>, Mock<'_>) {
-        self.mock_flow("search", query, fixture)
+        self.mock_flow("search", query, fixture, 0, 0)
+    }
+
+    /// Mocks a search flow that rejects the first `document_rejections` document requests and
+    /// the first `stream_rejections` stream requests with 401.
+    #[must_use]
+    pub fn mock_search_flow_with_rejections(
+        &self,
+        query: &str,
+        fixture: &str,
+        document_rejections: usize,
+        stream_rejections: usize,
+    ) -> (Mock<'_>, Mock<'_>) {
+        self.mock_flow(
+            "search",
+            query,
+            fixture,
+            document_rejections,
+            stream_rejections,
+        )
     }
 
     /// Mocks the images document and stream, redeeming a token for each request.
     #[must_use]
     pub fn mock_images_flow(&self, query: &str, fixture: &str) -> (Mock<'_>, Mock<'_>) {
-        self.mock_flow("images", query, fixture)
+        self.mock_flow("images", query, fixture, 0, 0)
     }
 
     /// Mocks a document and its socket stream for `endpoint`.
-    fn mock_flow(&self, endpoint: &str, query: &str, fixture: &str) -> (Mock<'_>, Mock<'_>) {
+    fn mock_flow(
+        &self,
+        endpoint: &str,
+        query: &str,
+        fixture: &str,
+        document_rejections: usize,
+        stream_rejections: usize,
+    ) -> (Mock<'_>, Mock<'_>) {
         let document_query = query.to_owned();
         let stream_query = query.to_owned();
         let document_path = format!("/{endpoint}");
         let stream_path = format!("/socket/{endpoint}");
-        let document_responder = authenticated_response(
-            Arc::clone(&self.issuer),
-            crate::kagi::nonce_body(),
-            "text/html; charset=utf-8",
+        let document_responder = rejecting_response(
+            document_rejections,
+            authenticated_response(
+                Arc::clone(&self.issuer),
+                crate::kagi::nonce_body(),
+                "text/html; charset=utf-8",
+            ),
         );
-        let stream_responder = authenticated_response(
-            Arc::clone(&self.issuer),
-            crate::kagi::read_fixture(fixture),
-            "text/event-stream",
+        let stream_responder = rejecting_response(
+            stream_rejections,
+            authenticated_response(
+                Arc::clone(&self.issuer),
+                crate::kagi::read_fixture(fixture),
+                "text/event-stream",
+            ),
         );
 
         let document = self.server.mock(move |when, then| {
@@ -189,7 +236,8 @@ impl PrivacyPassHarness {
                 .header_excludes("authorization", TOKEN)
                 .header_missing("cookie")
                 .header_missing("x-kagi-authorization")
-                .header_missing("referer");
+                .header_missing("referer")
+                .header_count("sec-fetch-site", ".*", 1);
             then.respond_with(document_responder);
         });
 
@@ -205,7 +253,8 @@ impl PrivacyPassHarness {
                 .header_missing("cookie")
                 .header_missing("x-kagi-authorization")
                 .header_missing("referer")
-                .header("sec-fetch-site", "none");
+                .header("sec-fetch-site", "none")
+                .header_count("sec-fetch-site", ".*", 1);
             then.respond_with(stream_responder);
         });
 
@@ -228,6 +277,28 @@ fn authenticated_response(
                 .build()
         } else {
             HttpMockResponse::builder().status(401).build()
+        }
+    }
+}
+
+/// Returns a responder that rejects the first `rejections` requests with 401, then delegates.
+fn rejecting_response(
+    rejections: usize,
+    inner: impl Fn(&HttpMockRequest) -> HttpMockResponse + Send + Sync + 'static,
+) -> impl Fn(&HttpMockRequest) -> HttpMockResponse + Send + Sync + 'static {
+    let remaining = AtomicUsize::new(rejections);
+
+    move |request| {
+        let rejected = remaining
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok();
+
+        if rejected {
+            HttpMockResponse::builder().status(401).build()
+        } else {
+            inner(request)
         }
     }
 }
