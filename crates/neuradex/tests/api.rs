@@ -380,6 +380,71 @@ async fn peek_does_not_wait_for_a_stalled_body_after_the_head() {
 }
 
 #[tokio::test]
+async fn fetch_and_peek_handle_empty_bodies() {
+    let app = TestApp::start();
+    let empty = app.server.mock(|when, then| {
+        when.method("GET").path("/empty");
+        then.status(200).header("content-type", "text/html");
+    });
+
+    let response = app
+        .get(&format!("/v1/fetch?url={}", app.url("/empty")))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = TestApp::json(response).await;
+
+    assert_eq!(body["body"], "");
+    assert_eq!(body["truncated"], false);
+    assert_eq!(body["metrics"]["bytes_read"], 0);
+    assert!(body["metadata"]["title"].is_null());
+
+    let response = app
+        .get(&format!("/v1/peek?url={}", app.url("/empty")))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = TestApp::json(response).await;
+
+    assert_eq!(body["metrics"]["bytes_read"], 0);
+    assert!(body["metadata"]["title"].is_null());
+
+    empty.assert_calls(2);
+}
+
+#[tokio::test]
+async fn fetch_maps_a_body_that_fails_before_any_bytes_to_the_error_envelope() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let app = TestApp::start();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+    let address = listener.local_addr().expect("the bound address");
+
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("one connection");
+        let mut request = [0u8; 1024];
+        let _ = stream.read(&mut request);
+        // Announce a body that never arrives, then close: the very first body read fails.
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: 128\r\n\
+                  connection: close\r\n\r\n",
+            )
+            .expect("the response headers are written");
+        stream.flush().expect("the response is flushed");
+    });
+
+    let response = app.get(&format!("/v1/fetch?url=http://{address}/")).await;
+    let body = TestApp::assert_error(response, StatusCode::BAD_GATEWAY, "upstream_error").await;
+
+    assert_eq!(body["error"]["message"], "the upstream request failed");
+    server.join().expect("the server thread finishes");
+}
+
+#[tokio::test]
 async fn search_returns_kagi_results_and_honors_the_limit() {
     let app = TestApp::start();
     let session = app.mock_kagi_session();
