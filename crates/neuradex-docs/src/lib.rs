@@ -1,10 +1,10 @@
-//! The neuradex documentation page, rendered from an `utoipa::openapi::OpenApi`.
+//! The neuradex documentation page, rendered from serialized OpenAPI JSON.
 //!
 //! This crate is presentation and content in one: it walks the serialized document — the
 //! exact JSON `/openapi.json` serves — to build the page model, bundles the theme's
 //! stylesheets, and renders the askama template into the single self-contained HTML
-//! document the service serves at `/docs`. The utoipa dependency is the object model
-//! only; there is no axum here and no derive-macro machinery.
+//! document the service serves at `/docs`. There is no axum here, no utoipa dependency, and
+//! no derive-macro machinery beyond askama's own templates.
 //!
 //! # Panics
 //!
@@ -27,12 +27,13 @@ mod html;
 mod model;
 mod tree;
 
-/// Renders the complete, self-contained documentation page from `document`.
+/// Renders the complete, self-contained documentation page from the serialized OpenAPI
+/// document.
 ///
-/// The page is the one the service embeds and serves at `/docs`; because it is rendered
-/// from the same document the router derives and `/openapi.json` serves, the three cannot
-/// drift apart. Stylesheets and scripts are inlined — the output needs no external
-/// assets and no runtime spec fetch.
+/// `spec` must be the JSON document served at `/openapi.json`; the page model preserves its
+/// key order. Because the page is rendered from the same document the service serves, the
+/// two cannot drift apart. Stylesheets and scripts are inlined — the output needs no
+/// external assets and no runtime spec fetch.
 ///
 /// In debug builds every call re-reads the theme sources from disk and re-bundles them,
 /// so local edits show up on browser refresh without recompiling; release builds embed
@@ -42,12 +43,11 @@ mod tree;
 ///
 /// # Panics
 ///
-/// Panics only if the document fails to serialize to JSON — practically impossible for a
-/// utoipa-derived document.
+/// Panics if the documentation-page template fails to render; the template is static and
+/// its inputs are already validated, so this should not happen in practice.
 #[must_use]
-pub fn render(document: &utoipa::openapi::OpenApi) -> String {
-    let spec = serde_json::to_value(document).expect("the OpenAPI document serializes to JSON");
-    let page = model::page(&spec);
+pub fn render(spec: &serde_json::Value) -> String {
+    let page = model::page(spec);
     let style = page_style();
 
     let template = PageTemplate {
@@ -91,15 +91,15 @@ struct PageTemplate<'a> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::*;
 
     /// A synthetic document with the same shapes the service produces: tagged operations,
     /// documented query parameters, a referenced response schema, and a self-referencing
     /// schema for the recursion guard.
-    fn document() -> utoipa::openapi::OpenApi {
-        serde_json::from_value(json!({
+    fn document() -> Value {
+        json!({
             "openapi": "3.1.0",
             "info": {
                 "title": "test",
@@ -152,13 +152,12 @@ mod tests {
                           },
                           "required": ["name"]}
             }}
-        }))
-        .expect("the fixture document deserializes")
+        })
     }
 
     /// A document whose operation carries a referenced JSON request body.
-    fn body_document() -> utoipa::openapi::OpenApi {
-        serde_json::from_value(json!({
+    fn body_document() -> Value {
+        json!({
             "openapi": "3.1.0",
             "info": {"title": "test", "version": "1.2.3"},
             "tags": [{"name": "search", "description": "Searching."}],
@@ -194,8 +193,7 @@ mod tests {
                     }
                 }
             }}
-        }))
-        .expect("the fixture document deserializes")
+        })
     }
 
     #[test]
