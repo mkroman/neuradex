@@ -556,7 +556,7 @@
           "bytes_read": {
             "type": "integer",
             "format": "int64",
-            "description": "The number of body bytes read (decompressed).",
+            "description": "The number of decompressed body bytes read from the upstream response.\n\nThis includes bytes discarded when the body is truncated, so it may exceed the length\nof the returned body.",
             "minimum": 0
           },
           "content_length": {
@@ -613,7 +613,7 @@
           },
           "truncated": {
             "type": "boolean",
-            "description": "Whether the response was cut short by a size limit."
+            "description": "Whether the returned body was cut short by a size limit."
           },
           "ttfb_ms": {
             "type": "integer",
