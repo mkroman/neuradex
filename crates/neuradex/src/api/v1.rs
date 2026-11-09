@@ -45,7 +45,9 @@ pub(crate) const MAX_SEARCH_TIMEOUT_SECS: u64 = 30;
 ///
 /// The paths are collected from the `#[utoipa::path]` handlers at build time through
 /// [`utoipa_axum`], so the router and the document cannot drift apart; the document's metadata
-/// (info, tags, schemas) comes from [`openapi::base`].
+/// (info, tags, schemas) comes from [`openapi::base`]. The request tracing middleware is not
+/// applied here: [`router`] applies it once to the finished router, after the infrastructure
+/// endpoints and the fallbacks are registered, so those requests are audited too.
 fn api() -> (Router<Arc<AppState>>, utoipa::openapi::OpenApi) {
     let (router, openapi) = OpenApiRouter::with_openapi(openapi::base())
         .routes(routes!(healthz))
@@ -55,31 +57,48 @@ fn api() -> (Router<Arc<AppState>>, utoipa::openapi::OpenApi) {
         .routes(routes!(openwebui_search::openwebui_search))
         .split_for_parts();
 
-    (router.layer(middleware::from_fn(trace_request)), openapi)
+    (router, openapi)
 }
 
-/// Wraps an API request in a server span and emits one audit event for it.
+/// The path of the health endpoint, exempt from request tracing and audit events: probes are
+/// infrastructure traffic, and auditing each one would only add noise to the log pipeline.
+const HEALTHZ_PATH: &str = "/healthz";
+
+/// Wraps a request in a server span and emits one audit event for it.
 ///
-/// The event is emitted at `INFO` on every request, including failures, so a log pipeline can
-/// retain an unsampled request record independently of trace sampling.
+/// The event is emitted at `INFO` on every request — API calls, infrastructure endpoints, and
+/// the `404`/`405` fallbacks — including failures, so a log pipeline can retain an unsampled
+/// request record independently of trace sampling.
+///
+/// `http.route` is recorded only for matched routes. The fallbacks have no route, and the
+/// conventions forbid falling back to the raw path, which would make the attribute
+/// high-cardinality.
 async fn trace_request(request: Request, next: Next) -> Response {
+    if request.uri().path() == HEALTHZ_PATH {
+        return next.run(request).await;
+    }
+
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
     let route = request
         .extensions()
         .get::<MatchedPath>()
-        .map_or_else(|| path.clone(), |matched| matched.as_str().to_owned());
+        .map(|matched| matched.as_str().to_owned());
     let span = tracing::info_span!(
         target: "neuradex::http",
         "http.server",
         "otel.kind" = "server",
         "http.request.method" = %method,
-        "http.route" = %route,
+        "http.route" = tracing::field::Empty,
         "url.path" = %path,
         "http.response.status_code" = tracing::field::Empty,
         "error.type" = tracing::field::Empty,
         "otel.status_code" = tracing::field::Empty,
     );
+    if let Some(route) = &route {
+        span.record("http.route", route.as_str());
+    }
+
     let started = Instant::now();
     let response = next.run(request).instrument(span.clone()).await;
     let status = response.status();
@@ -97,7 +116,7 @@ async fn trace_request(request: Request, next: Next) -> Response {
             name: "neuradex.http.request",
             tracing::Level::INFO,
             "http.request.method" = %method,
-            "http.route" = %route,
+            "http.route" = route.as_deref(),
             "url.path" = %path,
             "http.response.status_code" = status.as_u16(),
             "neuradex.http.request.duration_ms" = duration_ms(started.elapsed()),
@@ -157,9 +176,12 @@ pub fn router(state: AppState) -> Router {
         .route("/swagger-ui", routing::get(swagger_ui_redirect))
         .route("/swagger-ui/", routing::get(swagger_ui_redirect));
 
+    // The tracing middleware is applied last so it wraps every route and fallback, including
+    // the hand-registered infrastructure endpoints and the 404/405 handlers above.
     router
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
+        .layer(middleware::from_fn(trace_request))
         .with_state(Arc::new(state))
 }
 
@@ -232,6 +254,9 @@ async fn method_not_allowed(method: Method, uri: Uri) -> (StatusCode, Json<Error
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::fmt;
+    use std::sync::Mutex;
     use std::time::Duration;
 
     use axum::body::Body;
@@ -240,8 +265,70 @@ mod tests {
     use secrecy::SecretString;
     use serde_json::{Value, json};
     use tower::ServiceExt;
+    use tracing::field::{Field, Visit};
+    use tracing::{Event, Id, Metadata, Subscriber};
 
     use super::*;
+
+    /// One captured event: its name and its `field name -> rendered value` fields.
+    type CapturedEvent = (String, HashMap<String, String>);
+
+    /// Captures the events emitted through a thread-local subscriber.
+    #[derive(Clone, Default)]
+    struct EventLog(Arc<Mutex<Vec<CapturedEvent>>>);
+
+    impl EventLog {
+        /// Takes the captured events.
+        fn events(&self) -> Vec<CapturedEvent> {
+            self.0
+                .lock()
+                .expect("the event log is not poisoned")
+                .clone()
+        }
+    }
+
+    impl Subscriber for EventLog {
+        fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _attributes: &tracing::span::Attributes<'_>) -> Id {
+            Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+
+        fn event(&self, event: &Event<'_>) {
+            let mut fields = HashMap::new();
+            event.record(&mut FieldCollector(&mut fields));
+
+            self.0
+                .lock()
+                .expect("the event log is not poisoned")
+                .push((event.metadata().name().to_owned(), fields));
+        }
+
+        fn enter(&self, _span: &Id) {}
+
+        fn exit(&self, _span: &Id) {}
+    }
+
+    /// Collects an event's fields into a map of `name -> rendered value`.
+    struct FieldCollector<'a>(&'a mut HashMap<String, String>);
+
+    impl Visit for FieldCollector<'_> {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.0.insert(field.name().to_owned(), value.to_owned());
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+            self.0
+                .entry(field.name().to_owned())
+                .or_insert_with(|| format!("{value:?}"));
+        }
+    }
 
     /// Builds a router around a state constructed with test settings.
     fn router_for_test() -> Router {
@@ -437,6 +524,54 @@ mod tests {
             "method GET is not allowed for /v1/search",
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn audits_every_request_except_health_probes() {
+        let log = EventLog::default();
+        let router = router_for_test();
+
+        {
+            // The thread-local default covers the whole request handling: the test runtime is
+            // current-thread, so the middleware's events are emitted on this thread.
+            let _guard = tracing::subscriber::set_default(log.clone());
+            send(router.clone(), "GET", "/healthz").await;
+            send(router.clone(), "GET", "/nope").await;
+            send(router, "POST", "/v1/search").await;
+        }
+
+        let events = log.events();
+
+        assert!(
+            !events
+                .iter()
+                .any(|(_, fields)| fields.get("url.path").map(String::as_str) == Some("/healthz")),
+            "the health probe was audited: {events:?}"
+        );
+
+        // The unmatched path is audited, but its route must not leak the raw path: the
+        // fallback has no route, and `http.route` must stay low-cardinality.
+        let not_found = events
+            .iter()
+            .find(|(_, fields)| fields.get("url.path").map(String::as_str) == Some("/nope"))
+            .expect("unmatched requests are audited");
+
+        assert_ne!(
+            not_found.1.get("http.route").map(String::as_str),
+            Some("/nope"),
+            "the raw path leaked into http.route: {events:?}"
+        );
+
+        // Matched API routes carry their route template.
+        let search = events
+            .iter()
+            .find(|(_, fields)| fields.get("url.path").map(String::as_str) == Some("/v1/search"))
+            .expect("API requests are audited");
+
+        assert_eq!(
+            search.1.get("http.route").map(String::as_str),
+            Some("/v1/search")
+        );
     }
 
     /// Asserts that `response` is the JSON `invalid_param` envelope for a rejected query or

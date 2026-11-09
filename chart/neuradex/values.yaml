@@ -108,7 +108,8 @@ rustLog: "info"
 logFormat: "json"
 
 ## @param otelExporterOtlpEndpoint OTLP/HTTP endpoint for traces and logs, for example
-## `http://otel-collector:4318`. Empty disables export.
+## `http://otel-collector:4318`. Empty disables export. The default NetworkPolicy only allows
+## egress on ports 80/443 (plus DNS): allow the collector's port with `extraNetworkPolicyEgress`.
 otelExporterOtlpEndpoint: ""
 
 ## @param otelResourceAttributes OTel resource attributes, for example
@@ -180,9 +181,24 @@ readinessProbe:
 ##
 ## Enabled by default: default-deny style policy permitting ingress to
 ## containerPort, and egress to DNS (53) plus HTTP(S) 80/443 — the service
-## fetches arbitrary URLs and talks to Kagi over TLS.
+## fetches arbitrary URLs and talks to Kagi over TLS. Anything else, such as
+## an OTLP collector on port 4318, needs an extra egress rule via
+## `extraNetworkPolicyEgress`.
 networkPolicy:
   enabled: true
+
+## @param extraNetworkPolicyEgress Extra egress rules appended to the NetworkPolicy's egress list
+## when `networkPolicy.enabled` is true. Standard NetworkPolicyEgressRule objects; without a
+## rule, egress is limited to DNS (53) and ports 80/443.
+## Example:
+##   extraNetworkPolicyEgress:
+##     - to:
+##         - ipBlock:
+##             cidr: 0.0.0.0/0
+##       ports:
+##         - port: 4318
+##           protocol: TCP
+extraNetworkPolicyEgress: []
 
 ## @section Ingress parameters
 ingress:
