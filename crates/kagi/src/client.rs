@@ -23,7 +23,11 @@ use super::{ClientOptions, Error, ImageResult, RequestError, SearchResult};
 ///
 /// The failed request is logged once with its redacted URL and error type: the caller reports
 /// the short rendering, so this is the only line that names the request.
-pub fn request_error(error: reqwest::Error) -> RequestError {
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the client module is private, so pub(crate) states the effective reachability"
+)]
+pub(crate) fn log_request_error(error: reqwest::Error) -> RequestError {
     let error = RequestError::from(error);
 
     if let Some(url) = error.url() {
@@ -108,7 +112,7 @@ impl SlotInner {
 
 /// The outcome of checking a slot out of the pool: a parked session (valid or expired) or an
 /// empty slot that must establish one.
-enum CheckOut {
+enum SlotCheckout {
     /// A parked session that is still valid.
     Ready(Arc<Slot>, Session),
     /// A parked session that has expired and needs a refresh.
@@ -297,6 +301,12 @@ impl Client {
         self.privacy_pass.as_deref()
     }
 
+    /// Returns the maximum number of simultaneous searches, as normalized from the options.
+    #[must_use]
+    pub const fn max_sessions(&self) -> usize {
+        self.max_sessions
+    }
+
     /// Produces a fresh session: checks a slot out of the pool and returns a lease holding the
     /// session with its nonce, establishing or refreshing the session if necessary.
     ///
@@ -316,7 +326,7 @@ impl Client {
     /// Returns an [`Error`] if the session could not be established or refreshed.
     async fn acquire(&self, endpoint: &str, query: &str) -> Result<SessionLease, Error> {
         loop {
-            if let Some(checkout) = self.try_check_out() {
+            if let Some(checkout) = self.try_checkout() {
                 return self.prepare(checkout, endpoint, query).await;
             }
 
@@ -365,20 +375,20 @@ impl Client {
     /// establishes a session on an empty slot.
     async fn prepare(
         &self,
-        checkout: CheckOut,
+        checkout: SlotCheckout,
         endpoint: &str,
         query: &str,
     ) -> Result<SessionLease, Error> {
         match checkout {
-            CheckOut::Ready(slot, session) => Ok(self.lease(slot, Some(session))),
-            CheckOut::Expired(slot, session) => {
+            SlotCheckout::Ready(slot, session) => Ok(self.lease(slot, Some(session))),
+            SlotCheckout::Expired(slot, session) => {
                 let mut lease = self.lease(slot, Some(session));
                 let session = self.refresh(&lease.slot, endpoint, query).await?;
                 lease.session = Some(session);
 
                 Ok(lease)
             }
-            CheckOut::Empty(slot) => {
+            SlotCheckout::Empty(slot) => {
                 let mut lease = self.lease(slot, None);
                 let session = self.establish(&lease.slot, endpoint, query).await?;
                 lease.session = Some(session);
@@ -402,8 +412,11 @@ impl Client {
     /// then an empty slot.
     // The pool guard must stay held through the candidate check-out below: dropping it after
     // the scan would let another request take the slot we picked.
-    #[allow(clippy::significant_drop_tightening)]
-    fn try_check_out(&self) -> Option<CheckOut> {
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the pool guard must stay held through the candidate check-out"
+    )]
+    fn try_checkout(&self) -> Option<SlotCheckout> {
         let slots = self.slots.lock().expect("the session lock is not poisoned");
         let mut expired = None;
         let mut empty = None;
@@ -423,7 +436,7 @@ impl Client {
                 let session = inner.check_out().expect("a valid session was parked");
                 drop(inner);
 
-                return Some(CheckOut::Ready(Arc::clone(slot), session));
+                return Some(SlotCheckout::Ready(Arc::clone(slot), session));
             }
 
             if inner.session.is_some() {
@@ -440,7 +453,7 @@ impl Client {
             let session = inner.check_out().expect("an expired session was parked");
             drop(inner);
 
-            return Some(CheckOut::Expired(slot, session));
+            return Some(SlotCheckout::Expired(slot, session));
         }
 
         if let Some(slot) = empty {
@@ -449,7 +462,7 @@ impl Client {
                 .expect("the session lock is not poisoned")
                 .check_out();
 
-            return Some(CheckOut::Empty(slot));
+            return Some(SlotCheckout::Empty(slot));
         }
 
         None
@@ -489,7 +502,7 @@ impl Client {
             .timeout(self.timeout)
             .user_agent(self.user_agent.clone())
             .build()
-            .map_err(|error| Error::BuildClient(request_error(error)))?;
+            .map_err(|error| Error::BuildClient(log_request_error(error)))?;
 
         let slot = Arc::new(Slot {
             inner: Mutex::new(SlotInner {
@@ -643,11 +656,11 @@ impl Client {
         let res = req
             .send()
             .await
-            .map_err(|error| Error::StreamRequest(request_error(error)))?;
+            .map_err(|error| Error::StreamRequest(log_request_error(error)))?;
         let res = match res.error_for_status() {
             Ok(res) => res,
             Err(error) => {
-                let error = request_error(error);
+                let error = log_request_error(error);
 
                 // A rejected session is dropped: the next request re-establishes
                 // it, after the slot's backoff. Other statuses keep the session —
@@ -662,7 +675,7 @@ impl Client {
         let body = res
             .text()
             .await
-            .map_err(|error| Error::StreamRequestBody(request_error(error)))?;
+            .map_err(|error| Error::StreamRequestBody(log_request_error(error)))?;
 
         Ok(body)
     }
@@ -733,14 +746,14 @@ impl Client {
         let res = req
             .send()
             .await
-            .map_err(|error| Error::StreamRequest(request_error(error)))?;
+            .map_err(|error| Error::StreamRequest(log_request_error(error)))?;
         let res = res
             .error_for_status()
-            .map_err(|error| Error::StreamStatus(request_error(error)))?;
+            .map_err(|error| Error::StreamStatus(log_request_error(error)))?;
         let body = res
             .text()
             .await
-            .map_err(|error| Error::StreamRequestBody(request_error(error)))?;
+            .map_err(|error| Error::StreamRequestBody(log_request_error(error)))?;
 
         Ok(body)
     }
@@ -769,14 +782,14 @@ impl Client {
         let res = req
             .send()
             .await
-            .map_err(|error| Error::RequestNonce(request_error(error)))?;
+            .map_err(|error| Error::RequestNonce(log_request_error(error)))?;
         if let Err(error) = res.error_for_status_ref() {
-            return Err(Error::RequestNonce(request_error(error)));
+            return Err(Error::RequestNonce(log_request_error(error)));
         }
         let body = res
             .text()
             .await
-            .map_err(|error| Error::ReadNonce(request_error(error)))?;
+            .map_err(|error| Error::ReadNonce(log_request_error(error)))?;
 
         extract_nonce(&body).ok_or(Error::Nonce)
     }
@@ -843,9 +856,9 @@ async fn http_fetch_session(
     )
     .send()
     .await
-    .map_err(|error| Error::RequestSession(request_error(error)))?;
+    .map_err(|error| Error::RequestSession(log_request_error(error)))?;
     if let Err(error) = res.error_for_status_ref() {
-        return Err(Error::RequestSession(request_error(error)));
+        return Err(Error::RequestSession(log_request_error(error)));
     }
     if !sets_session_cookie(res.headers()) {
         error!("the response does not include a kagi_session cookie!");
@@ -865,14 +878,14 @@ async fn http_fetch_session(
     )
     .send()
     .await
-    .map_err(|error| Error::RequestNonce(request_error(error)))?;
+    .map_err(|error| Error::RequestNonce(log_request_error(error)))?;
     if let Err(error) = res.error_for_status_ref() {
-        return Err(Error::RequestNonce(request_error(error)));
+        return Err(Error::RequestNonce(log_request_error(error)));
     }
     let body = res
         .text()
         .await
-        .map_err(|error| Error::ReadNonce(request_error(error)))?;
+        .map_err(|error| Error::ReadNonce(log_request_error(error)))?;
 
     extract_nonce(&body).ok_or(Error::Nonce)
 }
@@ -896,7 +909,10 @@ fn sets_session_cookie(headers: &reqwest::header::HeaderMap) -> bool {
 
 /// Attaches the session authorization header to the request, mirroring the browser which
 /// sends it with every request.
-fn authorize(request: reqwest::RequestBuilder, token: &SecretString) -> reqwest::RequestBuilder {
+fn authorize_session(
+    request: reqwest::RequestBuilder,
+    token: &SecretString,
+) -> reqwest::RequestBuilder {
     request.header("X-Kagi-Authorization", token.expose_secret())
 }
 
@@ -914,7 +930,7 @@ fn document_request(
     site: HeaderValue,
     referer: Option<&str>,
 ) -> reqwest::RequestBuilder {
-    authorize(
+    authorize_session(
         browser_document_request(http, language, url, site, referer),
         token,
     )
@@ -952,7 +968,7 @@ fn stream_request(
     language: &HeaderValue,
     url: reqwest::Url,
 ) -> reqwest::RequestBuilder {
-    authorize(
+    authorize_session(
         browser_stream_request(http, language, url, HeaderValue::from_static("same-origin")),
         token,
     )

@@ -108,7 +108,7 @@ pub(crate) fn parse_stream(raw_body: &str) -> Vec<KagiMessage> {
     if raw_body.lines().any(|line| line.starts_with("data:")) {
         parse_sse_stream(raw_body)
     } else {
-        parse_kagi_stream(raw_body)
+        parse_legacy_stream(raw_body)
     }
 }
 
@@ -122,7 +122,7 @@ fn parse_sse_stream(raw_body: &str) -> Vec<KagiMessage> {
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim_start)
         .filter(|json| !json.is_empty())
-        .filter_map(|json| {
+        .flat_map(|json| {
             serde_json::from_str::<Vec<KagiMessage>>(json)
                 .inspect_err(|error| {
                     debug!(
@@ -131,9 +131,8 @@ fn parse_sse_stream(raw_body: &str) -> Vec<KagiMessage> {
                         "dropping an unparseable Kagi SSE event"
                     );
                 })
-                .ok()
+                .unwrap_or_default()
         })
-        .flatten()
         .collect()
 }
 
@@ -145,7 +144,7 @@ fn parse_sse_stream(raw_body: &str) -> Vec<KagiMessage> {
 /// 2. Splits each chunk at the first `:` into (`WireTag`, `JsonBody`).
 /// 3. Deserializes the JSON body.
 /// 4. Ensures the `tag` field is populated.
-fn parse_kagi_stream(raw_body: &str) -> Vec<KagiMessage> {
+fn parse_legacy_stream(raw_body: &str) -> Vec<KagiMessage> {
     raw_body
         .split_terminator("\0\n")
         .filter_map(|chunk| {
@@ -243,17 +242,17 @@ pub(crate) fn parse_search_result_messages(messages: &[KagiMessage]) -> Vec<Sear
     }
 
     // Fall back to parsing the HTML fragments of `search` messages.
-    let mut result: Vec<SearchResult> = Vec::new();
+    let mut results: Vec<SearchResult> = Vec::new();
 
     for content in messages
         .iter()
         .filter(|message| message.tag == "search")
         .filter_map(payload_content)
     {
-        result.extend(parse_search_results_html(content));
+        results.extend(parse_search_results_html(content));
     }
 
-    result
+    results
 }
 
 /// The CSS selectors for parsing the search and image result fragments.
@@ -336,17 +335,17 @@ fn parse_search_results_html(html: &str) -> Vec<SearchResult> {
 }
 
 pub(crate) fn parse_image_result_messages(messages: &[KagiMessage]) -> Vec<ImageResult> {
-    let mut result: Vec<ImageResult> = Vec::new();
+    let mut results: Vec<ImageResult> = Vec::new();
 
     for content in messages
         .iter()
         .filter(|message| message.tag == "images")
         .filter_map(payload_content)
     {
-        result.extend(parse_image_results_html(content));
+        results.extend(parse_image_results_html(content));
     }
 
-    result
+    results
 }
 
 fn parse_image_results_html(html: &str) -> Vec<ImageResult> {
@@ -461,9 +460,19 @@ fn skips_description_text(elem: &ElementRef<'_>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use test_support::kagi::read_fixture;
+    use std::path::PathBuf;
 
     use super::*;
+
+    /// Returns the contents of a fixture shared with the integration-test harness.
+    fn read_fixture(name: &str) -> String {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../test-support/fixtures/kagi")
+            .join(name);
+
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("could not read {}: {error}", path.display()))
+    }
 
     #[test]
     fn parses_the_legacy_stream_format() {

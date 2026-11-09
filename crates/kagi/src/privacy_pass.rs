@@ -210,7 +210,7 @@ impl PrivacyPassClient {
             .timeout(timeout)
             .user_agent(user_agent)
             .build()
-            .map_err(|error| Error::BuildClient(crate::client::request_error(error)))?;
+            .map_err(|error| Error::BuildClient(crate::client::log_request_error(error)))?;
         let (batch_size, _, _) = options.normalized();
 
         Ok(Self {
@@ -353,24 +353,21 @@ impl PrivacyPassClient {
             .body(request_body)
             .send()
             .await
-            .map_err(|error| PrivacyPassError::TokenRequest(crate::client::request_error(error)))?;
-        let response = response
-            .error_for_status()
-            .map_err(|error| PrivacyPassError::TokenStatus(crate::client::request_error(error)))?;
-        let body = response
-            .text()
-            .await
-            .map_err(|error| PrivacyPassError::TokenBody(crate::client::request_error(error)))?;
+            .map_err(|error| {
+                PrivacyPassError::TokenRequest(crate::client::log_request_error(error))
+            })?;
+        let response = response.error_for_status().map_err(|error| {
+            PrivacyPassError::TokenStatus(crate::client::log_request_error(error))
+        })?;
+        let body = response.text().await.map_err(|error| {
+            PrivacyPassError::TokenBody(crate::client::log_request_error(error))
+        })?;
         let response_bytes = URL_SAFE
             .decode(body.trim())
             .map_err(|_| PrivacyPassError::InvalidTokenResponse)?;
         let response = parse_token_response(&response_bytes)?;
         let tokens = finalize_tokens(&response, pending, challenge.public_key)?;
         let count = tokens.len();
-
-        if count == 0 {
-            return Err(PrivacyPassError::EmptyBatch);
-        }
 
         self.store.add(tokens);
         debug!(
@@ -393,7 +390,7 @@ impl PrivacyPassClient {
             .send()
             .await
             .map_err(|error| {
-                PrivacyPassError::ChallengeRequest(crate::client::request_error(error))
+                PrivacyPassError::ChallengeRequest(crate::client::log_request_error(error))
             })?;
         let header = response
             .headers()
@@ -440,13 +437,7 @@ impl PrivacyPassClient {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    use reqwest::header::HeaderValue;
-    use secrecy::SecretString;
-
-    use super::{MAX_TOKENS_PER_BATCH, PrivacyPassClient, PrivacyPassOptions};
+    use super::{MAX_TOKENS_PER_BATCH, PrivacyPassOptions};
 
     #[test]
     fn batch_size_is_clamped_to_the_request_limit() {
@@ -468,40 +459,5 @@ mod tests {
         };
 
         assert_eq!(options.normalized().0, 1);
-    }
-
-    #[tokio::test]
-    async fn concurrent_acquisitions_get_one_token_each() {
-        let harness = test_support::privacy_pass::PrivacyPassHarness::start();
-        let _challenge = harness.mock_challenge();
-        let _issuance = harness.mock_issuance();
-        let client = Arc::new(
-            PrivacyPassClient::new(
-                reqwest::Url::parse(&harness.server.base_url()).expect("the mock url is valid"),
-                Arc::new(SecretString::from(test_support::kagi::TOKEN)),
-                HeaderValue::from_static("en-US"),
-                Duration::from_secs(5),
-                HeaderValue::from_static("test-agent"),
-                &PrivacyPassOptions {
-                    tokens_to_stash: 1,
-                    max_tokens: 16,
-                    low_token_count: 0,
-                },
-            )
-            .expect("the privacy pass client builds"),
-        );
-        let mut tasks = Vec::new();
-
-        for _ in 0..16 {
-            let client = Arc::clone(&client);
-
-            tasks.push(tokio::spawn(async move { client.acquire_token().await }));
-        }
-
-        for task in tasks {
-            task.await
-                .expect("the acquisition task joins")
-                .expect("a token is acquired");
-        }
     }
 }

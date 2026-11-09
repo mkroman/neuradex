@@ -132,6 +132,41 @@ async fn search_issues_another_batch_when_the_store_runs_out() {
 }
 
 #[tokio::test]
+async fn concurrent_searches_each_redeem_their_own_tokens() {
+    const SEARCHES: usize = 16;
+
+    let harness = PrivacyPassHarness::start();
+    let flow = Flow::search(&harness);
+    // Each search redeems one token for the document and one for the stream. A batch covers half
+    // of them, so the second batch is issued on demand. The session limit matches the search
+    // count, so the search gate does not serialize the redemptions and mask a concurrent issuance
+    // race.
+    let client = Arc::new(harness.client_with_options(SEARCHES, SEARCHES, 0, SEARCHES));
+    let mut tasks = Vec::with_capacity(SEARCHES);
+
+    for _ in 0..SEARCHES {
+        let client = Arc::clone(&client);
+
+        tasks.push(tokio::spawn(async move { client.search(QUERY).await }));
+    }
+
+    for task in tasks {
+        let results = task
+            .await
+            .expect("the search task joins")
+            .expect("the privacy pass search succeeds");
+
+        assert_eq!(results.len(), 5);
+    }
+
+    flow.forbidden.assert_calls(0);
+    flow.challenge.assert_calls(2);
+    flow.issuance.assert_calls(2);
+    flow.document.assert_calls(SEARCHES);
+    flow.stream.assert_calls(SEARCHES);
+}
+
+#[tokio::test]
 async fn search_retries_when_the_document_is_rejected() {
     let harness = PrivacyPassHarness::start();
     let forbidden = harness.mock_session_path_forbidden();

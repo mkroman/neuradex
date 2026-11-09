@@ -136,20 +136,12 @@ impl KagiHarness {
     }
 
     /// Mocks the search document that returns the session nonce.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the document fixture cannot be read.
     #[must_use]
     pub fn mock_nonce(&self) -> Mock<'_> {
         self.mock_nonce_delayed(Duration::ZERO)
     }
 
     /// Mocks the search document, delaying its response by `delay`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the document fixture cannot be read.
     #[must_use]
     pub fn mock_nonce_delayed(&self, delay: Duration) -> Mock<'_> {
         let body = nonce_body();
@@ -157,10 +149,6 @@ impl KagiHarness {
     }
 
     /// Mocks the images document that returns the session nonce.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the document fixture cannot be read.
     #[must_use]
     pub fn mock_images_nonce(&self) -> Mock<'_> {
         let body = nonce_body();
@@ -310,7 +298,7 @@ impl KagiHarness {
                 .header("cache-control", "no-cache")
                 .cookie("kagi_session", SESSION_COOKIE)
                 .cookie("_kagi_search_", SEARCH_COOKIE);
-            let _when = match nonce {
+            match nonce {
                 Nonce::Present(nonce) => when.query_param("nonce", nonce),
                 Nonce::Absent => when.query_param_missing("nonce"),
                 Nonce::Any => when,
