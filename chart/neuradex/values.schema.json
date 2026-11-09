@@ -137,7 +137,8 @@
       "type": "integer",
       "default": 2,
       "minimum": 1,
-      "description": "Maximum number of simultaneous searches. Bounds concurrency in both authentication modes (Privacy Pass and session cookie); additional requests queue until a slot frees up."
+      "maximum": 64,
+      "description": "Maximum number of simultaneous searches (1 through 64). Bounds concurrency in both authentication modes (Privacy Pass and session cookie); additional requests queue until a slot frees up."
     },
     "rustLog": {
       "type": "string",

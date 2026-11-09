@@ -64,38 +64,22 @@ mod tests {
     //! `matches_the_checked_in_spec` is the broad contract check: it compares the whole
     //! generated document against the checked-in fixture, so any wire change fails there.
     //! `passes_the_structural_lints` validates the document's internal references and its
-    //! response/tag/component consistency. The focused tests left here document intent; they
-    //! do not repeat the fixture's field-by-field assertions.
+    //! response/tag/component consistency. `documents_the_shared_error_responses` keeps the
+    //! cross-endpoint error-envelope invariant, which the fixture cannot express because it is
+    //! regenerated on every intentional document change. The remaining focused tests document
+    //! intent; they do not repeat the fixture's field-by-field assertions.
 
     use std::collections::BTreeSet;
 
     use serde_json::{Value, json};
 
-    /// The expected paths, their methods, operation IDs, query parameters, and tags.
-    const EXPECTED_OPERATIONS: &[(&str, &str, &str, &[&str], &str)] = &[
-        ("/healthz", "get", "healthz", &[], "healthz"),
-        (
-            "/v1/fetch",
-            "get",
-            "fetch",
-            &["include", "redirects", "url"],
-            "fetch",
-        ),
-        (
-            "/v1/peek",
-            "get",
-            "peek",
-            &["include", "redirects", "url"],
-            "peek",
-        ),
-        ("/v1/search", "post", "search", &[], "search"),
-        (
-            "/v1/openwebui_search",
-            "post",
-            "openwebui_search",
-            &[],
-            "search",
-        ),
+    /// The expected paths and their methods.
+    const EXPECTED_OPERATIONS: &[(&str, &str)] = &[
+        ("/healthz", "get"),
+        ("/v1/fetch", "get"),
+        ("/v1/peek", "get"),
+        ("/v1/search", "post"),
+        ("/v1/openwebui_search", "post"),
     ];
 
     /// The OpenAPI document derived from the API's routes.
@@ -133,10 +117,7 @@ mod tests {
             }
         }
 
-        let mut expected: Vec<(&str, &str)> = EXPECTED_OPERATIONS
-            .iter()
-            .map(|(path, method, _, _, _)| (*path, *method))
-            .collect();
+        let mut expected: Vec<(&str, &str)> = EXPECTED_OPERATIONS.to_vec();
         documented.sort_unstable();
         expected.sort_unstable();
 
@@ -154,6 +135,35 @@ mod tests {
         assert!(search.post.is_some(), "POST /v1/search must be documented");
     }
 
+    /// Every non-probe endpoint documents the shared error statuses, each referencing
+    /// `ErrorBody`. The golden fixture cannot enforce this across endpoints: regenerating it
+    /// would also accept a missing error response.
+    #[test]
+    fn documents_the_shared_error_responses() {
+        let document = document();
+
+        for &(path, method) in EXPECTED_OPERATIONS {
+            if path == "/healthz" {
+                continue;
+            }
+
+            let responses = &operation(&document, path, method).responses;
+
+            for status in ["400", "415", "500", "502"] {
+                let response = responses.responses.get(status).unwrap_or_else(|| {
+                    panic!("the {status} response is missing from {method} {path}")
+                });
+                let rendered = serde_json::to_value(response).expect("serializes");
+
+                assert_eq!(
+                    rendered["content"]["application/json"]["schema"]["$ref"],
+                    "#/components/schemas/ErrorBody",
+                    "the {status} response of {method} {path} does not reference ErrorBody"
+                );
+            }
+        }
+    }
+
     /// The golden fixture pins the exact IDs; this keeps the semantic properties the fixture
     /// cannot express: every operation has a URL-safe, unique ID.
     #[test]
@@ -161,7 +171,7 @@ mod tests {
         let document = document();
         let mut ids = Vec::new();
 
-        for &(path, method, _, _, _) in EXPECTED_OPERATIONS {
+        for &(path, method) in EXPECTED_OPERATIONS {
             let id = operation(&document, path, method)
                 .operation_id
                 .as_deref()

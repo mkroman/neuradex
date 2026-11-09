@@ -112,8 +112,11 @@ pub enum ConfigError {
     /// The listen address is not a valid socket address.
     #[error("invalid LISTEN_ADDR: expected a socket address, got {0:?}")]
     InvalidListenAddr(String),
-    /// The maximum session count is not an integer between 1 and 64.
-    #[error("invalid KAGI_MAX_SESSIONS: expected an integer between 1 and 64, got {0:?}")]
+    /// The maximum session count is outside the accepted range.
+    #[error(
+        "invalid KAGI_MAX_SESSIONS: expected an integer between 1 and {max}, got {0:?}",
+        max = MAX_SEARCH_SESSIONS
+    )]
     InvalidMaxSessions(String),
     /// The Privacy Pass setting is not a boolean.
     #[error("invalid KAGI_PRIVACY_PASS: expected a boolean, got {0:?}")]
@@ -201,7 +204,8 @@ mod tests {
             assert_eq!(
                 error.to_string(),
                 format!(
-                    "invalid KAGI_MAX_SESSIONS: expected an integer between 1 and 64, got {value:?}"
+                    "invalid KAGI_MAX_SESSIONS: expected an integer between 1 and \
+                     {MAX_SEARCH_SESSIONS}, got {value:?}"
                 )
             );
         }
