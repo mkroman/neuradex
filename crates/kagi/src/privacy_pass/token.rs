@@ -14,6 +14,10 @@ use super::{
 };
 
 /// A thread-safe, in-memory store of unspent Privacy Pass tokens.
+///
+/// Newly issued tokens are added at the front and consumed first, so the store drains the
+/// freshest batch before older ones. A batch the issuer rejects is discarded and replaced by
+/// the client's retry path.
 #[derive(Debug)]
 pub struct TokenStore {
     /// The unspent tokens, with the next token at the front.
@@ -55,13 +59,13 @@ impl TokenStore {
         self.len() < self.low
     }
 
-    /// Removes and returns the next unspent token.
+    /// Removes and returns the next unspent token from the newest batch.
     #[must_use]
     pub fn take(&self) -> Option<PrivacyToken> {
         self.lock().pop_front()
     }
 
-    /// Adds freshly issued tokens, dropping the oldest tokens beyond the capacity.
+    /// Adds freshly issued tokens to the front, dropping the oldest tokens beyond the capacity.
     pub fn add(&self, tokens: impl IntoIterator<Item = PrivacyToken>) {
         let mut store = self.lock();
 
@@ -164,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn store_consumes_tokens_in_order_and_caps_its_capacity() {
+    fn store_consumes_newest_tokens_first_and_caps_its_capacity() {
         let options = PrivacyPassOptions {
             tokens_to_stash: 3,
             max_tokens: 3,
