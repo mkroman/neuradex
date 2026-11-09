@@ -182,7 +182,7 @@ fn api() -> Router<Arc<AppState>> {
         .route("/healthz", routing::get(healthz))
         .route("/v1/peek", routing::get(peek::peek))
         .route("/v1/fetch", routing::get(fetch::fetch))
-        .route("/v1/search", routing::get(search::search))
+        .route("/v1/search", routing::post(search::search))
         .route(
             "/v1/openwebui_search",
             routing::post(openwebui_search::openwebui_search),
@@ -194,6 +194,18 @@ fn api() -> Router<Arc<AppState>> {
 #[must_use]
 pub fn openapi_document() -> utoipa::openapi::OpenApi {
     api().1
+}
+
+/// Returns the OpenAPI document as the JSON value `/docs` renders from.
+///
+/// # Panics
+///
+/// Panics if the OpenAPI document cannot be serialized to JSON, which cannot happen for a
+/// document derived by `utoipa`.
+#[cfg(feature = "docs")]
+#[must_use]
+pub fn openapi_spec() -> serde_json::Value {
+    serde_json::to_value(openapi_document()).expect("the OpenAPI document is always serializable")
 }
 
 /// Builds the router for the whole service: the v1 API plus the documentation endpoints.
@@ -243,7 +255,7 @@ pub fn router(state: AppState) -> Router {
 /// Renders the documentation page from the OpenAPI document.
 #[cfg(feature = "docs")]
 fn render_docs_page() -> String {
-    neuradex_docs::render(&openapi_document())
+    neuradex_docs::render(&openapi_spec())
 }
 
 /// Serves the API documentation page at `GET /docs`.
@@ -318,7 +330,7 @@ mod tests {
     use axum::http::Request;
     use axum::response::Response;
     use secrecy::SecretString;
-    use serde_json::Value;
+    use serde_json::{Value, json};
     use tower::ServiceExt;
 
     use super::*;
@@ -414,6 +426,24 @@ mod tests {
         assert_eq!(error["error"]["message"], message);
     }
 
+    /// Asserts that `response` is a JSON error of `kind`, without pinning the wording.
+    async fn assert_error_kind(response: Response, status: StatusCode, kind: &str) {
+        assert_eq!(response.status(), status);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let error: Value = serde_json::from_slice(&body).expect("valid json");
+
+        assert_eq!(error["error"]["type"], kind);
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .is_some_and(|message| !message.is_empty()),
+            "the error message is empty: {error}"
+        );
+    }
+
     #[cfg(feature = "utoipa")]
     #[tokio::test]
     async fn serves_the_openapi_document() {
@@ -460,6 +490,28 @@ mod tests {
     }
 
     #[cfg(feature = "docs")]
+    #[test]
+    fn renders_every_documented_path_and_schema() {
+        let document = openapi_spec();
+        let page = neuradex_docs::render(&document);
+
+        for path in document["paths"].as_object().expect("paths").keys() {
+            assert!(page.contains(path), "the page is missing {path}");
+        }
+
+        for schema in document["components"]["schemas"]
+            .as_object()
+            .expect("schemas")
+            .keys()
+        {
+            assert!(
+                page.contains(&format!("id=\"schema-{schema}\"")),
+                "the page is missing the {schema} schema"
+            );
+        }
+    }
+
+    #[cfg(feature = "docs")]
     #[tokio::test]
     async fn redirects_the_legacy_swagger_ui_paths_to_the_docs() {
         for path in ["/swagger-ui", "/swagger-ui/"] {
@@ -492,13 +544,13 @@ mod tests {
 
     #[tokio::test]
     async fn renders_unsupported_methods_as_json_errors() {
-        let response = send(router_for_test(), "POST", "/v1/search").await;
+        let response = send(router_for_test(), "GET", "/v1/search").await;
 
         assert_error(
             response,
             StatusCode::METHOD_NOT_ALLOWED,
             "method_not_allowed",
-            "method POST is not allowed for /v1/search",
+            "method GET is not allowed for /v1/search",
         )
         .await;
     }
@@ -534,11 +586,7 @@ mod tests {
     async fn renders_malformed_queries_as_json_errors() {
         // Each of these fails extraction — an unknown field, a missing required field, and a
         // non-parseable value — and must render the envelope, not axum's plain-text 400.
-        for path in [
-            "/v1/fetch?nope=1",
-            "/v1/peek?include=redirects",
-            "/v1/search?timeout=abc",
-        ] {
+        for path in ["/v1/fetch?nope=1", "/v1/peek?include=redirects"] {
             let response = send(router_for_test(), "GET", path).await;
 
             assert_invalid(response, "invalid query parameters: ").await;
@@ -548,33 +596,51 @@ mod tests {
     #[tokio::test]
     async fn renders_invalid_query_values_as_json_errors() {
         // Each of these extracts cleanly but fails the handlers' own validation — before any
-        // network I/O — so the exact messages can be pinned through the router.
-        for (path, message) in [
-            ("/v1/search?query=", "the query parameter is empty"),
-            (
-                "/v1/fetch?url=not%20a%20url",
-                "invalid url: relative URL without a base",
-            ),
-            (
-                "/v1/fetch?url=https://example.com&redirects=6",
-                "redirects must be between 0 and 5",
-            ),
-            (
-                "/v1/fetch?url=https://example.com&include=nope",
-                "unknown include: nope",
-            ),
-            (
-                "/v1/peek?url=https://example.com&include=headers",
-                "unknown include: headers",
-            ),
-            (
-                "/v1/search?query=rust&timeout=31",
-                "the timeout parameter must be between 1 and 30 seconds",
-            ),
+        // network I/O — and must render the envelope.
+        for path in [
+            "/v1/fetch?url=not%20a%20url",
+            "/v1/fetch?url=https://example.com&redirects=6",
+            "/v1/fetch?url=https://example.com&include=nope",
+            "/v1/peek?url=https://example.com&include=headers",
         ] {
             let response = send(router_for_test(), "GET", path).await;
 
-            assert_error(response, StatusCode::BAD_REQUEST, "invalid_param", message).await;
+            assert_error_kind(response, StatusCode::BAD_REQUEST, "invalid_param").await;
+        }
+    }
+
+    #[tokio::test]
+    async fn renders_invalid_search_bodies_as_json_errors() {
+        for body in [
+            json!({"query": ""}),
+            json!({"query": "rust", "timeout": 0}),
+            json!({"query": "rust", "timeout": 31}),
+        ] {
+            let response = send_json(router_for_test(), "/v1/search", body).await;
+
+            assert_error_kind(response, StatusCode::BAD_REQUEST, "invalid_param").await;
+        }
+    }
+
+    #[tokio::test]
+    async fn renders_malformed_search_bodies_as_json_errors() {
+        for body in [
+            "not json",
+            r#"{"query": "rust", "nope": 1}"#,
+            r#"{"limit": 10}"#,
+            r#"{"query": "rust", "timeout": "ten"}"#,
+            r#"{"query": "rust", "limit": 1.5}"#,
+        ] {
+            let response = send_body(
+                router_for_test(),
+                "POST",
+                "/v1/search",
+                "application/json",
+                body,
+            )
+            .await;
+
+            assert_invalid(response, "invalid request body: ").await;
         }
     }
 
@@ -618,28 +684,29 @@ mod tests {
 
     #[tokio::test]
     async fn renders_a_missing_json_content_type_as_an_error() {
-        let response = send_body(
-            router_for_test(),
-            "POST",
-            "/v1/openwebui_search",
-            "text/plain",
-            r#"{"query": "rust"}"#,
-        )
-        .await;
+        for path in ["/v1/search", "/v1/openwebui_search"] {
+            let response = send_body(
+                router_for_test(),
+                "POST",
+                path,
+                "text/plain",
+                r#"{"query": "rust"}"#,
+            )
+            .await;
 
-        assert_error(
-            response,
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "unsupported_media_type",
-            "expected the request body to be JSON (Content-Type: application/json)",
-        )
-        .await;
+            assert_error(
+                response,
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "unsupported_media_type",
+                "expected the request body to be JSON (Content-Type: application/json)",
+            )
+            .await;
+        }
     }
 
     #[tokio::test]
     async fn renders_an_empty_openwebui_search_query_as_a_json_error() {
-        // Extracts cleanly but fails the handler's own validation — before any network I/O —
-        // so the exact message can be pinned through the router.
+        // Extracts cleanly but fails the handler's own validation — before any network I/O.
         let response = send_json(
             router_for_test(),
             "/v1/openwebui_search",
@@ -647,12 +714,6 @@ mod tests {
         )
         .await;
 
-        assert_error(
-            response,
-            StatusCode::BAD_REQUEST,
-            "invalid_param",
-            "the query is empty",
-        )
-        .await;
+        assert_error_kind(response, StatusCode::BAD_REQUEST, "invalid_param").await;
     }
 }

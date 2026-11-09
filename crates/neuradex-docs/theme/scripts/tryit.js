@@ -8,18 +8,49 @@
     copyText, flash } = window.docsUI;
   const doc = document;
 
+  function fieldValue(input) {
+    const raw = input.value.trim();
+    if (!raw) return undefined;
+    if (input.dataset.array) {
+      return raw.split(/[,\s]+/).filter(Boolean);
+    }
+    const type = input.dataset.type || 'string';
+    if (type === 'integer' || type === 'number') {
+      const value = Number(raw);
+      return Number.isFinite(value) ? value : raw;
+    }
+    if (type === 'boolean') {
+      return raw === 'true';
+    }
+    return raw;
+  }
+
+  function fields(widget, location) {
+    return Array.from(widget.querySelectorAll('.field input'))
+      .filter(input => (input.dataset.location || 'query') === location);
+  }
+
   function queryParams(widget) {
     const sp = new URLSearchParams();
-    widget.querySelectorAll('.field input').forEach(input => {
-      const raw = input.value.trim();
-      if (!raw) return;
-      if (input.dataset.array) {
-        raw.split(/[,\s]+/).filter(Boolean).forEach(v => sp.append(input.dataset.name, v));
+    fields(widget, 'query').forEach(input => {
+      const value = fieldValue(input);
+      if (value === undefined) return;
+      if (Array.isArray(value)) {
+        value.forEach(v => sp.append(input.dataset.name, v));
       } else {
-        sp.append(input.dataset.name, raw);
+        sp.append(input.dataset.name, value);
       }
     });
     return sp.toString();
+  }
+
+  function bodyPayload(widget) {
+    const body = {};
+    fields(widget, 'body').forEach(input => {
+      const value = fieldValue(input);
+      if (value !== undefined) body[input.dataset.name] = value;
+    });
+    return body;
   }
 
   function renderResult(widget, res, text, ms) {
@@ -65,6 +96,8 @@
 
   function wireTryIt(widget) {
     const path = widget.dataset.path;
+    const method = (widget.dataset.method || 'GET').toUpperCase();
+    const sendsBody = method !== 'GET' && method !== 'HEAD';
     const preview = $('.url-preview', widget);
     const sendBtn = $('button.action-primary', widget);
     const curlBtn = $('button.action-secondary', widget);
@@ -72,7 +105,9 @@
 
     function updatePreview() {
       const qs = queryParams(widget);
-      preview.textContent = 'GET ' + path + (qs ? '?' + qs : '');
+      let text = method + ' ' + path + (qs ? '?' + qs : '');
+      if (sendsBody) text += '  ' + JSON.stringify(bodyPayload(widget));
+      preview.textContent = text;
     }
     inputs.forEach(input => input.addEventListener('input', updatePreview));
     updatePreview();
@@ -94,7 +129,13 @@
 
       const t0 = performance.now();
       const qs = queryParams(widget);
-      fetch(path + (qs ? '?' + qs : ''), { headers: { accept: 'application/json' } })
+      const options = { method, headers: { accept: 'application/json' } };
+      if (sendsBody) {
+        options.headers['content-type'] = 'application/json';
+        options.body = JSON.stringify(bodyPayload(widget));
+      }
+
+      fetch(path + (qs ? '?' + qs : ''), options)
         .then(res => res.text().then(text => ({ res, text })))
         .then(r => { renderResult(widget, r.res, r.text, performance.now() - t0); })
         .catch(err => {
@@ -118,7 +159,11 @@
       const qs = queryParams(widget);
       const origin = window.location.origin && window.location.origin.indexOf('http') === 0
         ? window.location.origin : '';
-      const line = 'curl -sS ' + shellQuote(origin + path + (qs ? '?' + qs : ''));
+      let line = 'curl -sS ';
+      if (method !== 'GET') line += '-X ' + method + ' ';
+      if (sendsBody) line += "-H 'content-type: application/json' ";
+      line += shellQuote(origin + path + (qs ? '?' + qs : ''));
+      if (sendsBody) line += ' -d ' + shellQuote(JSON.stringify(bodyPayload(widget)));
       copyText(line).then(ok => flash(curlBtn, ok ? 'copied' : 'copy failed'));
     });
   }

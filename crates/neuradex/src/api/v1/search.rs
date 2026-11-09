@@ -8,7 +8,7 @@ use axum::extract::State;
 use serde::Serialize;
 
 use crate::api::v1::error::ApiError;
-use crate::api::v1::extract::{ApiQuery, SearchParams};
+use crate::api::v1::extract::{ApiJson, SearchRequest};
 use crate::api::v1::{AppState, redirect};
 use crate::metrics::SearchMetrics;
 
@@ -65,29 +65,36 @@ impl From<kagi::SearchResult> for SearchResult {
 
 /// Searches the web with Kagi.
 ///
-/// Searches are queued: at most `MAX_CONCURRENT_SEARCHES` run at once, and the request blocks
-/// here until a slot and the results are ready — including while the Kagi client establishes
-/// or refreshes a session for the search. The optional `timeout` covers the whole of it: the
-/// queue wait, the session wait, and the search itself. Without it, the request stays pending
-/// until the client disconnects.
+/// Accepts a JSON request body with the query, an optional result limit, and an optional
+/// timeout. Searches are queued: at most `MAX_CONCURRENT_SEARCHES` run at once, and the request
+/// blocks here until a slot and the results are ready — including while the Kagi client
+/// establishes or refreshes a session for the search. The optional `timeout` covers the whole
+/// of it: the queue wait, the session wait, and the search itself. Without it, the request
+/// stays pending until the client disconnects.
 ///
 /// # Errors
 ///
-/// Returns an error for invalid parameters, failed searches, and searches that exceed the
+/// Returns an error for an invalid request body, failed searches, and searches that exceed the
 /// requested timeout.
 #[cfg_attr(
     feature = "utoipa",
     utoipa::path(
-        get,
+        post,
         path = "/v1/search",
         tag = "search",
         summary = "Search the web.",
-        description = "Searches the web through Kagi. Searches are queued: at most two run at \
-                       once, and the request blocks until a slot and the results are ready. The \
-                       optional `timeout` covers the whole of it — the queue wait, the session \
-                       wait, and the search itself; without it, the request stays pending until \
-                       the client disconnects. Results are truncated to `limit`.",
-        params(SearchParams),
+        description = "Searches the web through Kagi for a JSON request body. Searches are \
+                       queued: at most two run at once, and the request blocks until a slot and \
+                       the results are ready. The optional `timeout` covers the whole of it — \
+                       the queue wait, the session wait, and the search itself; without it, the \
+                       request stays pending until the client disconnects. Results are truncated \
+                       to `limit`.",
+        request_body(
+            content = SearchRequest,
+            content_type = "application/json",
+            description = "The query to search for, the maximum number of results, and the \
+                           timeout.",
+        ),
         responses(
             (status = 200, description = "The search completed", body = SearchResponse),
             ApiError,
@@ -96,17 +103,17 @@ impl From<kagi::SearchResult> for SearchResult {
 )]
 pub(crate) async fn search(
     State(state): State<Arc<AppState>>,
-    ApiQuery(params): ApiQuery<SearchParams>,
+    ApiJson(request): ApiJson<SearchRequest>,
 ) -> Result<Json<SearchResponse>, ApiError> {
-    params.validate()?;
+    request.validate()?;
 
     let started = Instant::now();
-    let timeout = params.timeout.map(Duration::from_secs);
+    let timeout = request.timeout.map(Duration::from_secs);
 
-    let (queue_ms, results) = run_queued_search(&state, &params.query, timeout).await?;
+    let (queue_ms, results) = run_queued_search(&state, &request.query, timeout).await?;
     let results: Vec<SearchResult> = results
         .into_iter()
-        .take(params.limit.unwrap_or(usize::MAX))
+        .take(request.limit.unwrap_or(usize::MAX))
         .map(SearchResult::from)
         .collect();
 
@@ -117,7 +124,7 @@ pub(crate) async fn search(
     };
 
     Ok(Json(SearchResponse {
-        query: params.query,
+        query: request.query,
         results,
         metrics,
     }))

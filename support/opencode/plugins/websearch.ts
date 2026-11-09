@@ -27,12 +27,18 @@ export default Plugin.define({
         execute: async ({ query }, { signal }) => {
           const base = (process.env.NEURADEX_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/+$/, "")
           const url = new URL("/v1/search", base)
-          url.searchParams.set("query", query)
-          url.searchParams.set("limit", String(DEFAULT_LIMIT))
 
           let response: Response
           try {
-            response = await fetch(url, { signal, headers: { accept: "application/json" } })
+            response = await fetch(url, {
+              method: "POST",
+              signal,
+              headers: {
+                accept: "application/json",
+                "content-type": "application/json",
+              },
+              body: JSON.stringify({ query, limit: DEFAULT_LIMIT }),
+            })
           } catch (error) {
             throw new Error(`websearch: request failed: ${error instanceof Error ? error.message : String(error)}`)
           }

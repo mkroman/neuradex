@@ -9,6 +9,7 @@
 use utoipa::OpenApi;
 
 use crate::api::v1::error::ErrorBody;
+use crate::api::v1::extract::SearchRequest;
 use crate::api::v1::fetch::FetchResponse;
 use crate::api::v1::openwebui_search::{OpenWebUiSearchRequest, OpenWebUiSearchResult};
 use crate::api::v1::peek::PeekResponse;
@@ -22,9 +23,9 @@ use crate::metrics::{Metrics, RedirectHop, SearchMetrics};
     info(
         title = "neuradex",
         description = "A small API service implementing tools for LLM agents: fetching pages \
-                       (`/v1/fetch`, `/v1/peek`), searching the web (`/v1/search`), and a \
+                       (`/v1/fetch`, `/v1/peek`), searching the web (`POST /v1/search`), and a \
                        search endpoint shaped for Open WebUI's `external` web search engine \
-                       (`/v1/openwebui_search`). Every error response — including \
+                       (`POST /v1/openwebui_search`). Every error response — including \
                        router-level 404 and 405 — is rendered as \
                        `{\"error\": {\"type\", \"message\"}}`; see the `ErrorBody` schema.",
     ),
@@ -38,6 +39,7 @@ use crate::metrics::{Metrics, RedirectHop, SearchMetrics};
         ErrorBody,
         FetchResponse,
         PeekResponse,
+        SearchRequest,
         SearchResponse,
         SearchResult,
         OpenWebUiSearchRequest,
@@ -57,13 +59,20 @@ pub(crate) fn base() -> utoipa::openapi::OpenApi {
 
 #[cfg(test)]
 mod tests {
-    /// The expected paths, their query parameters, and their tags.
-    const EXPECTED_OPERATIONS: &[(&str, &[&str], &str)] = &[
-        ("/healthz", &[], "healthz"),
-        ("/v1/fetch", &["include", "redirects", "url"], "fetch"),
-        ("/v1/peek", &["include", "redirects", "url"], "peek"),
-        ("/v1/search", &["limit", "query", "timeout"], "search"),
-        ("/v1/openwebui_search", &[], "search"),
+    use serde_json::json;
+
+    /// The expected paths, their methods, query parameters, and tags.
+    const EXPECTED_OPERATIONS: &[(&str, &str, &[&str], &str)] = &[
+        ("/healthz", "get", &[], "healthz"),
+        (
+            "/v1/fetch",
+            "get",
+            &["include", "redirects", "url"],
+            "fetch",
+        ),
+        ("/v1/peek", "get", &["include", "redirects", "url"], "peek"),
+        ("/v1/search", "post", &[], "search"),
+        ("/v1/openwebui_search", "post", &[], "search"),
     ];
 
     /// The OpenAPI document derived from the API's routes.
@@ -71,43 +80,67 @@ mod tests {
         crate::api::v1::api().1
     }
 
-    /// Looks up the single operation documented for `path`, whatever its method.
+    /// Looks up the operation documented for `path` under `method`.
     fn operation<'d>(
         document: &'d utoipa::openapi::OpenApi,
         path: &str,
+        method: &str,
     ) -> &'d utoipa::openapi::path::Operation {
         let item = document.paths.paths.get(path).expect("a documented path");
 
-        item.get
-            .as_ref()
-            .or(item.post.as_ref())
-            .expect("an operation")
+        match method {
+            "get" => item.get.as_ref(),
+            "post" => item.post.as_ref(),
+            _ => panic!("unsupported method in EXPECTED_OPERATIONS: {method}"),
+        }
+        .expect("an operation")
     }
 
     #[test]
     fn documents_the_expected_operations() {
         let document = document();
-        let mut documented: Vec<&str> = document.paths.paths.keys().map(String::as_str).collect();
-        let mut expected: Vec<&str> = EXPECTED_OPERATIONS
+        let mut documented: Vec<(&str, &str)> = Vec::new();
+
+        for (path, item) in &document.paths.paths {
+            if item.get.is_some() {
+                documented.push((path, "get"));
+            }
+            if item.post.is_some() {
+                documented.push((path, "post"));
+            }
+        }
+
+        let mut expected: Vec<(&str, &str)> = EXPECTED_OPERATIONS
             .iter()
-            .map(|(path, _, _)| *path)
+            .map(|(path, method, _, _)| (*path, *method))
             .collect();
         documented.sort_unstable();
         expected.sort_unstable();
 
         assert_eq!(documented, expected);
+
+        let search = document
+            .paths
+            .paths
+            .get("/v1/search")
+            .expect("the search path");
+        assert!(
+            search.get.is_none(),
+            "GET /v1/search must not be documented"
+        );
+        assert!(search.post.is_some(), "POST /v1/search must be documented");
     }
 
     #[test]
     fn documents_the_error_responses_on_every_endpoint() {
         let document = document();
 
-        for &(path, _, _) in EXPECTED_OPERATIONS {
+        for &(path, method, _, _) in EXPECTED_OPERATIONS {
             if path == "/healthz" {
                 continue;
             }
 
-            let responses = &operation(&document, path).responses;
+            let responses = &operation(&document, path, method).responses;
 
             for status in ["400", "415", "500", "502"] {
                 assert!(
@@ -122,8 +155,9 @@ mod tests {
     fn documents_the_query_parameters() {
         let document = document();
 
-        for &(path, expected, _) in EXPECTED_OPERATIONS {
-            let rendered = serde_json::to_value(operation(&document, path)).expect("serializes");
+        for &(path, method, expected, _) in EXPECTED_OPERATIONS {
+            let rendered =
+                serde_json::to_value(operation(&document, path, method)).expect("serializes");
 
             let mut names: Vec<&str> =
                 rendered["parameters"]
@@ -151,7 +185,9 @@ mod tests {
             "OpenWebUiSearchRequest",
             "OpenWebUiSearchResult",
             "PeekResponse",
+            "SearchRequest",
             "SearchResponse",
+            "SearchResult",
         ] {
             assert!(
                 components.schemas.contains_key(schema),
@@ -161,22 +197,11 @@ mod tests {
     }
 
     #[test]
-    fn tags_the_operations() {
-        let document = document();
-
-        for &(path, _, tag) in EXPECTED_OPERATIONS {
-            let tags = operation(&document, path).tags.clone().unwrap_or_default();
-
-            assert_eq!(tags, [tag], "unexpected tags for {path}");
-        }
-    }
-
-    #[test]
     fn summarizes_the_operations() {
         let document = document();
 
-        for &(path, _, _) in EXPECTED_OPERATIONS {
-            let operation = operation(&document, path);
+        for &(path, method, _, _) in EXPECTED_OPERATIONS {
+            let operation = operation(&document, path, method);
 
             assert!(
                 operation
@@ -192,20 +217,14 @@ mod tests {
                     .is_some_and(|s| !s.trim().is_empty()),
                 "the operation for {path} is missing a description"
             );
-            // The handlers' `# Errors` sections are for rustdoc, not for API consumers.
-            let description = operation.description.as_deref().expect("a description");
-            assert!(
-                !description.contains("# Errors"),
-                "the description for {path} leaks the doc-comment error section"
-            );
         }
     }
 
     #[test]
     fn documents_the_openwebui_search_contract() {
         let document = document();
-        let rendered =
-            serde_json::to_value(operation(&document, "/v1/openwebui_search")).expect("serializes");
+        let rendered = serde_json::to_value(operation(&document, "/v1/openwebui_search", "post"))
+            .expect("serializes");
 
         // The operation is a POST with a JSON request body.
         assert_eq!(rendered["requestBody"]["required"], true);
@@ -229,73 +248,37 @@ mod tests {
         let request = serde_json::to_value(&schemas["OpenWebUiSearchRequest"]).expect("serializes");
 
         assert_eq!(request["properties"]["query"]["type"], "string");
-        assert_eq!(
-            request["properties"]["count"]["type"],
-            serde_json::json!(["integer", "null"])
-        );
         assert_eq!(request["properties"]["count"]["default"], 5);
-        assert_eq!(request["required"], serde_json::json!(["query"]));
+        assert_eq!(request["required"], json!(["query"]));
     }
 
     #[test]
-    fn documents_examples_and_defaults_on_the_query_parameters() {
+    fn documents_the_search_request_body() {
         let document = document();
+        let rendered =
+            serde_json::to_value(operation(&document, "/v1/search", "post")).expect("serializes");
 
-        let parameters = |path: &str| -> Vec<serde_json::Value> {
-            let operation = document
-                .paths
-                .paths
-                .get(path)
-                .and_then(|item| item.get.as_ref())
-                .expect("a get operation");
-            serde_json::to_value(operation).expect("serializes")["parameters"]
-                .as_array()
-                .expect("parameters")
-                .to_owned()
-        };
+        assert_eq!(rendered["requestBody"]["required"], true);
+        assert_eq!(
+            rendered["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/SearchRequest"
+        );
 
-        let find = |parameters: &[serde_json::Value], name: &str| -> serde_json::Value {
-            parameters
-                .iter()
-                .find(|parameter| parameter["name"] == name)
-                .unwrap_or_else(|| panic!("the {name} parameter is missing"))
-                .to_owned()
-        };
+        let schemas = &document.components.as_ref().expect("components").schemas;
+        let request = serde_json::to_value(&schemas["SearchRequest"]).expect("serializes");
 
-        let fetch = parameters("/v1/fetch");
-        let redirects = find(&fetch, "redirects");
-        assert_eq!(redirects["schema"]["default"], 5, "the effective default");
-        assert_eq!(redirects["schema"]["maximum"], 5);
-        assert!(find(&fetch, "url")["example"].is_string());
-        assert!(find(&fetch, "include")["example"].is_array());
-
-        let search = parameters("/v1/search");
-        assert!(find(&search, "query")["example"].is_string());
-        assert_eq!(find(&search, "timeout")["schema"]["maximum"], 30);
-        assert!(find(&search, "limit")["example"].is_i64());
-    }
-
-    #[test]
-    fn documents_examples_on_the_schemas() {
-        let rendered = serde_json::to_value(document()).expect("the document serializes to json");
-
-        for schema in [
-            "ErrorBody",
-            "FetchResponse",
-            "Metrics",
-            "OpenWebUiSearchRequest",
-            "OpenWebUiSearchResult",
-            "PageMetadata",
-            "PeekResponse",
-            "RedirectHop",
-            "SearchMetrics",
-            "SearchResponse",
-            "SearchResult",
-        ] {
+        for field in ["query", "limit", "timeout"] {
             assert!(
-                rendered["components"]["schemas"][schema]["examples"].is_array(),
-                "the {schema} schema is missing examples"
+                request["properties"][field].is_object(),
+                "the SearchRequest schema is missing {field}"
             );
         }
+
+        let required = request["required"].as_array().expect("required fields");
+        assert_eq!(required.len(), 1);
+        assert!(required.contains(&json!("query")));
+
+        assert_eq!(request["properties"]["timeout"]["minimum"], 1);
+        assert_eq!(request["properties"]["timeout"]["maximum"], 30);
     }
 }

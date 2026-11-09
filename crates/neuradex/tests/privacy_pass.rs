@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
+use serde_json::json;
 use test_support::app::TestApp;
 use test_support::httpmock::MockServer;
 use test_support::privacy_pass::PrivacyPassHarness;
@@ -26,7 +27,9 @@ async fn service_search_uses_privacy_pass_tokens() {
     let (document, stream) = harness.mock_search_flow(QUERY, FIXTURE);
     let app = TestApp::with_kagi_client(Arc::clone(&server), harness.client());
 
-    let response = app.get("/v1/search?query=hello%20world").await;
+    let response = app
+        .post_json("/v1/search", &json!({"query": "hello world"}))
+        .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 

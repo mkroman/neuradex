@@ -24,7 +24,7 @@ pub enum ApiError {
     /// A request parameter is missing, malformed, or out of range.
     #[error("{0}")]
     InvalidParam(String),
-    /// The target response has a content type that cannot be returned.
+    /// The request body or target response has a content type that cannot be handled.
     #[error("{0}")]
     UnsupportedMediaType(String),
     /// The upstream request failed.
@@ -43,7 +43,7 @@ pub enum ApiError {
     schema(examples(json!({
         "error": {
             "type": "invalid_param",
-            "message": "the timeout parameter must be between 1 and 30 seconds"
+            "message": "the timeout must be between 1 and 30 seconds"
         }
     })))
 )]
@@ -105,7 +105,10 @@ impl IntoResponses for ApiError {
             )
             .response(
                 "415",
-                error_response("The target response has a content type that cannot be returned."),
+                error_response(
+                    "The request body is not JSON, or the target response has a content type \
+                     that cannot be returned.",
+                ),
             )
             .response("500", error_response("An internal, unexpected failure."))
             .response("502", error_response("The upstream request failed."))

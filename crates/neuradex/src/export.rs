@@ -18,7 +18,7 @@ use neuradex::api::v1;
 ///
 /// Returns an error when the OpenAPI document cannot be serialized or a file cannot be written.
 pub fn run(output: &Path, spec: Option<&Path>) -> Result<(), String> {
-    let document = v1::openapi_document();
+    let document = v1::openapi_spec();
 
     let page = neuradex_docs::render(&document);
     write(output, &page)?;
