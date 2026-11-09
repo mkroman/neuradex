@@ -95,10 +95,17 @@ pub(crate) async fn read_body(
     })
     .await;
 
-    // Await the reader on every path — including a failed read — so it is never left detached.
-    // It finishes once the parser stops reading from the channel, aborting the rest of the
-    // response.
-    if let Err(error) = reader.await {
+    // The reader is reaped on every path so it is never left detached. On success it finishes
+    // once the parser stops reading from the channel, aborting the rest of the response; on a
+    // failed read it is aborted first, so a stalled upstream cannot delay the error until the
+    // request timeout.
+    if !matches!(&read, Ok(Ok(_))) {
+        reader.abort();
+    }
+
+    if let Err(error) = reader.await
+        && !error.is_cancelled()
+    {
         tracing::warn!(%error, "reader task failed");
     }
 
