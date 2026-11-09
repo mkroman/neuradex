@@ -79,25 +79,29 @@ Both loopback listeners are bound with a 4096 connection backlog through tokio's
 concurrent bursts overflow the queue, drop SYNs, and show up as one-second retransmit delays that
 look like service latency but are not.
 
-### Interpreting the blocking pool
+### Interpreting the parser pool
 
-Tokio's blocking pool is capped at 512 threads (the runtime default). A `peek` parser holds one
-thread from the first body chunk until the head ends; a `fetch` parser holds one for the whole
-body. Once 512 parsers are parked, new parser tasks queue behind them.
+The service parses heads on a process-wide `LocalSet` pool (`api/v1/parser_pool.rs`), not on
+`spawn_blocking`: each parser waits for its next chunk as a `!Send` future, so a slow upstream
+does not park an OS thread. `NEURADEX_PARSER_THREADS` overrides the pool size; the default is
+`available_parallelism / 8`, clamped to 2 through 4.
 
-The slow requests themselves are not necessarily delayed: while a parser is queued, the reader
-keeps the channel full and the upstream's kernel buffers absorb the early chunks. The observable
-damage is head-of-line blocking for *other* requests. On a 4-second slow head, with a 64-request
-fast control group:
+Before the pool, a `peek` parser held one blocking thread from the first body chunk until the
+head ended, and a `fetch` parser held one for the whole body. Tokio's blocking pool caps at 512
+threads, so the 512th concurrent slow response filled it and new parsers queued behind the slow
+ones. The slow requests themselves were not necessarily delayed — while a parser was queued, the
+reader kept the channel full and the upstream's kernel buffers absorbed the early chunks. The
+observable damage was head-of-line blocking for *other* requests. On a 4-second slow head with a
+64-request fast control group, the pre-pool numbers were:
 
-| Slow concurrency | Fast p50 | Fast p95 | Fast p99 | Blocking-pool probe p99 |
-|---:|---:|---:|---:|---:|
-| 256 | 0.7 ms | 1.3 ms | 2.0 ms | 0.15 ms |
-| 384 | 0.7 ms | 1.5 ms | 2.2 ms | 0.36 ms |
-| 512 | 0.9 ms | 3.66 s | 3.71 s | 3.66 s |
-| 640 | 27.5 ms | 3.98 s | 4.04 s | 3.90 s |
+| Slow concurrency | Fast p50 | Fast p95 | Fast p99 | Blocking-pool probe p99 | Threads peak |
+|---:|---:|---:|---:|---:|---:|
+| 384 | 0.7 ms | 1.5 ms | 2.2 ms | 0.36 ms | 429 |
+| 512 | 0.9 ms | 3.66 s | 3.71 s | 3.66 s | 520 |
+| 640 | 27.5 ms | 3.98 s | 4.04 s | 3.90 s | 520 |
 
-The cliff is the 512-thread cap, not the CPU: `threads_peak` reaches 520 (512 pool threads plus
-runtime threads), while `probe_p99_ms` tracks the slow-head duration. Use this harness to verify
-any change to parser scheduling; the `probe_p99_ms` and `fast_p95_ms`/`fast_p99_ms` columns are
-the signal.
+With the parser pool the same runs stay in the low milliseconds: at 512 and 640 slow heads the
+fast p99 was 1.6 ms and 1.8 ms, the probe p99 was 0.44 ms and 0.36 ms, and `threads_peak` was 11
+(2 parser threads plus the runtime threads) instead of 520. `probe_p99_ms` still measures an empty
+`spawn_blocking` task; it now catches regressions that move parsing back onto the blocking pool.
+The `fast_p95_ms`/`fast_p99_ms` columns are the primary signal.

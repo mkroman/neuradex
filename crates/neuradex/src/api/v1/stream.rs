@@ -1,7 +1,7 @@
 //! Streaming of response bodies through the document head parser.
 //!
 //! The HTML tokenizer is not `Send`, so the response body is streamed through a bounded channel
-//! and parsed on a blocking thread. The channel is bounded so that the reader stalls — and the
+//! and parsed by the parser pool. The channel is bounded so that the reader stalls — and the
 //! download is throttled — once the parser falls behind. In head-only mode, parsing stops as
 //! soon as the document head has been received, aborting the rest of the download; in full-body
 //! mode, the parser stops capturing at the head but the body keeps streaming up to its cap.
@@ -16,7 +16,8 @@ use tokio::task::JoinSet;
 use wreq::header::HeaderMap;
 
 use crate::api::v1::error::ApiError;
-use crate::metadata::{HeadParser, PageMetadata};
+use crate::api::v1::parser_pool;
+use crate::metadata::PageMetadata;
 
 /// The maximum size of a response consumed while extracting document head metadata.
 pub(crate) const HEAD_MAX_BYTES: u64 = 2 * 1024 * 1024;
@@ -115,11 +116,10 @@ pub(crate) async fn read_body(
     // the upstream is still sending its first body byte.
     let first = stream.next().await;
 
-    let (sender, mut receiver) =
-        mpsc::channel::<Result<Bytes, wreq::Error>>(channel_capacity(mode));
+    let (sender, receiver) = mpsc::channel::<Result<Bytes, wreq::Error>>(channel_capacity(mode));
 
     // The reader lives in a `JoinSet` so dropping this future aborts it: the sender is dropped,
-    // `blocking_recv` wakes with `None`, and the parser task exits instead of downloading on.
+    // the parser's channel closes, and the parser task exits instead of downloading on.
     let mut reader = JoinSet::new();
 
     match first {
@@ -150,12 +150,7 @@ pub(crate) async fn read_body(
     }
 
     let body_capacity = initial_body_capacity(content_length, max_bytes);
-    let read = tokio::task::spawn_blocking(move || {
-        let chunks = std::iter::from_fn(|| receiver.blocking_recv());
-
-        consume(chunks, collect_body, max_bytes, body_capacity)
-    })
-    .await;
+    let read = parser_pool::parse(receiver, collect_body, max_bytes, body_capacity).await;
 
     // The parser is done reading, so the reader has no remaining consumer. Abort it even on
     // success: it may be parked in `bytes_stream().next()`, which dropping the receiver does
@@ -174,7 +169,7 @@ pub(crate) async fn read_body(
 
         // A failing read already becomes an API error and is logged once at error level;
         // only a reader failure on an otherwise successful read needs a warning.
-        if matches!(&read, Ok(Ok(_))) {
+        if read.is_ok() {
             tracing::warn!(
                 "error.type" = "reader_task",
                 "exception.message" = %error,
@@ -189,88 +184,7 @@ pub(crate) async fn read_body(
         }
     }
 
-    read?
-}
-
-/// Consumes `chunks` through the head parser, collecting the body when `collect_body` is set.
-///
-/// `body_capacity` pre-sizes the collected body; it is a hint and does not limit the read.
-///
-/// # Errors
-///
-/// Returns an error when a chunk failed to read from the upstream response.
-fn consume(
-    chunks: impl Iterator<Item = Result<Bytes, wreq::Error>>,
-    collect_body: bool,
-    max_bytes: u64,
-    body_capacity: usize,
-) -> Result<StreamedBody, ApiError> {
-    let mut parser = HeadParser::new();
-    let mut body = collect_body.then(|| Vec::with_capacity(body_capacity));
-    let mut bytes_read: u64 = 0;
-    let mut truncated = false;
-    let cap = usize::try_from(max_bytes).unwrap_or(usize::MAX);
-
-    // Whether the size limit was just reached. The loop keeps reading: a further chunk proves
-    // the response was cut short, while a clean end of stream proves it fit exactly and should
-    // not be reported as truncated.
-    let mut at_limit = false;
-
-    for chunk in chunks {
-        if at_limit {
-            truncated = true;
-
-            break;
-        }
-
-        let chunk = chunk.map_err(|error| {
-            // `wreq::Error`'s renderings include the request URI; redact it before it can reach
-            // the 5xx log line.
-            ApiError::upstream(error.without_uri())
-        })?;
-        bytes_read = bytes_read.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
-
-        parser.feed(&chunk);
-
-        if let Some(body) = body.as_mut()
-            && body.len() < cap
-        {
-            let remaining = cap - body.len();
-            let take = remaining.min(chunk.len());
-            body.extend_from_slice(&chunk[..take]);
-
-            // The final chunk crossed the cap: bytes were cut even though the loop ends before
-            // the next `at_limit` check.
-            if take < chunk.len() {
-                truncated = true;
-            }
-        }
-
-        if body.as_ref().is_some_and(|body| body.len() >= cap) {
-            at_limit = true;
-
-            continue;
-        }
-
-        // Only the head-only mode can stop at the end of the head; the full mode keeps reading
-        // the body until its cap or the end of the response.
-        if !collect_body && parser.is_done() {
-            break;
-        }
-
-        if !collect_body && bytes_read >= max_bytes {
-            at_limit = true;
-        }
-    }
-
-    parser.finish();
-
-    Ok(StreamedBody {
-        metadata: parser.into_metadata(),
-        body,
-        bytes_read,
-        truncated,
-    })
+    read
 }
 
 /// Whether the media type can be returned as text.
@@ -378,17 +292,6 @@ mod tests {
         assert_eq!(json.get("content-length").map(String::as_str), Some("42"));
     }
 
-    /// Runs `consume` over chunks copied from `chunks`.
-    fn read_chunks(chunks: &[&[u8]], collect_body: bool, max_bytes: u64) -> StreamedBody {
-        consume(
-            chunks.iter().map(|chunk| Ok(Bytes::copy_from_slice(chunk))),
-            collect_body,
-            max_bytes,
-            0,
-        )
-        .expect("reads")
-    }
-
     #[test]
     fn bounds_the_channel_by_body_mode() {
         assert_eq!(channel_capacity(BodyMode::Head), 1);
@@ -405,173 +308,5 @@ mod tests {
             1024 * 1024
         );
         assert_eq!(initial_body_capacity(Some(u64::MAX), u64::MAX), 1024 * 1024);
-    }
-
-    #[test]
-    fn reserves_the_body_capacity_hint() {
-        let read = consume(
-            std::iter::once(Ok(Bytes::from_static(b"hello"))),
-            true,
-            HEAD_MAX_BYTES,
-            1024,
-        )
-        .expect("reads");
-        let body = read.body.expect("full mode collects the body");
-
-        assert_eq!(body, b"hello");
-        assert!(body.capacity() >= 1024);
-    }
-
-    #[test]
-    fn reads_full_bodies_up_to_the_cap() {
-        struct Case {
-            name: &'static str,
-            chunks: &'static [&'static [u8]],
-            cap: u64,
-            bytes_read: u64,
-            body: &'static [u8],
-            truncated: bool,
-        }
-
-        let cases = [
-            Case {
-                name: "a body that fits the cap exactly is complete",
-                chunks: &[b"xxxxxxxx"],
-                cap: 8,
-                bytes_read: 8,
-                body: b"xxxxxxxx",
-                truncated: false,
-            },
-            Case {
-                name: "a further chunk proves the body was cut short",
-                chunks: &[b"xxxxxxxx", b"yyyy"],
-                cap: 8,
-                bytes_read: 8,
-                body: b"xxxxxxxx",
-                truncated: true,
-            },
-            Case {
-                name: "a single chunk crossing the cap is truncated",
-                chunks: &[b"xxxxxxxxxxxx"],
-                cap: 8,
-                bytes_read: 12,
-                body: b"xxxxxxxx",
-                truncated: true,
-            },
-            Case {
-                name: "a final chunk crossing the cap is truncated",
-                chunks: &[b"xxxx", b"yyyyyyyy"],
-                cap: 8,
-                bytes_read: 12,
-                body: b"xxxxyyyy",
-                truncated: true,
-            },
-        ];
-
-        for case in cases {
-            let read = read_chunks(case.chunks, true, case.cap);
-
-            assert_eq!(
-                read.bytes_read, case.bytes_read,
-                "bytes_read for {}",
-                case.name
-            );
-            assert_eq!(
-                read.body.as_deref(),
-                Some(case.body),
-                "body for {}",
-                case.name
-            );
-            assert_eq!(
-                read.truncated, case.truncated,
-                "truncated for {}",
-                case.name
-            );
-        }
-    }
-
-    #[test]
-    fn reads_heads_up_to_the_head_or_the_cap() {
-        struct Case {
-            name: &'static str,
-            chunks: &'static [&'static [u8]],
-            collect_body: bool,
-            max_bytes: u64,
-            bytes_read: u64,
-            body: Option<&'static [u8]>,
-            truncated: bool,
-            title: Option<&'static str>,
-        }
-
-        const HTML: &[u8] = b"<html><head><title>Hello</title></head></html>";
-        const HEAD: &[u8] = b"<html><head><title>Hello</title></head>";
-        const TAIL: &[u8] = b"<body><p>Hello</p></body></html>";
-        const FULL: &[u8] =
-            b"<html><head><title>Hello</title></head><body><p>Hello</p></body></html>";
-
-        let cases = [
-            Case {
-                name: "a head that fits the cap exactly parses completely",
-                chunks: &[HTML],
-                collect_body: false,
-                max_bytes: u64::try_from(HTML.len()).expect("fits"),
-                bytes_read: u64::try_from(HTML.len()).expect("fits"),
-                body: None,
-                truncated: false,
-                title: Some("Hello"),
-            },
-            Case {
-                name: "a further chunk proves the head was cut short",
-                chunks: &[b"<<<<<<<<<<<<<<<<", b"xxxxxxxx"],
-                collect_body: false,
-                max_bytes: 16,
-                bytes_read: 16,
-                body: None,
-                truncated: true,
-                title: None,
-            },
-            Case {
-                name: "full mode keeps reading past the head",
-                chunks: &[HEAD, TAIL],
-                collect_body: true,
-                max_bytes: HEAD_MAX_BYTES,
-                bytes_read: u64::try_from(FULL.len()).expect("fits"),
-                body: Some(FULL),
-                truncated: false,
-                title: Some("Hello"),
-            },
-            Case {
-                name: "head mode stops at the end of the head",
-                chunks: &[HEAD, b"xxxxxxxx"],
-                collect_body: false,
-                max_bytes: HEAD_MAX_BYTES,
-                bytes_read: u64::try_from(HEAD.len()).expect("fits"),
-                body: None,
-                truncated: false,
-                title: Some("Hello"),
-            },
-        ];
-
-        for case in cases {
-            let read = read_chunks(case.chunks, case.collect_body, case.max_bytes);
-
-            assert_eq!(
-                read.metadata.title.as_deref(),
-                case.title,
-                "title for {}",
-                case.name
-            );
-            assert_eq!(
-                read.bytes_read, case.bytes_read,
-                "bytes_read for {}",
-                case.name
-            );
-            assert_eq!(read.body.as_deref(), case.body, "body for {}", case.name);
-            assert_eq!(
-                read.truncated, case.truncated,
-                "truncated for {}",
-                case.name
-            );
-        }
     }
 }

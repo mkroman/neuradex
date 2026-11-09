@@ -5,6 +5,7 @@ pub mod extract;
 pub mod fetch;
 pub mod openapi;
 pub mod openwebui_search;
+mod parser_pool;
 pub mod peek;
 pub mod redirect;
 pub mod search;
