@@ -128,6 +128,11 @@
       "default": "",
       "description": "Optional USER_AGENT override for the browser-impersonating HTTP client; empty uses the application default."
     },
+    "privacyPass": {
+      "type": "boolean",
+      "default": true,
+      "description": "Use anonymous Privacy Pass tokens for searches. Disable to fall back to session-cookie search authentication; the session token is required for issuance either way."
+    },
     "rustLog": {
       "type": "string",
       "default": "info",

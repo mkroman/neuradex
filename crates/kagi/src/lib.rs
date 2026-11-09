@@ -3,6 +3,9 @@
 //! This crate provides an asynchronous [`Client`] for querying [Kagi](https://kagi.com) with a
 //! session token and parsing the streamed responses into [`SearchResult`]s and [`ImageResult`]s.
 //!
+//! Searches can also use anonymous Privacy Pass tokens via [`Client::with_privacy_pass`] or
+//! [`ClientOptions::privacy_pass`]. The session token is then used only to issue tokens.
+//!
 //! ## Features
 //!
 //! - **`default-tls`** *(enabled by default)*: selects the default TLS backend (**`rustls`**).
@@ -50,10 +53,14 @@ mod client;
 mod error;
 mod model;
 mod parse;
+mod privacy_pass;
 
 pub use client::Client;
 pub use error::{Error, RequestError};
 pub use model::{ImageResult, SearchResult};
+pub use privacy_pass::{
+    PrivacyPassClient, PrivacyPassError, PrivacyPassOptions, PrivacyToken, TokenStore,
+};
 
 /// Kagi base URL.
 pub const BASE_URL: &str = "https://kagi.com";
@@ -96,6 +103,12 @@ pub struct ClientOptions {
     /// pool by establishing sessions one at a time, and requests beyond the pool capacity
     /// wait for a session to free up. Values below 1 are treated as 1.
     pub max_sessions: usize,
+    /// Privacy Pass authentication settings.
+    ///
+    /// When set, searches redeem anonymous Privacy Pass tokens instead of sending the session
+    /// token, session cookies, or `X-Kagi-Authorization`. The configured session token is still
+    /// used to authorize token issuance.
+    pub privacy_pass: Option<PrivacyPassOptions>,
 }
 
 impl Default for ClientOptions {
@@ -107,6 +120,7 @@ impl Default for ClientOptions {
             session_duration: SESSION_DURATION,
             language: LANGUAGE.to_string(),
             max_sessions: DEFAULT_MAX_SESSIONS,
+            privacy_pass: None,
         }
     }
 }
