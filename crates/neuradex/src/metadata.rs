@@ -3,6 +3,8 @@
 //! Responses are streamed through a push-based HTML tokenizer that captures the title and the
 //! meta/link metadata of a document head. Tokenization stops once the head section has ended —
 //! through `</head>` or the start of `<body>` — so the rest of the response can be aborted.
+//! The tokenizer unwinds mid-buffer at that tag; any body markup that shares the chunk with the
+//! head boundary is discarded without being tokenized.
 //!
 //! Response bodies are decoded as UTF-8; byte sequences that are not valid UTF-8 — including
 //! entire pages served in another encoding, e.g. ISO-8859-1 — are decoded lossily.
@@ -95,6 +97,7 @@ impl HeadParser {
             if !text.is_empty() {
                 self.queue.push_back(StrTendril::from_slice(text));
                 let _ = self.tokenizer.feed(&self.queue);
+                self.release_buffered_input();
             }
 
             return;
@@ -105,6 +108,18 @@ impl HeadParser {
         if !text.is_empty() {
             self.queue.push_back(StrTendril::from_slice(&text));
             let _ = self.tokenizer.feed(&self.queue);
+            self.release_buffered_input();
+        }
+    }
+
+    /// Releases the input the tokenizer left queued when it stopped at the head boundary.
+    ///
+    /// The tokenizer unwinds at the tag that ends the head, so the remainder of the chunk stays
+    /// in the queue. Dropping it promptly matters for callers that keep the parser alive to
+    /// collect the body.
+    fn release_buffered_input(&self) {
+        if self.is_done() {
+            while self.queue.pop_front().is_some() {}
         }
     }
 
@@ -358,10 +373,29 @@ impl TokenSink for HeadSink {
         }
 
         match token {
-            Token::TagToken(tag) => match tag.kind {
-                StartTag => self.start_tag(&tag),
-                EndTag => self.end_tag(&tag),
-            },
+            Token::TagToken(tag) => {
+                match tag.kind {
+                    StartTag => self.start_tag(&tag),
+                    EndTag => self.end_tag(&tag),
+                }
+
+                // `TokenSinkResult` has no `Stop`, so unwind the tokenizer with `Script` once the
+                // tag ends the head. This is not a real script execution: `HeadParser` never
+                // resumes tokenization after `is_done()`, so the tokenizer's post-`Script` state
+                // reset is unobservable. It stops the tokenizer mid-buffer instead of letting it
+                // tokenize the remainder of a potentially large chunk.
+                if self.is_done() {
+                    return TokenSinkResult::Script(());
+                }
+
+                // Elements whose contents are text rather than markup must be switched to the
+                // tokenizer's corresponding raw-text state. Otherwise markup-like text in a
+                // script or style body — e.g. the string `"</head>"` — would be tokenized as a
+                // real tag and stop the parser before the actual head end.
+                if tag.kind == StartTag {
+                    return raw_text_state(&tag.name);
+                }
+            }
             Token::CharacterTokens(text) => {
                 if let Some(title) = self.title.borrow_mut().as_mut() {
                     title.push_str(&text);
@@ -375,6 +409,19 @@ impl TokenSink for HeadSink {
 
     fn end(&self) {
         self.flush_title();
+    }
+}
+
+/// Returns the tokenizer's raw-text state for a start tag, if the element's contents are text
+/// rather than markup.
+fn raw_text_state(name: &str) -> TokenSinkResult<()> {
+    use html5ever::tokenizer::states::{Rawtext, Rcdata, ScriptData};
+
+    match name {
+        "title" | "textarea" => TokenSinkResult::RawData(Rcdata),
+        "style" | "xmp" | "iframe" | "noembed" | "noframes" => TokenSinkResult::RawData(Rawtext),
+        "script" => TokenSinkResult::RawData(ScriptData),
+        _ => TokenSinkResult::Continue,
     }
 }
 
@@ -590,6 +637,61 @@ mod tests {
         );
 
         assert_eq!(metadata.title.as_deref(), Some("Hello"));
+    }
+
+    #[test]
+    fn ignores_head_end_inside_a_script() {
+        let html = r#"<html><head><title>Hello</title>
+            <script>const closing = "</head><body>";</script>
+            <meta name="description" content="A description"></head>
+            <body><title>Ignored</title></body></html>"#;
+
+        for chunk_size in [1, 2, 3, 5, 7, 11, 64, usize::MAX] {
+            let metadata = parse_metadata_chunked(html, chunk_size);
+
+            assert_eq!(metadata.title.as_deref(), Some("Hello"));
+            assert_eq!(
+                metadata.description.as_deref(),
+                Some("A description"),
+                "chunk size {chunk_size}"
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_metadata_after_the_head() {
+        let metadata = parse_metadata(
+            r#"<html><head><title>Hello</title>
+            <meta name="description" content="Head description"></head>
+            <body><title>Ignored</title>
+            <meta property="og:title" content="Ignored">
+            <meta name="description" content="Body description">
+            <link rel="canonical" href="https://example.com/body"></body></html>"#,
+        );
+
+        assert_eq!(metadata.title.as_deref(), Some("Hello"));
+        assert_eq!(metadata.description.as_deref(), Some("Head description"));
+        assert!(metadata.og.is_empty());
+        assert!(metadata.canonical.is_none());
+    }
+
+    #[test]
+    fn releases_the_unparsed_tail_of_the_chunk() {
+        let mut parser = HeadParser::new();
+
+        // The body tail shares a chunk with `</head>` and is never tokenized.
+        parser.feed(
+            b"<html><head><title>Hello</title></head><body><title>Ignored</title></body></html>",
+        );
+
+        assert!(parser.is_done());
+        assert!(parser.queue.is_empty());
+
+        parser.feed(b"<title>Ignored</title>");
+        parser.finish();
+
+        assert!(parser.queue.is_empty());
+        assert_eq!(parser.into_metadata().title.as_deref(), Some("Hello"));
     }
 
     #[test]
