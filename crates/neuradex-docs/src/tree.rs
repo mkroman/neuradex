@@ -3,23 +3,21 @@
 //! The trees recurse over arbitrary schema shapes, so they render through their own
 //! askama partials (`templates/partials/schema-node.html` and `schema-row.html`).
 //! Plain-text fields (names, labels, annotations) are escaped by the template; the
-//! pre-rendered HTML fields (`*_html`, the highlighted examples, and the recursive
-//! children) are interpolated with `|safe`. The markup and class names are the ones
-//! the theme's stylesheet and behavior script expect.
+//! pre-rendered HTML fields (`*_html`, the highlighted examples from [`crate::highlight`],
+//! and the recursive children) are interpolated with `|safe`. The markup and class names
+//! are the ones the theme's stylesheet and behavior script expect.
 
 use serde_json::Value;
 
 use askama::Template;
 
+use crate::highlight;
 use crate::html;
-use crate::model;
-use crate::model::Anno;
+use crate::model::Annotation;
+use crate::schema;
 
 /// The maximum nesting depth expanded inline; deeper branches point at the schema appendix.
 const MAX_DEPTH: usize = 4;
-
-/// The character cap for rendered schema examples.
-const EXAMPLE_CAP: usize = 20_000;
 
 /// One `<details>` node of a schema tree; see `templates/partials/schema-node.html`.
 pub struct SchemaNode {
@@ -58,7 +56,7 @@ pub struct ResolvedBody {
     /// The description, as HTML.
     pub description_html: String,
     /// The constraint annotations, in document order.
-    pub anns: Vec<Anno>,
+    pub anns: Vec<Annotation>,
     /// The properties, in document order.
     pub props: Vec<SchemaEntry>,
     /// The element schema of an array, if any.
@@ -90,17 +88,17 @@ pub struct SchemaRow {
     /// The description, as HTML.
     pub description_html: String,
     /// The constraint annotations, in document order.
-    pub anns: Vec<Anno>,
+    pub anns: Vec<Annotation>,
 }
 
 /// Renders `schema` as a tree rooted at `name`, expanded by default.
 pub fn root(spec: &Value, name: &str, schema: &Value) -> SchemaNode {
     let mut stack = Vec::new();
-    node(spec, name, schema, 0, &mut stack, true, false)
+    build_node(spec, name, schema, 0, &mut stack, true, false)
 }
 
 /// Builds one `<details>` node and, recursively, its children.
-fn node(
+fn build_node(
     spec: &Value,
     name: &str,
     schema: &Value,
@@ -110,7 +108,7 @@ fn node(
     required: bool,
 ) -> SchemaNode {
     let reference = html::str_field(schema, "$ref");
-    let ref_target = reference.map(|r| html::ref_name(r).to_owned());
+    let ref_target = reference.map(|reference| html::ref_name(reference).to_owned());
     let target = reference.map_or(Some(schema), |reference| {
         // Only local `#/...` references are resolved.
         reference
@@ -126,7 +124,7 @@ fn node(
                 SchemaBody::Cycle(target_name.to_owned())
             }
             _ if depth > MAX_DEPTH && is_branch(target) => SchemaBody::Deep,
-            _ => SchemaBody::Resolved(resolved_body(
+            _ => SchemaBody::Resolved(build_resolved_body(
                 spec,
                 name,
                 ref_target.as_deref(),
@@ -137,7 +135,7 @@ fn node(
         },
     );
 
-    let (type_label, type_is_ref) = type_info(schema);
+    let (type_label, type_is_ref) = type_pill(schema);
     SchemaNode {
         open,
         name: name.to_owned(),
@@ -158,7 +156,7 @@ fn brief(target: Option<&Value>) -> Option<String> {
 }
 
 /// Builds the fully expanded body of one node.
-fn resolved_body(
+fn build_resolved_body(
     spec: &Value,
     name: &str,
     ref_target: Option<&str>,
@@ -168,16 +166,14 @@ fn resolved_body(
 ) -> ResolvedBody {
     let description_html =
         html::str_field(target, "description").map_or_else(String::new, html::prose);
-    let anns = schema_anns(target);
+    let anns = schema_annotations(target);
 
     let required_names: Vec<&str> = html::field(target, "required")
         .and_then(Value::as_array)
         .map_or_default(|names| names.iter().filter_map(Value::as_str).collect());
 
     let properties = html::field(target, "properties").and_then(Value::as_object);
-    let items = (html::str_field(target, "type") == Some("array"))
-        .then(|| html::field(target, "items"))
-        .flatten();
+    let items = schema::array_items(target, html::str_field(target, "type"));
 
     // The recursion-guard key is the `$ref` target when the node has one, its name otherwise.
     let needs_key =
@@ -190,7 +186,7 @@ fn resolved_body(
     if let Some(properties) = properties {
         for (property_name, property) in properties {
             if is_branch(property) {
-                props.push(SchemaEntry::Node(node(
+                props.push(SchemaEntry::Node(build_node(
                     spec,
                     property_name,
                     property,
@@ -200,7 +196,7 @@ fn resolved_body(
                     required_names.contains(&property_name.as_str()),
                 )));
             } else {
-                props.push(SchemaEntry::Row(property_row(
+                props.push(SchemaEntry::Row(build_property_row(
                     property_name,
                     property,
                     &required_names,
@@ -209,14 +205,23 @@ fn resolved_body(
         }
     }
 
-    let items =
-        items.map(|items| Box::new(node(spec, "items[]", items, depth + 1, stack, false, false)));
+    let items = items.map(|items| {
+        Box::new(build_node(
+            spec,
+            "items[]",
+            items,
+            depth + 1,
+            stack,
+            false,
+            false,
+        ))
+    });
 
     if needs_key {
         stack.pop();
     }
 
-    let examples = example_values(target);
+    let examples = schema::example_values(target);
     let examples_label = if examples.len() > 1 {
         "examples"
     } else {
@@ -224,7 +229,7 @@ fn resolved_body(
     };
     let examples = examples
         .iter()
-        .map(|example| highlight_json(example, EXAMPLE_CAP))
+        .map(|example| highlight::highlight_json(example, highlight::EXAMPLE_CAP))
         .collect();
 
     ResolvedBody {
@@ -237,9 +242,11 @@ fn resolved_body(
     }
 }
 
-/// Builds a flat (non-expandable) property row.
-fn property_row(name: &str, property: &Value, required_names: &[&str]) -> SchemaRow {
-    let (type_label, type_is_ref) = type_info(property);
+/// Builds a flat (non-expandable) property row, including its documented example.
+fn build_property_row(name: &str, property: &Value, required_names: &[&str]) -> SchemaRow {
+    let (type_label, type_is_ref) = type_pill(property);
+    let mut anns = schema_annotations(property);
+    schema::push_example_annotation(&mut anns, schema::example(property));
     SchemaRow {
         name: name.to_owned(),
         type_label,
@@ -247,18 +254,23 @@ fn property_row(name: &str, property: &Value, required_names: &[&str]) -> Schema
         required: required_names.contains(&name),
         description_html: html::str_field(property, "description")
             .map_or_else(String::new, html::prose),
-        anns: schema_anns(property),
+        anns,
     }
 }
 
 /// The `(label, is_ref)` of a schema's type pill.
-fn type_info(schema: &Value) -> (String, bool) {
+///
+/// This is intentionally fuller than [`schema::primary_type`]: the pill shows every union
+/// member (including `null`), `$ref` target names, `array<...>` item labels, and `any` when
+/// no type is documented.
+fn type_pill(schema: &Value) -> (String, bool) {
     if let Some(reference) = html::str_field(schema, "$ref") {
         return (html::ref_name(reference).to_owned(), true);
     }
     match html::field(schema, "type") {
         Some(Value::String(t)) if t == "array" => {
-            let (items, _) = type_info(html::field(schema, "items").unwrap_or(&Value::Null));
+            let (items, _) =
+                type_pill(schema::array_items(schema, Some("array")).unwrap_or(&Value::Null));
             (format!("array<{items}>"), false)
         }
         Some(Value::String(t)) => (t.clone(), false),
@@ -286,7 +298,7 @@ fn is_branch(schema: &Value) -> bool {
         return true;
     }
     if html::str_field(schema, "type") == Some("array")
-        && let Some(items) = html::field(schema, "items")
+        && let Some(items) = schema::array_items(schema, Some("array"))
     {
         return items.get("$ref").is_some()
             || html::field(items, "properties").is_some()
@@ -296,22 +308,22 @@ fn is_branch(schema: &Value) -> bool {
 }
 
 /// The constraint annotations of a schema: `format`, `default`, the numeric bounds,
-/// `pattern`, and `enum`, in that order.
-fn schema_anns(schema: &Value) -> Vec<Anno> {
+/// `min length`, `max length`, `pattern`, and `enum`, in that order.
+fn schema_annotations(schema: &Value) -> Vec<Annotation> {
     let mut anns = Vec::new();
-    model::common_anns(&mut anns, schema);
+    schema::push_common_annotations(&mut anns, schema);
 
     if let Some(min_length) = html::field(schema, "minLength") {
-        anns.push(Anno::new("min length", min_length.to_string()));
+        anns.push(Annotation::new("min length", min_length.to_string()));
     }
     if let Some(max_length) = html::field(schema, "maxLength") {
-        anns.push(Anno::new("max length", max_length.to_string()));
+        anns.push(Annotation::new("max length", max_length.to_string()));
     }
     if let Some(pattern) = html::str_field(schema, "pattern") {
-        anns.push(Anno::new("pattern", pattern.to_owned()));
+        anns.push(Annotation::new("pattern", pattern.to_owned()));
     }
     if let Some(Value::Array(values)) = html::field(schema, "enum") {
-        anns.push(Anno::new(
+        anns.push(Annotation::new(
             "enum",
             values
                 .iter()
@@ -321,111 +333,6 @@ fn schema_anns(schema: &Value) -> Vec<Anno> {
         ));
     }
     anns
-}
-
-/// The schema's `examples` as a list, mirroring the behavior script's handling.
-///
-/// Named Example Objects (the object form of `examples`) are unwrapped to their
-/// `value` payload when present, so the summary fields of the wrapper are not shown.
-fn example_values(schema: &Value) -> Vec<&Value> {
-    match html::field(schema, "examples") {
-        Some(Value::Array(items)) => items.iter().collect(),
-        Some(Value::Object(map)) => map
-            .values()
-            .map(|example| html::field(example, "value").unwrap_or(example))
-            .collect(),
-        Some(other) => vec![other],
-        None => Vec::new(),
-    }
-}
-
-/// Renders a JSON value as syntax-highlighted HTML, mirroring the behavior script's
-/// runtime highlighter (keys, strings, numbers, booleans/null).
-fn highlight_json(value: &Value, cap: usize) -> String {
-    let Ok(text) = serde_json::to_string_pretty(value) else {
-        return htmlize::escape_all_quotes(value.to_string()).into_owned();
-    };
-    highlight_text(&text, cap)
-}
-
-fn highlight_text(text: &str, cap: usize) -> String {
-    let truncated = text.len() > cap;
-    let slice = if truncated {
-        let mut cut = cap;
-        while !text.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        &text[..cut]
-    } else {
-        text
-    };
-    let bytes = slice.as_bytes();
-
-    let mut out = String::new();
-    let mut last = 0;
-    let mut i = 0;
-    while i < bytes.len() {
-        let (class, end) = match bytes[i] {
-            b'"' => {
-                let mut j = i + 1;
-                while j < bytes.len() {
-                    match bytes[j] {
-                        b'\\' => j += 2,
-                        b'"' => {
-                            j += 1;
-                            break;
-                        }
-                        _ => j += 1,
-                    }
-                }
-                let j = j.min(bytes.len());
-                let mut k = j;
-                while k < bytes.len() && bytes[k].is_ascii_whitespace() {
-                    k += 1;
-                }
-                if k < bytes.len() && bytes[k] == b':' {
-                    html::push_escaped(&mut out, &slice[last..i]);
-                    out.push_str("<span class=\"j-key\">");
-                    html::push_escaped(&mut out, &slice[i..j]);
-                    out.push_str("</span>");
-                    html::push_escaped(&mut out, &slice[j..=k]);
-                    i = k + 1;
-                    last = i;
-                    continue;
-                }
-                ("j-str", j)
-            }
-            b't' if slice[i..].starts_with("true") => ("j-bool", i + 4),
-            b'f' if slice[i..].starts_with("false") => ("j-bool", i + 5),
-            b'n' if slice[i..].starts_with("null") => ("j-bool", i + 4),
-            b'-' | b'0'..=b'9' => {
-                let mut j = i + 1;
-                while j < bytes.len()
-                    && matches!(bytes[j], b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')
-                {
-                    j += 1;
-                }
-                ("j-num", j)
-            }
-            _ => {
-                i += 1;
-                continue;
-            }
-        };
-        html::push_escaped(&mut out, &slice[last..i]);
-        out.push_str("<span class=\"");
-        out.push_str(class);
-        out.push_str("\">");
-        html::push_escaped(&mut out, &slice[i..end]);
-        out.push_str("</span>");
-        i = end;
-        last = i;
-    }
-    html::push_escaped(&mut out, &slice[last..]);
-    if truncated {
-        out.push_str("\n… truncated for display");
-    }
-    out
 }
 
 /// The askama wrapper for `templates/partials/schema-node.html`. Escaping stays on:
@@ -488,6 +395,15 @@ mod tests {
         assert!(html.contains("<code>thing</code>"));
         assert!(html.contains(r#"<span class="req">*</span>"#));
         assert!(!html.contains(r#"<span class="ann-k">min</span>"#));
+    }
+
+    #[test]
+    fn type_pill_keeps_null_union_members() {
+        let schema = json!({"type": ["string", "null"]});
+
+        // The tree's pill is deliberately fuller than the page builder's primary type.
+        assert_eq!(type_pill(&schema), ("string | null".to_owned(), false));
+        assert_eq!(schema::primary_type(&schema), Some("string"));
     }
 
     #[test]
@@ -579,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn highlights_json_examples() {
+    fn renders_examples_as_highlighted_json() {
         let spec = json!({
             "components": {"schemas": {"Shaped": {
                 "type": "object",
@@ -590,7 +506,6 @@ mod tests {
         let html = root(&spec, "Shaped", schema).render().expect("renders");
 
         assert!(html.contains(r#"<p class="ex-label">example</p>"#));
-        // The highlighter escapes the tokens it wraps (the old string renderer did too).
         assert!(html.contains(r#"<span class="j-key">&quot;name&quot;</span>"#));
         assert!(html.contains(r#"<span class="j-str">&quot;x&quot;</span>"#));
         assert!(html.contains(r#"<span class="j-num">2</span>"#));
@@ -651,11 +566,41 @@ mod tests {
     }
 
     #[test]
-    fn truncates_small_caps_directly() {
-        let value = json!("ééééééééééééééééééééééééééééééééééé");
-        let html = highlight_json(&value, 10);
+    fn annotates_schema_rows_with_examples() {
+        let spec = json!({
+            "components": {"schemas": {"Thing": {"type": "object", "properties": {
+                "name": {"type": "string", "example": "widget"},
+                "kind": {"type": "string", "examples": ["big", "small"]},
+                "named": {"type": "string", "examples": {
+                    "first": {"value": "one"},
+                    "second": {"value": "two"}
+                }},
+                "count": {"type": "integer"}
+            }}}}
+        });
+        let schema = &spec["components"]["schemas"]["Thing"];
+        let html = root(&spec, "Thing", schema).render().expect("renders");
 
-        assert!(html.contains("truncated for display"));
-        assert!(html.contains("é"));
+        // Field-level examples are annotations on the flat property rows, like
+        // request-body fields; only the first `examples` entry is shown.
+        assert!(
+            html.contains(
+                r#"<span class="ann-k">example</span> <span class="ann-v">widget</span>"#
+            )
+        );
+        assert!(
+            html.contains(r#"<span class="ann-k">example</span> <span class="ann-v">big</span>"#)
+        );
+        assert!(
+            html.contains(r#"<span class="ann-k">example</span> <span class="ann-v">one</span>"#)
+        );
+        assert!(!html.contains("small"));
+        assert!(!html.contains("two"));
+        // No annotation is invented for a property without an example.
+        assert_eq!(
+            html.matches(r#"<span class="ann-k">example</span>"#)
+                .count(),
+            3
+        );
     }
 }
