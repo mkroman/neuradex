@@ -93,7 +93,7 @@ pub(crate) async fn peek(
 
     stream::ensure_text_content(fetched.info.content_type.as_deref())?;
 
-    let read = stream::read_body(response, stream::BodyMode::Head).await?;
+    let read = stream::read_body(response, stream::BodyMode::Head, None).await?;
     let metrics = fetched.into_metrics(read.bytes_read, read.truncated, started);
 
     Ok(Json(PeekResponse {

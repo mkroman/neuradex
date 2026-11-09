@@ -12,6 +12,7 @@ use std::collections::btree_map::Entry;
 use axum::body::Bytes;
 use futures::StreamExt;
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use wreq::header::HeaderMap;
 
 use crate::api::v1::error::ApiError;
@@ -19,6 +20,12 @@ use crate::metadata::{HeadParser, PageMetadata};
 
 /// The maximum size of a response consumed while extracting document head metadata.
 pub(crate) const HEAD_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+/// The largest body buffer reserved from a `Content-Length` hint.
+///
+/// `Content-Length` may describe compressed bytes and is controlled by the upstream, so it is
+/// only a hint: reserve at most this much up front and let the buffer grow past it when needed.
+const MAX_RESERVED_BODY_BYTES: u64 = 1024 * 1024;
 
 /// The media types that can be returned as text.
 const TEXT_MEDIA_TYPES: &[&str] = &[
@@ -58,10 +65,36 @@ pub(crate) struct StreamedBody {
     pub truncated: bool,
 }
 
+/// The channel capacity for each body mode.
+///
+/// Head-only mode stops at the end of the head, so a single buffered chunk already keeps the
+/// parser fed while bounding how much of the body a `peek` prefetches past the head. Full mode
+/// needs a deeper channel to keep the parser busy while the async reader is scheduled.
+const fn channel_capacity(mode: BodyMode) -> usize {
+    match mode {
+        BodyMode::Head => 1,
+        BodyMode::Full(_) => 4,
+    }
+}
+
+/// Returns the body buffer capacity to reserve from a `Content-Length` hint.
+///
+/// The hint is clamped to both the body cap and [`MAX_RESERVED_BODY_BYTES`] because it can
+/// describe compressed bytes or lie outright.
+fn initial_body_capacity(content_length: Option<u64>, max_bytes: u64) -> usize {
+    let hint = content_length
+        .unwrap_or(0)
+        .min(max_bytes)
+        .min(MAX_RESERVED_BODY_BYTES);
+
+    usize::try_from(hint).unwrap_or(usize::MAX)
+}
+
 /// Streams `response` through the head parser according to `mode`.
 ///
 /// In [`BodyMode::Full`] the head parser stops capturing once the document head ends, but the
-/// body keeps streaming up to its cap.
+/// body keeps streaming up to its cap. `content_length` is the final response's
+/// `Content-Length` hint, used only to pre-size the collected body.
 ///
 /// # Errors
 ///
@@ -69,29 +102,58 @@ pub(crate) struct StreamedBody {
 pub(crate) async fn read_body(
     response: wreq::Response,
     mode: BodyMode,
+    content_length: Option<u64>,
 ) -> Result<StreamedBody, ApiError> {
     let (collect_body, max_bytes) = match mode {
         BodyMode::Head => (false, HEAD_MAX_BYTES),
         BodyMode::Full(max_bytes) => (true, max_bytes),
     };
 
-    let (sender, mut receiver) = mpsc::channel::<Result<Bytes, wreq::Error>>(4);
+    let mut stream = response.bytes_stream();
 
-    let reader = tokio::spawn(async move {
-        let mut stream = response.bytes_stream();
+    // Await the first chunk before spawning the blocking parser: no OS thread is parked while
+    // the upstream is still sending its first body byte.
+    let first = stream.next().await;
 
-        while let Some(chunk) = stream.next().await {
-            // Backpressure from a full channel awaits here instead of blocking a worker thread.
-            if sender.send(chunk).await.is_err() {
-                break;
-            }
+    let (sender, mut receiver) =
+        mpsc::channel::<Result<Bytes, wreq::Error>>(channel_capacity(mode));
+
+    // The reader lives in a `JoinSet` so dropping this future aborts it: the sender is dropped,
+    // `blocking_recv` wakes with `None`, and the parser task exits instead of downloading on.
+    let mut reader = JoinSet::new();
+
+    match first {
+        None => {
+            // Empty body: the parser sees a closed channel and returns an empty result.
+            drop(sender);
         }
-    });
+        Some(Ok(chunk)) => {
+            // Queue the first chunk before the parser starts. The channel has spare capacity
+            // and no other sender, so this cannot fail or block.
+            let _ = sender.send(Ok(chunk)).await;
+            reader.spawn(async move {
+                while let Some(chunk) = stream.next().await {
+                    // Backpressure from a full channel awaits here instead of blocking a
+                    // worker thread.
+                    if sender.send(chunk).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        Some(Err(error)) => {
+            // Hand the error to the parser without spawning a reader that would keep polling
+            // the failed stream.
+            let _ = sender.send(Err(error)).await;
+            drop(sender);
+        }
+    }
 
+    let body_capacity = initial_body_capacity(content_length, max_bytes);
     let read = tokio::task::spawn_blocking(move || {
         let chunks = std::iter::from_fn(|| receiver.blocking_recv());
 
-        consume(chunks, collect_body, max_bytes)
+        consume(chunks, collect_body, max_bytes, body_capacity)
     })
     .await;
 
@@ -99,11 +161,17 @@ pub(crate) async fn read_body(
     // success: it may be parked in `bytes_stream().next()`, which dropping the receiver does
     // not interrupt, and a stalled upstream must not hold the response until the client
     // timeout. On a failed read this also prevents a stalled body from delaying the error.
-    reader.abort();
+    reader.abort_all();
 
-    if let Err(error) = reader.await
-        && !error.is_cancelled()
-    {
+    while let Some(result) = reader.join_next().await {
+        let Err(error) = result else {
+            continue;
+        };
+
+        if error.is_cancelled() {
+            continue;
+        }
+
         // A failing read already becomes an API error and is logged once at error level;
         // only a reader failure on an otherwise successful read needs a warning.
         if matches!(&read, Ok(Ok(_))) {
@@ -126,6 +194,8 @@ pub(crate) async fn read_body(
 
 /// Consumes `chunks` through the head parser, collecting the body when `collect_body` is set.
 ///
+/// `body_capacity` pre-sizes the collected body; it is a hint and does not limit the read.
+///
 /// # Errors
 ///
 /// Returns an error when a chunk failed to read from the upstream response.
@@ -133,9 +203,10 @@ fn consume(
     chunks: impl Iterator<Item = Result<Bytes, wreq::Error>>,
     collect_body: bool,
     max_bytes: u64,
+    body_capacity: usize,
 ) -> Result<StreamedBody, ApiError> {
     let mut parser = HeadParser::new();
-    let mut body = if collect_body { Some(Vec::new()) } else { None };
+    let mut body = collect_body.then(|| Vec::with_capacity(body_capacity));
     let mut bytes_read: u64 = 0;
     let mut truncated = false;
     let cap = usize::try_from(max_bytes).unwrap_or(usize::MAX);
@@ -313,8 +384,42 @@ mod tests {
             chunks.iter().map(|chunk| Ok(Bytes::copy_from_slice(chunk))),
             collect_body,
             max_bytes,
+            0,
         )
         .expect("reads")
+    }
+
+    #[test]
+    fn bounds_the_channel_by_body_mode() {
+        assert_eq!(channel_capacity(BodyMode::Head), 1);
+        assert_eq!(channel_capacity(BodyMode::Full(HEAD_MAX_BYTES)), 4);
+    }
+
+    #[test]
+    fn clamps_body_capacity_hints() {
+        assert_eq!(initial_body_capacity(None, 25 * 1024 * 1024), 0);
+        assert_eq!(initial_body_capacity(Some(4096), 25 * 1024 * 1024), 4096);
+        assert_eq!(initial_body_capacity(Some(64 * 1024), 16 * 1024), 16 * 1024);
+        assert_eq!(
+            initial_body_capacity(Some(64 * 1024 * 1024), 64 * 1024 * 1024),
+            1024 * 1024
+        );
+        assert_eq!(initial_body_capacity(Some(u64::MAX), u64::MAX), 1024 * 1024);
+    }
+
+    #[test]
+    fn reserves_the_body_capacity_hint() {
+        let read = consume(
+            std::iter::once(Ok(Bytes::from_static(b"hello"))),
+            true,
+            HEAD_MAX_BYTES,
+            1024,
+        )
+        .expect("reads");
+        let body = read.body.expect("full mode collects the body");
+
+        assert_eq!(body, b"hello");
+        assert!(body.capacity() >= 1024);
     }
 
     #[test]

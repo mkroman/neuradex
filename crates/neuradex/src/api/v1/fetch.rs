@@ -4,8 +4,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::Json;
+use axum::body::Body;
 use axum::extract::State;
+use axum::http::header::CONTENT_TYPE;
+use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
 use crate::api::v1::error::ApiError;
@@ -97,7 +99,7 @@ pub struct FetchResponse {
 pub(crate) async fn fetch(
     State(state): State<Arc<AppState>>,
     ApiQuery(params): ApiQuery<PageParams>,
-) -> Result<Json<FetchResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     let url = params.url()?;
     let redirects = params.redirects()?;
     let includes = params.includes(FETCH_INCLUDES)?;
@@ -113,12 +115,20 @@ pub(crate) async fn fetch(
         .headers
         .then(|| stream::headers_to_json(response.headers()));
 
-    let read = stream::read_body(response, stream::BodyMode::Full(FETCH_MAX_BYTES)).await?;
+    let read = stream::read_body(
+        response,
+        stream::BodyMode::Full(FETCH_MAX_BYTES),
+        fetched.info.content_length,
+    )
+    .await?;
     let body = String::from_utf8(read.body.expect("full mode collects the body"))
         .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
     let metrics = fetched.into_metrics(read.bytes_read, read.truncated, started);
 
-    Ok(Json(FetchResponse {
+    // Serialize into a pre-sized buffer: axum's `Json` starts from a small buffer and grows it
+    // geometrically, re-copying a body of several megabytes as it does.
+    let body_capacity = body.len().saturating_add(1024);
+    let payload = FetchResponse {
         url: requested,
         metadata: read.metadata,
         body,
@@ -128,5 +138,10 @@ pub(crate) async fn fetch(
             .then(|| stream::headers_to_json(&state.default_headers)),
         response_headers,
         metrics,
-    }))
+    };
+
+    let mut encoded = Vec::with_capacity(body_capacity);
+    serde_json::to_writer(&mut encoded, &payload).map_err(ApiError::internal)?;
+
+    Ok(([(CONTENT_TYPE, "application/json")], Body::from(encoded)).into_response())
 }
