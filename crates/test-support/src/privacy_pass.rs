@@ -13,7 +13,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE;
 use httpmock::{HttpMockRequest, HttpMockResponse, Mock, MockServer};
-use kagi::{Client, ClientOptions, PrivacyPassOptions};
+use kagi::{Client, ClientOptions, DEFAULT_MAX_SESSIONS, PrivacyPassOptions};
 use rand::rngs::SysRng;
 use sha2::{Digest, Sha256};
 use voprf::{BlindedElement, Group, Ristretto255, VoprfServer};
@@ -41,6 +41,8 @@ pub struct PrivacyPassHarness {
     pub server: Arc<MockServer>,
     /// The issuer shared by the issuance and stream responders.
     issuer: Arc<TestIssuer>,
+    /// How long each search document and stream response is delayed.
+    flow_delay: Duration,
 }
 
 impl PrivacyPassHarness {
@@ -56,7 +58,16 @@ impl PrivacyPassHarness {
         Self {
             server,
             issuer: Arc::new(TestIssuer::new()),
+            flow_delay: Duration::ZERO,
         }
+    }
+
+    /// Delays every search document and stream response by `delay`.
+    #[must_use]
+    pub const fn with_flow_delay(mut self, delay: Duration) -> Self {
+        self.flow_delay = delay;
+
+        self
     }
 
     /// Builds a client with Privacy Pass enabled and the default test batch size.
@@ -76,10 +87,16 @@ impl PrivacyPassHarness {
     /// Panics if the test client cannot be built.
     #[must_use]
     pub fn client_with_tokens(&self, tokens_to_stash: usize) -> Client {
-        self.client_with_options(tokens_to_stash, tokens_to_stash.max(8), 0)
+        self.client_with_options(
+            tokens_to_stash,
+            tokens_to_stash.max(8),
+            0,
+            DEFAULT_MAX_SESSIONS,
+        )
     }
 
-    /// Builds a Privacy Pass client with explicit batch size, capacity, and low-water mark.
+    /// Builds a Privacy Pass client with explicit batch size, capacity, low-water mark, and
+    /// maximum simultaneous searches.
     ///
     /// # Panics
     ///
@@ -90,12 +107,14 @@ impl PrivacyPassHarness {
         tokens_to_stash: usize,
         max_tokens: usize,
         low_token_count: usize,
+        max_sessions: usize,
     ) -> Client {
         Client::with_token_and_options(
             TOKEN,
             &ClientOptions {
                 base_url: self.server.base_url(),
                 timeout: Duration::from_secs(5),
+                max_sessions,
                 privacy_pass: Some(PrivacyPassOptions {
                     tokens_to_stash,
                     max_tokens,
@@ -209,6 +228,7 @@ impl PrivacyPassHarness {
         let stream_query = query.to_owned();
         let document_path = format!("/{endpoint}");
         let stream_path = format!("/socket/{endpoint}");
+        let delay = self.flow_delay;
         let document_responder = rejecting_response(
             document_rejections,
             authenticated_response(
@@ -238,7 +258,7 @@ impl PrivacyPassHarness {
                 .header_missing("x-kagi-authorization")
                 .header_missing("referer")
                 .header_count("sec-fetch-site", ".*", 1);
-            then.respond_with(document_responder);
+            then.delay(delay).respond_with(document_responder);
         });
 
         let stream = self.server.mock(move |when, then| {
@@ -255,7 +275,7 @@ impl PrivacyPassHarness {
                 .header_missing("referer")
                 .header("sec-fetch-site", "none")
                 .header_count("sec-fetch-site", ".*", 1);
-            then.respond_with(stream_responder);
+            then.delay(delay).respond_with(stream_responder);
         });
 
         (document, stream)

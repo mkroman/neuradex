@@ -28,7 +28,7 @@ const LISTEN_ADDR_ENV: &str = "LISTEN_ADDR";
 /// The environment variable holding the `User-Agent` header sent with requests.
 const USER_AGENT_ENV: &str = "USER_AGENT";
 
-/// The environment variable holding the maximum number of simultaneous Kagi sessions.
+/// The environment variable holding the maximum number of simultaneous searches.
 const KAGI_MAX_SESSIONS_ENV: &str = "KAGI_MAX_SESSIONS";
 
 /// The environment variable selecting anonymous Privacy Pass search authentication.
@@ -48,7 +48,7 @@ const REQUEST_TIMEOUT: Duration = kagi::HTTP_TIMEOUT;
 #[command(
     name = "neuradex",
     version,
-    after_help = "Environment:\n  KAGI_SESSION_TOKEN   the Kagi session token; required to serve, never for export-docs\n  LISTEN_ADDR          the address to bind to (default: 127.0.0.1:8080)\n  USER_AGENT           the user agent sent with fetches (default: a current Firefox one)\n  KAGI_MAX_SESSIONS    simultaneous Kagi sessions (default: 2)\n  KAGI_PRIVACY_PASS    use anonymous Privacy Pass search tokens (default: true)\n"
+    after_help = "Environment:\n  KAGI_SESSION_TOKEN   the Kagi session token; required to serve, never for export-docs\n  LISTEN_ADDR          the address to bind to (default: 127.0.0.1:8080)\n  USER_AGENT           the user agent sent with fetches (default: a current Firefox one)\n  KAGI_MAX_SESSIONS    simultaneous searches (default: 2)\n  KAGI_PRIVACY_PASS    use anonymous Privacy Pass search tokens (default: true)\n"
 )]
 struct Cli {
     /// The subcommand to run; without one, the HTTP service is served.

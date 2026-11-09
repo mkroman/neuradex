@@ -174,15 +174,17 @@ impl Drop for SessionLease {
 
 /// Client for searching with Kagi.
 ///
-/// The client keeps a pool of up to [`ClientOptions::max_sessions`] persistent sessions. Each
-/// in-flight search uses its own session; an inrush of requests grows the pool by establishing
-/// sessions one at a time, and requests beyond the pool capacity wait for a session to free
-/// up. Sessions expire independently and are refreshed with a new nonce after their own
-/// duration; a stream response rejecting the session's credentials (401/403) drops the session
-/// so the next request re-establishes it.
+/// At most [`ClientOptions::max_sessions`] searches run at once in either authentication mode;
+/// additional searches wait for a slot. In session mode the client also keeps a pool of up to
+/// that many persistent sessions. Each in-flight search uses its own session; an inrush of
+/// requests grows the pool by establishing sessions one at a time, and requests beyond the pool
+/// capacity wait for a session to free up. Sessions expire independently and are refreshed with
+/// a new nonce after their own duration; a stream response rejecting the session's credentials
+/// (401/403) drops the session so the next request re-establishes it.
 ///
 /// With [`ClientOptions::privacy_pass`] set, searches redeem anonymous Privacy Pass tokens
-/// instead and the session pool is not used.
+/// instead and the session pool is not used; [`ClientOptions::max_sessions`] still bounds
+/// in-flight searches.
 pub struct Client {
     /// Kagi login token.
     token: Arc<SecretString>,
@@ -190,8 +192,10 @@ pub struct Client {
     base_url: reqwest::Url,
     /// The `Accept-Language` header sent with requests.
     language: HeaderValue,
-    /// The maximum number of simultaneous sessions.
+    /// The maximum number of simultaneous searches.
     max_sessions: usize,
+    /// Bounds the number of in-flight searches in either authentication mode.
+    search_gate: Semaphore,
     /// The duration of a single session.
     session_duration: Duration,
     /// Privacy Pass authentication, when enabled.
@@ -258,6 +262,7 @@ impl Client {
         let language = HeaderValue::from_str(&options.language)?;
         let user_agent = HeaderValue::from_str(&options.user_agent)?;
         let token = Arc::new(token.into());
+        let max_sessions = options.max_sessions.max(1);
         let privacy_pass = match &options.privacy_pass {
             Some(privacy_pass) => Some(Arc::new(PrivacyPassClient::new(
                 base_url.clone(),
@@ -274,7 +279,8 @@ impl Client {
             token,
             base_url,
             language,
-            max_sessions: options.max_sessions.max(1),
+            max_sessions,
+            search_gate: Semaphore::new(max_sessions),
             session_duration: options.session_duration,
             privacy_pass,
             timeout: options.timeout,
@@ -604,6 +610,14 @@ impl Client {
     /// Returns an [`Error`] if a session could not be established, the stream request could not
     /// be sent, or the response could not be read.
     async fn stream_body(&self, endpoint: &str, query: &str) -> Result<String, Error> {
+        // Bound in-flight searches in both authentication modes: the session pool already
+        // caps session-mode searches, but Privacy Pass mode has no pool of its own.
+        let _permit = self
+            .search_gate
+            .acquire()
+            .await
+            .expect("the search gate is never closed");
+
         if let Some(privacy_pass) = &self.privacy_pass {
             return self.privacy_pass_body(privacy_pass, endpoint, query).await;
         }

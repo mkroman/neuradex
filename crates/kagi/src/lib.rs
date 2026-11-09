@@ -97,12 +97,15 @@ pub struct ClientOptions {
     pub session_duration: Duration,
     /// The `Accept-Language` header sent with requests.
     pub language: String,
-    /// The maximum number of simultaneous sessions.
+    /// The maximum number of simultaneous searches.
     ///
-    /// The client keeps a pool of persistent sessions, each with its own nonce and refresh
-    /// cycle. Every in-flight search uses its own session; an inrush of requests grows the
-    /// pool by establishing sessions one at a time, and requests beyond the pool capacity
-    /// wait for a session to free up. Values below 1 are treated as 1.
+    /// In session mode, the client keeps a pool of persistent sessions, each with its own nonce
+    /// and refresh cycle. Every in-flight search uses its own session; an inrush of requests
+    /// grows the pool by establishing sessions one at a time, and requests beyond the pool
+    /// capacity wait for a session to free up.
+    ///
+    /// In Privacy Pass mode there is no session pool; the same value bounds the number of
+    /// in-flight searches directly. Values below 1 are treated as 1.
     pub max_sessions: usize,
     /// Privacy Pass authentication settings.
     ///

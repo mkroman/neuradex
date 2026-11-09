@@ -4,6 +4,7 @@
 //! responders redeem the `Authorization` header of both the document and stream requests, so a
 //! token that is not correctly blinded, unblinded, or bound to the challenge fails the test.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use kagi::SearchResult;
@@ -175,12 +176,68 @@ async fn search_retries_when_the_stream_is_rejected() {
 }
 
 #[tokio::test]
+async fn privacy_pass_searches_are_limited_by_max_sessions() {
+    let harness = PrivacyPassHarness::start().with_flow_delay(Duration::from_millis(500));
+    let flow = Flow::search(&harness);
+    let client = Arc::new(harness.client_with_options(4, 8, 0, 1));
+
+    let first = tokio::spawn({
+        let client = Arc::clone(&client);
+
+        async move { client.search(QUERY).await }
+    });
+    let second = tokio::spawn({
+        let client = Arc::clone(&client);
+
+        async move { client.search(QUERY).await }
+    });
+
+    timeout(Duration::from_secs(2), async {
+        while flow.document.calls() == 0 {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the first search starts");
+
+    sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        flow.document.calls(),
+        1,
+        "the second search must wait for the first to finish"
+    );
+
+    let (first, second) = tokio::join!(first, second);
+
+    assert_eq!(
+        first
+            .expect("the first task joins")
+            .expect("the first search succeeds")
+            .len(),
+        5
+    );
+    assert_eq!(
+        second
+            .expect("the second task joins")
+            .expect("the second search succeeds")
+            .len(),
+        5
+    );
+
+    flow.forbidden.assert_calls(0);
+    flow.challenge.assert_calls(1);
+    flow.issuance.assert_calls(1);
+    flow.document.assert_calls(2);
+    flow.stream.assert_calls(2);
+}
+
+#[tokio::test]
 async fn the_low_water_mark_starts_a_background_refill() {
     let harness = PrivacyPassHarness::start();
     let flow = Flow::search(&harness);
     // The first search leaves one of the three issued tokens; taking it drops the store below
     // the low-water mark of two and starts the background refill.
-    let client = harness.client_with_options(3, 8, 2);
+    let client = harness.client_with_options(3, 8, 2, kagi::DEFAULT_MAX_SESSIONS);
 
     let results = client
         .search(QUERY)

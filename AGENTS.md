@@ -28,7 +28,7 @@ Also in CI: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-fe
 
 ## Running locally
 
-- `cargo run` serves. It needs a non-empty `KAGI_SESSION_TOKEN`. Optional: `LISTEN_ADDR` (default `127.0.0.1:8080`), `USER_AGENT`, `KAGI_MAX_SESSIONS` (default 2), `KAGI_PRIVACY_PASS` (default `true`; set `false` for session-cookie search authentication).
+- `cargo run` serves. It needs a non-empty `KAGI_SESSION_TOKEN`. Optional: `LISTEN_ADDR` (default `127.0.0.1:8080`), `USER_AGENT`, `KAGI_MAX_SESSIONS` (default 2; bounds simultaneous searches in both authentication modes), `KAGI_PRIVACY_PASS` (default `true`; set `false` for session-cookie search authentication).
 - `cargo run -- export-docs <out.html> [--spec <out.json>]` writes the docs page without building `AppState` (no token needed). It only works when built with `docs`.
 - In debug builds, `/docs` re-reads `crates/neuradex-docs/theme/*` from disk on every request. Release builds embed and cache it. New theme files must be added to the ordered lists in `crates/neuradex-docs/src/assets.rs`.
 - Unexpected 400s: `RUST_LOG=axum::rejection=trace`.
