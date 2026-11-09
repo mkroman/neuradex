@@ -65,13 +65,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// OpenAPI document) to files on disk.
 #[cfg(feature = "docs")]
 fn export_docs(arguments: &ExportDocsArgs) -> Result<(), Box<dyn std::error::Error>> {
-    export::run(&arguments.output, arguments.spec.as_deref()).map_err(Into::into)
+    export::run(&arguments.output, arguments.spec.as_deref())
+        .map_err(|error| error.to_string().into())
 }
 
 /// Rejects `export-docs` in builds without the `docs` feature: there is nothing to render.
 #[cfg(not(feature = "docs"))]
 fn export_docs(_arguments: &ExportDocsArgs) -> Result<(), Box<dyn std::error::Error>> {
     Err("this binary was built without the docs feature; rebuild with --features docs".into())
+}
+
+#[cfg(all(test, feature = "docs"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_export_failures_as_plain_messages() {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let arguments = ExportDocsArgs {
+            output: directory.path().join("missing").join("docs.html"),
+            spec: None,
+        };
+
+        let error = export_docs(&arguments).expect_err("the export fails");
+        let rendered = format!("{error:?}");
+
+        assert!(
+            rendered.contains("could not write"),
+            "unexpected error: {rendered}"
+        );
+        assert!(
+            !rendered.contains("Write {"),
+            "the derived debug representation leaked: {rendered}"
+        );
+    }
 }
 
 /// Builds the application state and serves the HTTP service.
