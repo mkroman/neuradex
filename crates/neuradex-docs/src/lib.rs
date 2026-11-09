@@ -23,8 +23,11 @@ pub const RELOAD_SOURCES: bool = cfg!(debug_assertions);
 
 mod assets;
 mod bundle;
+mod highlight;
 mod html;
 mod model;
+mod page;
+mod schema;
 mod tree;
 
 /// Renders the complete, self-contained documentation page from the serialized OpenAPI
@@ -47,7 +50,7 @@ mod tree;
 /// its inputs are already validated, so this should not happen in practice.
 #[must_use]
 pub fn render(spec: &serde_json::Value) -> String {
-    let page = model::page(spec);
+    let page = page::build_page(spec);
     let style = page_style();
 
     let template = PageTemplate {
