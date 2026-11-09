@@ -9,7 +9,7 @@ publish = false
 [features]
 default = []
 # The Kagi client harness; keeps the service and its HTTP stack out of client-level tests.
-client = ["dep:httpmock", "dep:kagi"]
+client = ["dep:httpmock", "dep:kagi", "dep:url"]
 # The full-service harness, including the Kagi client harness.
 app = [
     "client",
@@ -26,6 +26,7 @@ kagi = { path = "../kagi", default-features = false, features = ["rustls"], opti
 neuradex = { path = "../neuradex", default-features = false, optional = true }
 serde_json = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
 
 [lints]
 workspace = true

@@ -7,6 +7,7 @@
 use axum::http::StatusCode;
 use serde_json::json;
 use test_support::app::{TestApp, USER_AGENT_VALUE};
+use test_support::kagi::{NONCE, QUERY, SEARCH_COOKIE, SESSION_COOKIE, TOKEN};
 
 #[tokio::test]
 async fn fetch_returns_metadata_body_and_metrics() {
@@ -335,7 +336,14 @@ async fn search_maps_upstream_failures_to_the_error_envelope() {
     let session = app.mock_kagi_session();
     let nonce = app.mock_kagi_nonce();
     let stream = app.server.mock(|when, then| {
-        when.method("GET").path("/socket/search");
+        when.method("GET")
+            .path("/socket/search")
+            .query_param("q", QUERY)
+            .query_param("nonce", NONCE)
+            .header("x-kagi-authorization", TOKEN)
+            .header("accept", "text/event-stream")
+            .cookie("kagi_session", SESSION_COOKIE)
+            .cookie("_kagi_search_", SEARCH_COOKIE);
         then.status(500);
     });
 

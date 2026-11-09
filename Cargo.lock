@@ -3038,6 +3038,7 @@ dependencies = [
  "neuradex",
  "serde_json",
  "tower",
+ "url",
 ]
 
 [[package]]

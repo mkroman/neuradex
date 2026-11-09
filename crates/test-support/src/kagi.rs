@@ -1,6 +1,6 @@
 //! A high-level Kagi test harness backed by a local [`httpmock`] server.
 //!
-//! The harness serves the token, landing-page, search, and image endpoints the client uses.
+//! The harness serves the token, search-document, stream, and image endpoints the client uses.
 //! Tests configure only the responses that matter to them and exercise the real client over
 //! HTTP, including its cookie jar, session pool, request headers, and parsers.
 
@@ -15,10 +15,14 @@ use kagi::{Client, ClientOptions, DEFAULT_MAX_SESSIONS, LANGUAGE, USER_AGENT};
 pub const TOKEN: &str = "test-token";
 /// The session cookie set by the token request.
 pub const SESSION_COOKIE: &str = "test-session";
-/// The nonce embedded in the fixture landing page.
+/// The rotating search cookie set alongside the session cookie.
+pub const SEARCH_COOKIE: &str = "test-search";
+/// The nonce embedded in the fixture document.
 pub const NONCE: &str = "0123456789abcdef0123456789abcdef";
 /// The query used by the stream fixtures.
 pub const QUERY: &str = "hello world";
+/// The document `Accept` header the browser sends.
+const DOCUMENT_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
 
 /// Returns the absolute path of a Kagi fixture.
 #[must_use]
@@ -39,6 +43,13 @@ pub fn fixture(name: &str) -> String {
 pub fn read_fixture(name: &str) -> String {
     String::from_utf8(std::fs::read(fixture(name)).expect("the fixture is readable"))
         .expect("the fixture is valid UTF-8")
+}
+
+/// Returns a minimal search document containing the fixture nonce.
+fn nonce_body() -> String {
+    format!(
+        r#"<!doctype html><html><head><script>window.sse_nonce = "{NONCE}";</script></head><body></body></html>"#
+    )
 }
 
 /// A local Kagi stand-in with helpers for the endpoints the client uses.
@@ -99,49 +110,107 @@ impl KagiHarness {
             when.method("GET")
                 .path("/search")
                 .query_param("token", TOKEN)
+                .query_param_missing("q")
                 .header("x-kagi-authorization", TOKEN)
                 .header("accept-language", LANGUAGE)
-                .header("user-agent", USER_AGENT);
-            then.status(200).delay(delay).header(
-                "set-cookie",
-                format!("kagi_session={SESSION_COOKIE}; Path=/; HttpOnly"),
-            );
+                .header("user-agent", USER_AGENT)
+                .header("accept", DOCUMENT_ACCEPT)
+                .header("sec-fetch-dest", "document")
+                .header("sec-fetch-mode", "navigate")
+                .header("sec-fetch-site", "none")
+                .header("upgrade-insecure-requests", "1")
+                .header("priority", "u=0, i")
+                .header_missing("origin")
+                .header_missing("referer");
+            then.status(200)
+                .delay(delay)
+                .header(
+                    "set-cookie",
+                    format!("kagi_session={SESSION_COOKIE}; Path=/; HttpOnly"),
+                )
+                .header(
+                    "set-cookie",
+                    format!("_kagi_search_={SEARCH_COOKIE}; Path=/; HttpOnly"),
+                );
         })
     }
 
-    /// Mocks the landing-page request that returns the session nonce.
+    /// Mocks the search document that returns the session nonce.
     ///
     /// # Panics
     ///
-    /// Panics if the landing-page fixture cannot be read.
+    /// Panics if the document fixture cannot be read.
     #[must_use]
     pub fn mock_nonce(&self) -> Mock<'_> {
         self.mock_nonce_delayed(Duration::ZERO)
     }
 
-    /// Mocks the landing-page request, delaying its response by `delay`.
+    /// Mocks the search document, delaying its response by `delay`.
     ///
     /// # Panics
     ///
-    /// Panics if the landing-page fixture cannot be read.
+    /// Panics if the document fixture cannot be read.
     #[must_use]
     pub fn mock_nonce_delayed(&self, delay: Duration) -> Mock<'_> {
-        self.mock_nonce_body_delayed(&read_fixture("landing.html"), delay)
+        let body = nonce_body();
+        self.mock_document_nonce("search", QUERY, &body, delay)
     }
 
-    /// Mocks the landing page with an arbitrary body.
+    /// Mocks the images document that returns the session nonce.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the document fixture cannot be read.
+    #[must_use]
+    pub fn mock_images_nonce(&self) -> Mock<'_> {
+        let body = nonce_body();
+        self.mock_document_nonce("images", QUERY, &body, Duration::ZERO)
+    }
+
+    /// Mocks the search document with an arbitrary body.
     #[must_use]
     pub fn mock_nonce_body(&self, body: &str) -> Mock<'_> {
         self.mock_nonce_body_delayed(body, Duration::ZERO)
     }
 
-    /// Mocks the landing page with an arbitrary body, delaying its response by `delay`.
+    /// Mocks the search document with an arbitrary body, delaying its response by `delay`.
     #[must_use]
     pub fn mock_nonce_body_delayed(&self, body: &str, delay: Duration) -> Mock<'_> {
-        self.server.mock(|when, then| {
+        self.mock_document_nonce("search", QUERY, body, delay)
+    }
+
+    /// Mocks a document request that returns a nonce for the given endpoint and query.
+    fn mock_document_nonce(
+        &self,
+        endpoint: &str,
+        query: &str,
+        body: &str,
+        delay: Duration,
+    ) -> Mock<'_> {
+        let path = format!("/{endpoint}");
+        let query = query.to_owned();
+        let referer = format!("{}/", self.server.base_url());
+
+        self.server.mock(move |when, then| {
             when.method("GET")
-                .path("/")
-                .header("x-kagi-authorization", TOKEN);
+                .path(path)
+                .query_param("q", query)
+                .query_param_missing("token")
+                .query_param_missing("nonce")
+                .header("x-kagi-authorization", TOKEN)
+                .header("accept-language", LANGUAGE)
+                .header("user-agent", USER_AGENT)
+                .header("accept", DOCUMENT_ACCEPT)
+                .header("sec-fetch-dest", "document")
+                .header("sec-fetch-mode", "navigate")
+                .header("sec-fetch-site", "same-origin")
+                .header("sec-fetch-user", "?1")
+                .header("upgrade-insecure-requests", "1")
+                .header("priority", "u=0, i")
+                .header("referer", referer)
+                .header_missing("origin")
+                .cookie("kagi_session", SESSION_COOKIE)
+                .cookie("_kagi_search_", SEARCH_COOKIE);
             then.status(200)
                 .header("content-type", "text/html; charset=utf-8")
                 .delay(delay)
@@ -206,7 +275,10 @@ impl KagiHarness {
         delay: Duration,
     ) -> Mock<'_> {
         let path = format!("/socket/{endpoint}");
-        let referer = format!("/{endpoint}?q=");
+        let mut referer = url::Url::parse(&format!("{}/{endpoint}", self.server.base_url()))
+            .expect("the mock server base URL is valid");
+        referer.query_pairs_mut().append_pair("q", query);
+        let referer = referer.to_string();
         let query = query.to_owned();
         let body = fixture(fixture_name);
 
@@ -215,10 +287,29 @@ impl KagiHarness {
                 .method("GET")
                 .path(path)
                 .query_param("q", query)
+                .query_param_missing("batch")
+                .query_param_missing("piece")
+                .query_param_missing("page")
+                .query_param_missing("all")
+                .query_param_missing("r")
+                .query_param_missing("sh")
                 .header("x-kagi-authorization", TOKEN)
-                .header_includes("accept", "text/event-stream")
-                .header_includes("referer", referer)
-                .cookie("kagi_session", SESSION_COOKIE);
+                .header("accept-language", LANGUAGE)
+                .header("user-agent", USER_AGENT)
+                .header("accept", "text/event-stream")
+                .header("referer", referer)
+                .header("sec-fetch-dest", "empty")
+                .header("sec-fetch-mode", "cors")
+                .header("sec-fetch-site", "same-origin")
+                .header_missing("sec-fetch-user")
+                .header_missing("origin")
+                .header("priority", "u=4")
+                // The capture was taken with devtools cache disabled; the client mirrors these
+                // two headers on stream requests.
+                .header("pragma", "no-cache")
+                .header("cache-control", "no-cache")
+                .cookie("kagi_session", SESSION_COOKIE)
+                .cookie("_kagi_search_", SEARCH_COOKIE);
             let _when = match nonce {
                 Nonce::Present(nonce) => when.query_param("nonce", nonce),
                 Nonce::Absent => when.query_param_missing("nonce"),
@@ -226,6 +317,7 @@ impl KagiHarness {
             };
             then.status(200)
                 .header("content-type", "text/event-stream")
+                .header("cache-control", "private, no-store")
                 .delay(delay)
                 .body_from_file(body);
         })
