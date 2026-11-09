@@ -163,7 +163,7 @@ impl TestApp {
         self.kagi.mock_session()
     }
 
-    /// Mocks the Kagi landing page that supplies the session nonce.
+    /// Mocks the Kagi search document that supplies the session nonce.
     #[must_use]
     pub fn mock_kagi_nonce(&self) -> Mock<'_> {
         self.kagi.mock_nonce()

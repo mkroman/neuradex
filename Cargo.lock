@@ -1607,7 +1607,6 @@ dependencies = [
 name = "kagi"
 version = "0.1.0"
 dependencies = [
- "htmlize",
  "reqwest",
  "scraper",
  "secrecy",
@@ -3039,6 +3038,7 @@ dependencies = [
  "neuradex",
  "serde_json",
  "tower",
+ "url",
 ]
 
 [[package]]

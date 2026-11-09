@@ -246,8 +246,8 @@ pub enum Error {
     /// The session request could not be sent.
     #[error("could not send session request")]
     RequestSession(#[source] RequestError),
-    /// The response did not include session cookies, indicating an invalid login token.
-    #[error("response did not include session valid cookies - is the login token valid?")]
+    /// The response did not include the `kagi_session` cookie, indicating an invalid login token.
+    #[error("response did not include a valid kagi_session cookie - is the login token valid?")]
     SessionCookies,
     /// The response did not include a nonce.
     #[error("response did not include a nonce")]

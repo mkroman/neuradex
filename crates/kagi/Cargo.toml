@@ -32,7 +32,6 @@ deflate = ["reqwest/deflate"]
 zstd = ["reqwest/zstd"]
 
 [dependencies]
-htmlize.workspace = true
 reqwest = { workspace = true, features = ["cookies"] }
 scraper.workspace = true
 secrecy.workspace = true

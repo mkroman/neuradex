@@ -60,8 +60,9 @@ impl Session {
         self.created_at.elapsed() < session_duration
     }
 
-    /// Returns the nonce on the first call and `None` afterwards, mirroring a browser which
-    /// only sends the page's `sse_nonce` on its initial connection.
+    /// Returns the nonce on the first call and `None` afterwards: Kagi only sends a document's
+    /// `sse_nonce` on that document's initial stream connection. The client fetches the target
+    /// search or images document when it establishes a session.
     const fn take_nonce(&mut self) -> Option<String> {
         self.nonce.take()
     }
@@ -261,10 +262,10 @@ impl Client {
     /// # Errors
     ///
     /// Returns an [`Error`] if the session could not be established or refreshed.
-    async fn acquire(&self) -> Result<SessionLease, Error> {
+    async fn acquire(&self, endpoint: &str, query: &str) -> Result<SessionLease, Error> {
         loop {
             if let Some(checkout) = self.try_check_out() {
-                return self.prepare(checkout).await;
+                return self.prepare(checkout, endpoint, query).await;
             }
 
             // No parked session: grow the pool if there is room, one session at a time. While
@@ -301,7 +302,7 @@ impl Client {
             };
 
             let mut lease = self.lease(slot, None);
-            let session = self.establish(&lease.slot).await?;
+            let session = self.establish(&lease.slot, endpoint, query).await?;
             lease.session = Some(session);
 
             return Ok(lease);
@@ -310,19 +311,24 @@ impl Client {
 
     /// Completes a check-out: uses a valid session as-is, refreshes an expired one, or
     /// establishes a session on an empty slot.
-    async fn prepare(&self, checkout: CheckOut) -> Result<SessionLease, Error> {
+    async fn prepare(
+        &self,
+        checkout: CheckOut,
+        endpoint: &str,
+        query: &str,
+    ) -> Result<SessionLease, Error> {
         match checkout {
             CheckOut::Ready(slot, session) => Ok(self.lease(slot, Some(session))),
             CheckOut::Expired(slot, session) => {
                 let mut lease = self.lease(slot, Some(session));
-                let session = self.refresh(&lease.slot).await?;
+                let session = self.refresh(&lease.slot, endpoint, query).await?;
                 lease.session = Some(session);
 
                 Ok(lease)
             }
             CheckOut::Empty(slot) => {
                 let mut lease = self.lease(slot, None);
-                let session = self.establish(&lease.slot).await?;
+                let session = self.establish(&lease.slot, endpoint, query).await?;
                 lease.session = Some(session);
 
                 Ok(lease)
@@ -482,8 +488,22 @@ impl Client {
     }
 
     /// Fetches a fresh session for the given checked-out slot.
-    async fn fetch_session(&self, slot: &Slot) -> Result<Session, Error> {
-        match http_fetch_session(&slot.http, &self.base_url, &self.token, &self.language).await {
+    async fn fetch_session(
+        &self,
+        slot: &Slot,
+        endpoint: &str,
+        query: &str,
+    ) -> Result<Session, Error> {
+        match http_fetch_session(
+            &slot.http,
+            &self.base_url,
+            &self.token,
+            &self.language,
+            endpoint,
+            query,
+        )
+        .await
+        {
             Ok(nonce) => {
                 {
                     let mut inner = slot.inner.lock().expect("the session lock is not poisoned");
@@ -507,9 +527,9 @@ impl Client {
     ///
     /// Refreshes of distinct sessions are independent: this does not hold the creation gate.
     /// The slot's backoff is waited out first.
-    async fn refresh(&self, slot: &Slot) -> Result<Session, Error> {
+    async fn refresh(&self, slot: &Slot, endpoint: &str, query: &str) -> Result<Session, Error> {
         self.wait_backoff(slot).await;
-        self.fetch_session(slot).await
+        self.fetch_session(slot, endpoint, query).await
     }
 
     /// Establishes a session for the given empty, checked-out slot.
@@ -517,11 +537,11 @@ impl Client {
     /// The creation gate is held across the fetch, so at most one creation fetch runs at any
     /// moment. The slot's backoff is waited out before the gate is taken, so retry waits
     /// never block other creations.
-    async fn establish(&self, slot: &Slot) -> Result<Session, Error> {
+    async fn establish(&self, slot: &Slot, endpoint: &str, query: &str) -> Result<Session, Error> {
         self.wait_backoff(slot).await;
 
         let gate = self.creation.lock().await;
-        let session = self.fetch_session(slot).await;
+        let session = self.fetch_session(slot, endpoint, query).await;
         drop(gate);
 
         session
@@ -538,7 +558,7 @@ impl Client {
     /// Returns an [`Error`] if a session could not be established, the stream request could not
     /// be sent, or the response could not be read.
     async fn stream_body(&self, endpoint: &str, query: &str) -> Result<String, Error> {
-        let mut lease = self.acquire().await?;
+        let mut lease = self.acquire(endpoint, query).await?;
         let nonce = lease.take_nonce();
 
         let url = url_with_query(
@@ -622,37 +642,78 @@ impl Client {
 
 /// Fetches a fresh session with the given session HTTP client: issues a request with the login
 /// token to receive the session cookies — the token is part of the query string, so the
-/// request is intentionally not logged — and then requests the main page to extract the nonce
-/// for the session's first stream request.
+/// request is intentionally not logged — and then requests the target search or images
+/// document to extract the nonce for the document's first stream request.
 async fn http_fetch_session(
     http: &reqwest::Client,
     base_url: &reqwest::Url,
     token: &SecretString,
     language: &HeaderValue,
+    endpoint: &str,
+    query: &str,
 ) -> Result<String, Error> {
     let token_url = url_with_query(base_url, "search", &[("token", token.expose_secret())]);
     debug!("requesting session cookies");
 
-    let res = document_request(http, token, language, token_url.as_str())
-        .send()
-        .await
-        .map_err(|error| Error::RequestSession(request_error(error)))?;
-    if !res.headers().contains_key(SET_COOKIE) {
-        error!("the response does not include set-cookie headers!");
+    let res = document_request(
+        http,
+        token,
+        language,
+        token_url.as_str(),
+        HeaderValue::from_static("none"),
+        None,
+    )
+    .send()
+    .await
+    .map_err(|error| Error::RequestSession(request_error(error)))?;
+    if let Err(error) = res.error_for_status_ref() {
+        return Err(Error::RequestSession(request_error(error)));
+    }
+    if !sets_session_cookie(res.headers()) {
+        error!("the response does not include a kagi_session cookie!");
         return Err(Error::SessionCookies);
     }
 
-    debug!("requesting nonce");
-    let res = document_request(http, token, language, base_url.as_str())
-        .send()
-        .await
-        .map_err(|error| Error::RequestNonce(request_error(error)))?;
+    // Mirror the browser: the nonce is the target document's trace ID, not the landing page's.
+    debug!(%endpoint, "requesting document nonce");
+    let document_url = url_with_query(base_url, endpoint, &[("q", query)]);
+    let res = document_request(
+        http,
+        token,
+        language,
+        document_url.as_str(),
+        HeaderValue::from_static("same-origin"),
+        Some(base_url.as_str()),
+    )
+    .send()
+    .await
+    .map_err(|error| Error::RequestNonce(request_error(error)))?;
+    if let Err(error) = res.error_for_status_ref() {
+        return Err(Error::RequestNonce(request_error(error)));
+    }
     let body = res
         .text()
         .await
         .map_err(|error| Error::ReadNonce(request_error(error)))?;
 
     extract_nonce(&body).ok_or(Error::Nonce)
+}
+
+/// Returns whether the response sets the `kagi_session` cookie that authenticates the session.
+///
+/// Kagi may set other cookies (such as `_kagi_search_`) on an unauthenticated response, so the
+/// presence of any `Set-Cookie` header is not enough to tell that the token was accepted.
+fn sets_session_cookie(headers: &reqwest::header::HeaderMap) -> bool {
+    headers
+        .get_all(SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .any(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|cookie| cookie.trim_start().starts_with("kagi_session="))
+        })
 }
 
 /// Attaches the session authorization header to the request, mirroring the browser which
@@ -662,20 +723,33 @@ fn authorize(request: reqwest::RequestBuilder, token: &SecretString) -> reqwest:
 }
 
 /// Builds a request shaped like a browser document navigation.
+///
+/// `site` is the navigation's `Sec-Fetch-Site` value, and `referer` is attached when the
+/// navigation is reached from another page. The login-token request is a direct navigation
+/// (`none`, no referer) so the token cannot leak through a `Referer` header; the subsequent
+/// search or images document is a same-origin navigation from the site root.
 fn document_request(
     http: &reqwest::Client,
     token: &SecretString,
     language: &HeaderValue,
     url: &str,
+    site: HeaderValue,
+    referer: Option<&str>,
 ) -> reqwest::RequestBuilder {
-    authorize(http.get(url), token)
+    let request = authorize(http.get(url), token)
         .header(ACCEPT, ACCEPT_DOCUMENT)
         .header(ACCEPT_LANGUAGE, language.clone())
         .header("Sec-Fetch-Dest", HeaderValue::from_static("document"))
         .header("Sec-Fetch-Mode", HeaderValue::from_static("navigate"))
-        .header("Sec-Fetch-Site", HeaderValue::from_static("none"))
+        .header("Sec-Fetch-Site", site)
         .header("Sec-Fetch-User", HeaderValue::from_static("?1"))
         .header(UPGRADE_INSECURE_REQUESTS, HeaderValue::from_static("1"))
+        .header("Priority", HeaderValue::from_static("u=0, i"));
+
+    match referer {
+        Some(referer) => request.header(REFERER, referer),
+        None => request,
+    }
 }
 
 /// Builds a request shaped like a browser `EventSource` connection.

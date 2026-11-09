@@ -50,11 +50,40 @@ async fn main() -> Result<(), Error> {
 }
 ```
 
+## Wire protocol
+
+Searches stream from `/socket/search?q=…` and image searches from `/socket/images?q=…`. The
+first stream request of a session appends the target document's `window.sse_nonce` as `nonce`;
+later requests reuse the session cookies without it. Kagi scopes the nonce to a single HTML
+document, so when establishing a session the client first loads `/search?q=…` or `/images?q=…`
+and uses that document's trace ID, mirroring the browser. Both transports Kagi uses are parsed:
+standard server-sent events (`data: [...]` arrays, ending with `id: CLOSE`) and the
+`application/vnd.kagi.stream` NUL-delimited framing (`tag:JSON\0\n`) used by the site's
+fetch-stream mode.
+
+Structured `search_results_json` payloads carry `rank` and `source` in addition to the title,
+URL, and snippet; `SearchResult` exposes them, and titles/snippets are converted to plain text
+so Kagi's `<strong>` highlight markup does not leak into the API. The HTML fallbacks (`search`
+and `images` messages) remain supported and leave `rank` and `source` empty.
+
+Image results expose Kagi's original image URL (the sentinel `#no_preview` when Kagi cannot
+preview the image), the proxied thumbnail, dimensions, host, and Kagi's rank field.
+
+Kagi's `/autosuggest` endpoints and its server-rendered `script_stream` transport are outside
+this crate's scope; the client uses the `/socket/search` and `/socket/images` streams.
+
+## Request headers
+
+Requests mirror the headers a current Firefox session sends: the session token as
+`X-Kagi-Authorization`, browser `Accept`, `Accept-Language`, and `Sec-Fetch-*` headers, and the
+`Priority` hint. The session cookies (`kagi_session` and `_kagi_search_`) live in a per-session
+cookie jar, so requests reuse and refresh them exactly like a browser tab.
+
 ## Sessions
 
 The client maintains a pool of persistent sessions, each mirroring one browser
 tab: every in-flight search uses its own session, and only the first stream
-request of a session carries the page's `sse_nonce`.
+request of a session carries the session's `sse_nonce`.
 
 The pool holds at most [`ClientOptions::max_sessions`] sessions and starts
 empty. Under an inrush of requests it grows by establishing sessions **one at

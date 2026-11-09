@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use kagi::{Error, SearchResult};
 use test_support::kagi as support;
-use test_support::kagi::{KagiHarness, NONCE, QUERY, TOKEN};
+use test_support::kagi::{KagiHarness, NONCE, QUERY, SEARCH_COOKIE, SESSION_COOKIE, TOKEN};
 
 #[tokio::test]
 async fn search_fetches_a_session_and_parses_the_results() {
@@ -35,6 +35,8 @@ async fn search_fetches_a_session_and_parses_the_results() {
                           \"Hello, world\" program in a given programming language. This is one \
                           measure of a programming language's ease of use."
                 .to_owned(),
+            rank: 1,
+            source: "en.wikipedia.org".to_owned(),
         }
     );
 
@@ -47,7 +49,7 @@ async fn search_fetches_a_session_and_parses_the_results() {
 async fn images_fetch_a_session_and_parse_the_results() {
     let harness = KagiHarness::start();
     let session = harness.mock_session();
-    let nonce = harness.mock_nonce();
+    let nonce = harness.mock_images_nonce();
     let stream = harness.mock_images_stream(Some(NONCE), "images_stream_sse.bin");
 
     let results = harness
@@ -169,7 +171,12 @@ async fn a_rejected_session_is_reestablished() {
     let rejected = harness.server.mock(|when, then| {
         when.method("GET")
             .path("/socket/search")
-            .query_param("q", QUERY);
+            .query_param("q", QUERY)
+            .query_param("nonce", NONCE)
+            .header("x-kagi-authorization", TOKEN)
+            .header_includes("accept", "text/event-stream")
+            .cookie("kagi_session", SESSION_COOKIE)
+            .cookie("_kagi_search_", SEARCH_COOKIE);
         then.status(401).up_to_n_times(1);
     });
     let stream = harness.mock_search_stream(Some(NONCE), "search_stream_sse.bin");
@@ -207,7 +214,11 @@ async fn a_non_credential_stream_error_keeps_the_session() {
         when.method("GET")
             .path("/socket/search")
             .query_param("q", QUERY)
-            .query_param("nonce", NONCE);
+            .query_param("nonce", NONCE)
+            .header("x-kagi-authorization", TOKEN)
+            .header_includes("accept", "text/event-stream")
+            .cookie("kagi_session", SESSION_COOKIE)
+            .cookie("_kagi_search_", SEARCH_COOKIE);
         then.status(500).up_to_n_times(1);
     });
     let stream = harness.mock_search_stream(None, "search_stream_sse.bin");
@@ -263,6 +274,27 @@ async fn a_failed_session_fetch_is_retried_after_backoff() {
     session.assert();
     nonce.assert();
     stream.assert();
+}
+
+#[tokio::test]
+async fn a_response_without_the_session_cookie_is_an_error() {
+    let harness = KagiHarness::start();
+    let session = harness.server.mock(|when, then| {
+        when.method("GET")
+            .path("/search")
+            .query_param("token", TOKEN);
+        then.status(200)
+            .header("set-cookie", "_kagi_search_=anonymous; Path=/");
+    });
+
+    let error = harness
+        .client()
+        .search(QUERY)
+        .await
+        .expect_err("the response did not authenticate the session");
+
+    assert_matches!(error, Error::SessionCookies);
+    session.assert();
 }
 
 #[tokio::test]
@@ -367,7 +399,12 @@ async fn a_cancelled_search_releases_the_session() {
     let mut slow = harness.server.mock(|when, then| {
         when.method("GET")
             .path("/socket/search")
-            .query_param("q", QUERY);
+            .query_param("q", QUERY)
+            .query_param("nonce", NONCE)
+            .header("x-kagi-authorization", TOKEN)
+            .header_includes("accept", "text/event-stream")
+            .cookie("kagi_session", SESSION_COOKIE)
+            .cookie("_kagi_search_", SEARCH_COOKIE);
         then.status(200)
             .header("content-type", "text/event-stream")
             .delay(Duration::from_secs(5))
