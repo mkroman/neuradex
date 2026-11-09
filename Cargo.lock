@@ -1800,7 +1800,7 @@ dependencies = [
 name = "kagi"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "rand 0.10.3",
  "reqwest",
  "scraper",
@@ -3265,7 +3265,7 @@ name = "test-support"
 version = "0.1.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "httpmock",
  "kagi",
  "neuradex",
