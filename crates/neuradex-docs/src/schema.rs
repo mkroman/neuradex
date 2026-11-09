@@ -77,10 +77,36 @@ pub fn push_type_annotation(
 }
 
 /// Appends the `example` annotation when an example value is documented.
-pub fn push_example_annotation(anns: &mut Vec<Annotation>, example: Option<&Value>) {
+///
+/// `max_bytes` caps the formatted value for callers that render it inline (flat schema
+/// property rows pass [`crate::highlight::EXAMPLE_CAP`]); it is `None` for parameter and
+/// request-body annotations, whose display is intentionally uncapped.
+pub fn push_example_annotation(
+    anns: &mut Vec<Annotation>,
+    example: Option<&Value>,
+    max_bytes: Option<usize>,
+) {
     if let Some(example) = example {
-        anns.push(Annotation::new("example", flat_value(example)));
+        let mut value = flat_value(example);
+        if let Some(max_bytes) = max_bytes {
+            cap_value(&mut value, max_bytes);
+        }
+        anns.push(Annotation::new("example", value));
     }
+}
+
+/// Truncates `value` to at most `max_bytes`, backing off to a UTF-8 character boundary,
+/// and marks the cut so readers know the example is incomplete.
+fn cap_value(value: &mut String, max_bytes: usize) {
+    if value.len() <= max_bytes {
+        return;
+    }
+    let mut cut = max_bytes;
+    while cut > 0 && !value.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    value.truncate(cut);
+    value.push_str(" … truncated for display");
 }
 
 /// Returns the first example documented on a schema: the singular `example`, or the first

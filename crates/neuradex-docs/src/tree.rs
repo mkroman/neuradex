@@ -246,7 +246,11 @@ fn build_resolved_body(
 fn build_property_row(name: &str, property: &Value, required_names: &[&str]) -> SchemaRow {
     let (type_label, type_is_ref) = type_pill(property);
     let mut anns = schema_annotations(property);
-    schema::push_example_annotation(&mut anns, schema::example(property));
+    schema::push_example_annotation(
+        &mut anns,
+        schema::example(property),
+        Some(highlight::EXAMPLE_CAP),
+    );
     SchemaRow {
         name: name.to_owned(),
         type_label,
@@ -602,5 +606,39 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    #[test]
+    fn truncates_long_row_example_annotations_at_a_char_boundary() {
+        // 21,000 bytes, multibyte and escape-sensitive. The 20,000-byte cut lands inside
+        // the leading `é` of a 7-byte repeat and must back off to a character boundary.
+        let pattern = "é<\"&ab";
+        let example = pattern.repeat(3_000);
+        assert!(example.len() > highlight::EXAMPLE_CAP);
+        let spec = json!({
+            "components": {"schemas": {"Shaped": {"type": "object", "properties": {
+                "long": {"type": "string", "example": example}
+            }}}}
+        });
+        let schema = &spec["components"]["schemas"]["Shaped"];
+        let html = root(&spec, "Shaped", schema).render().expect("renders");
+
+        let marker = r#"<span class="ann-k">example</span> <span class="ann-v">"#;
+        let start = html.find(marker).expect("example annotation") + marker.len();
+        let end = start + html[start..].find("</span>").expect("annotation end");
+        let value = &html[start..end];
+
+        assert!(value.contains("truncated for display"));
+        // The cut backs off to the boundary before the incomplete `é`, keeping exactly the
+        // whole repeats that fit under the cap.
+        assert_eq!(
+            value.matches('é').count(),
+            highlight::EXAMPLE_CAP / pattern.len()
+        );
+        // The value stays escaped.
+        assert!(!value.contains('<'));
+        assert!(value.contains("&#60;"));
+        assert!(value.contains("&#38;"));
+        assert!(value.contains("&#34;"));
     }
 }

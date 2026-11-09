@@ -257,7 +257,7 @@ fn build_param(parameter: &Value) -> Param {
     if let Some(schema) = schema {
         schema::push_common_annotations(&mut anns, schema);
     }
-    schema::push_example_annotation(&mut anns, example);
+    schema::push_example_annotation(&mut anns, example, None);
     if schema_type == Some("array") {
         anns.push(Annotation::new("send as", "repeated keys".to_owned()));
     }
@@ -329,7 +329,7 @@ fn build_body_param(spec: &Value, name: &str, property: &Value, required: bool) 
     let mut anns = Vec::new();
     schema::push_type_annotation(&mut anns, Some(schema), schema_type);
     schema::push_common_annotations(&mut anns, schema);
-    schema::push_example_annotation(&mut anns, example);
+    schema::push_example_annotation(&mut anns, example, None);
 
     Param {
         name: name.to_owned(),
