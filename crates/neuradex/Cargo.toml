@@ -78,5 +78,9 @@ harness = false
 name = "http-stack"
 harness = false
 
+[[bench]]
+name = "search"
+harness = false
+
 [lints]
 workspace = true
