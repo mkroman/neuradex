@@ -97,6 +97,7 @@ impl From<kagi::SearchResult> for OpenWebUiSearchResult {
 #[utoipa::path(
     post,
     path = "/v1/openwebui_search",
+    operation_id = "openwebui_search",
     tag = "search",
     summary = "Search the web for Open WebUI.",
     description = "Searches the web through Kagi and answers in the shape Open WebUI's \

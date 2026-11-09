@@ -79,6 +79,7 @@ pub struct FetchResponse {
 #[utoipa::path(
     get,
     path = "/v1/fetch",
+    operation_id = "fetch",
     tag = "fetch",
     summary = "Fetch a page.",
     description = "Fetches the page and returns its document-head metadata, body, and request \

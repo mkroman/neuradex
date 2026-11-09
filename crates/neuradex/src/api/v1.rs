@@ -259,6 +259,7 @@ async fn swagger_ui_redirect() -> impl IntoResponse {
 #[utoipa::path(
     get,
     path = "/healthz",
+    operation_id = "healthz",
     tag = "healthz",
     summary = "Check the service health.",
     description = "Returns `204 No Content` when the service is up. Used as the liveness probe.",
