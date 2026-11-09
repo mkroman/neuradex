@@ -171,92 +171,89 @@ async fn fetch_stops_when_the_redirect_budget_is_exhausted() {
 }
 
 #[tokio::test]
-async fn fetch_does_not_follow_300_multiple_choices() {
-    let app = TestApp::start();
-    let start = app.server.mock(|when, then| {
-        when.method("GET").path("/start");
-        then.status(300)
-            .header("content-type", "text/html; charset=utf-8")
-            .header("location", "/final")
-            .body("multiple choices");
-    });
-    let final_page = app.server.mock(|when, then| {
-        when.method("GET").path("/final");
-        then.status(200).body("should not be reached");
-    });
+async fn fetch_does_not_follow_300_304_or_non_http_targets() {
+    struct Case {
+        name: &'static str,
+        status: u16,
+        content_type: Option<&'static str>,
+        body: &'static str,
+        location: &'static str,
+        expected_body: &'static str,
+    }
 
-    let response = app
-        .get(&format!("/v1/fetch?url={}", app.url("/start")))
-        .await;
+    let cases = [
+        Case {
+            name: "300 Multiple Choices",
+            status: 300,
+            content_type: Some("text/html; charset=utf-8"),
+            body: "multiple choices",
+            location: "/final",
+            expected_body: "multiple choices",
+        },
+        Case {
+            name: "304 Not Modified",
+            status: 304,
+            content_type: None,
+            body: "",
+            location: "/final",
+            expected_body: "",
+        },
+        Case {
+            name: "non-http target",
+            status: 302,
+            content_type: None,
+            body: "",
+            location: "file:///etc/passwd",
+            expected_body: "",
+        },
+    ];
 
-    assert_eq!(response.status(), StatusCode::OK);
+    for case in cases {
+        let app = TestApp::start();
+        let start = app.server.mock(|when, then| {
+            when.method("GET").path("/start");
 
-    let body = TestApp::json(response).await;
+            let then = then.status(case.status).header("location", case.location);
+            let then = match case.content_type {
+                Some(content_type) => then.header("content-type", content_type),
+                None => then,
+            };
+            if !case.body.is_empty() {
+                then.body(case.body);
+            }
+        });
+        let final_page = app.server.mock(|when, then| {
+            when.method("GET").path("/final");
+            then.status(200).body("should not be reached");
+        });
 
-    // 300 Multiple Choices carries a Location header but does not resend the request
-    // anywhere, so the response itself is final.
-    assert_eq!(body["metrics"]["status"], 300);
-    assert_eq!(body["metrics"]["final_url"], app.url("/start"));
-    assert_eq!(body["metrics"]["redirects_followed"], 0);
-    assert_eq!(body["body"], "multiple choices");
+        let start_url = app.url("/start");
+        let response = app.get(&format!("/v1/fetch?url={start_url}")).await;
 
-    start.assert_calls(1);
-    final_page.assert_calls(0);
-}
+        assert_eq!(response.status(), StatusCode::OK, "{}", case.name);
 
-#[tokio::test]
-async fn fetch_does_not_follow_304_not_modified() {
-    let app = TestApp::start();
-    let start = app.server.mock(|when, then| {
-        when.method("GET").path("/start");
-        then.status(304).header("location", "/final");
-    });
-    let final_page = app.server.mock(|when, then| {
-        when.method("GET").path("/final");
-        then.status(200).body("should not be reached");
-    });
+        let body = TestApp::json(response).await;
 
-    let response = app
-        .get(&format!("/v1/fetch?url={}", app.url("/start")))
-        .await;
+        assert_eq!(
+            body["metrics"]["status"], case.status,
+            "metrics.status for {}",
+            case.name
+        );
+        assert_eq!(
+            body["metrics"]["final_url"], start_url,
+            "final_url for {}",
+            case.name
+        );
+        assert_eq!(
+            body["metrics"]["redirects_followed"], 0,
+            "redirects_followed for {}",
+            case.name
+        );
+        assert_eq!(body["body"], case.expected_body, "body for {}", case.name);
 
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body = TestApp::json(response).await;
-
-    // 304 Not Modified can carry a Location header but is not a redirect to follow.
-    assert_eq!(body["metrics"]["status"], 304);
-    assert_eq!(body["metrics"]["final_url"], app.url("/start"));
-    assert_eq!(body["metrics"]["redirects_followed"], 0);
-    assert_eq!(body["body"], "");
-
-    start.assert_calls(1);
-    final_page.assert_calls(0);
-}
-
-#[tokio::test]
-async fn fetch_does_not_follow_non_http_redirect_targets() {
-    let app = TestApp::start();
-    let start = app.server.mock(|when, then| {
-        when.method("GET").path("/start");
-        then.status(302).header("location", "file:///etc/passwd");
-    });
-
-    let response = app
-        .get(&format!("/v1/fetch?url={}", app.url("/start")))
-        .await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body = TestApp::json(response).await;
-
-    // Only http(s) targets are followed; a file URL leaves the 302 as the final response.
-    assert_eq!(body["metrics"]["status"], 302);
-    assert_eq!(body["metrics"]["final_url"], app.url("/start"));
-    assert_eq!(body["metrics"]["redirects_followed"], 0);
-    assert_eq!(body["body"], "");
-
-    start.assert_calls(1);
+        start.assert_calls(1);
+        final_page.assert_calls(0);
+    }
 }
 
 #[tokio::test]
@@ -337,6 +334,49 @@ async fn peek_returns_only_the_head_metadata() {
     assert_eq!(body["metrics"]["content_type"], "text/html");
 
     page.assert();
+}
+
+#[tokio::test]
+async fn peek_does_not_wait_for_a_stalled_body_after_the_head() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    let app = TestApp::start();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+    let address = listener.local_addr().expect("the bound address");
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("one connection");
+        let mut request = [0u8; 1024];
+        let _ = stream.read(&mut request);
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/html\r\nconnection: close\r\n\r\n\
+                  <html><head><title>Peeked</title></head><body><p>ignored</p>",
+            )
+            .expect("the response is written");
+        stream.flush().expect("the response is flushed");
+        // Keep the body open: a reader that keeps polling for more bytes would park here
+        // until the client timeout instead of returning after the head.
+        let _ = release_rx.recv_timeout(Duration::from_secs(5));
+    });
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        app.get(&format!("/v1/peek?url=http://{address}/")),
+    )
+    .await
+    .expect("peek returns after the head even though the body stalls");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = TestApp::json(response).await;
+    assert_eq!(body["metadata"]["title"], "Peeked");
+
+    release_tx.send(()).expect("the server is released");
+    server.join().expect("the server thread finishes");
 }
 
 #[tokio::test]

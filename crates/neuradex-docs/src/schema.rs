@@ -102,11 +102,7 @@ fn cap_value(value: &mut String, max_bytes: usize) {
     if value.len() <= max_bytes {
         return;
     }
-    let mut cut = max_bytes;
-    while cut > 0 && !value.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    value.truncate(cut);
+    value.truncate(html::truncate_index(value, max_bytes));
     value.push_str(" … truncated for display");
 }
 

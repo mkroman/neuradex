@@ -62,6 +62,19 @@ pub fn ref_name(reference: &str) -> &str {
         .map_or(reference, |(_, name)| name)
 }
 
+/// Returns the largest valid UTF-8 character boundary at or below
+/// `min(max_bytes, text.len())`.
+///
+/// Callers use it to truncate text without slicing inside a multibyte character.
+#[must_use]
+pub fn truncate_index(text: &str, max_bytes: usize) -> usize {
+    let mut cut = max_bytes.min(text.len());
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    cut
+}
+
 /// Returns a field of a JSON object, treating explicit nulls as absent.
 pub fn field<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
     value.get(key).filter(|value| !value.is_null())
@@ -118,5 +131,26 @@ mod tests {
         assert_eq!(slug("/healthz"), "healthz");
         assert_eq!(slug("/a--b/c/"), "a-b-c");
         assert_eq!(slug("///"), "endpoint");
+    }
+
+    #[test]
+    fn truncates_ascii_at_the_requested_byte() {
+        assert_eq!(truncate_index("plain ascii", 5), 5);
+        assert_eq!(truncate_index("plain ascii", 11), 11);
+    }
+
+    #[test]
+    fn truncates_multibyte_text_at_a_character_boundary() {
+        // `é` is two bytes, so cutting inside it backs off to the previous boundary.
+        assert_eq!(truncate_index("aé", 2), 1);
+        assert_eq!(truncate_index("ééé", 3), 2);
+        assert_eq!(truncate_index("ééé", 5), 4);
+    }
+
+    #[test]
+    fn truncates_zero_and_oversized_caps() {
+        assert_eq!(truncate_index("anything", 0), 0);
+        assert_eq!(truncate_index("short", 100), 5);
+        assert_eq!(truncate_index("", usize::MAX), 0);
     }
 }

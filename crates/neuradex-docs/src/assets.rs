@@ -17,82 +17,49 @@ struct Source {
     embedded: &'static str,
 }
 
+/// Declares a [`Source`] list from theme-relative paths. Each path is both the runtime
+/// name and the compile-time embedding path, so it appears once per file.
+macro_rules! sources {
+    ($($path:literal),* $(,)?) => {
+        &[
+            $(
+                Source {
+                    name: $path,
+                    embedded: include_str!(concat!("../theme/", $path)),
+                },
+            )*
+        ]
+    };
+}
+
 /// The stylesheets, in canonical bundling order.
-const STYLES: &[Source] = &[
-    Source {
-        name: "styles/tokens.css",
-        embedded: include_str!("../theme/styles/tokens.css"),
-    },
-    Source {
-        name: "styles/base.css",
-        embedded: include_str!("../theme/styles/base.css"),
-    },
-    Source {
-        name: "styles/layout.css",
-        embedded: include_str!("../theme/styles/layout.css"),
-    },
-    Source {
-        name: "styles/endpoint.css",
-        embedded: include_str!("../theme/styles/endpoint.css"),
-    },
-    Source {
-        name: "styles/widgets.css",
-        embedded: include_str!("../theme/styles/widgets.css"),
-    },
-    Source {
-        name: "styles/params.css",
-        embedded: include_str!("../theme/styles/params.css"),
-    },
-    Source {
-        name: "styles/tryit.css",
-        embedded: include_str!("../theme/styles/tryit.css"),
-    },
-    Source {
-        name: "styles/responses.css",
-        embedded: include_str!("../theme/styles/responses.css"),
-    },
-    Source {
-        name: "styles/schema.css",
-        embedded: include_str!("../theme/styles/schema.css"),
-    },
+const STYLES: &[Source] = sources![
+    "styles/tokens.css",
+    "styles/base.css",
+    "styles/layout.css",
+    "styles/endpoint.css",
+    "styles/widgets.css",
+    "styles/params.css",
+    "styles/tryit.css",
+    "styles/responses.css",
+    "styles/schema.css",
 ];
 
 /// The behavior scripts, in canonical bundling order. Each file wires itself; they run
 /// inline at the end of `<body>` and communicate through `window.docsUI`, which
 /// `helpers.js` creates — it must come first.
-const SCRIPTS: &[Source] = &[
-    Source {
-        name: "scripts/helpers.js",
-        embedded: include_str!("../theme/scripts/helpers.js"),
-    },
-    Source {
-        name: "scripts/theme.js",
-        embedded: include_str!("../theme/scripts/theme.js"),
-    },
-    Source {
-        name: "scripts/tryit.js",
-        embedded: include_str!("../theme/scripts/tryit.js"),
-    },
-    Source {
-        name: "scripts/schema.js",
-        embedded: include_str!("../theme/scripts/schema.js"),
-    },
-    Source {
-        name: "scripts/filter.js",
-        embedded: include_str!("../theme/scripts/filter.js"),
-    },
-    Source {
-        name: "scripts/spy.js",
-        embedded: include_str!("../theme/scripts/spy.js"),
-    },
+const SCRIPTS: &[Source] = sources![
+    "scripts/helpers.js",
+    "scripts/theme.js",
+    "scripts/tryit.js",
+    "scripts/schema.js",
+    "scripts/filter.js",
+    "scripts/spy.js",
 ];
 
 /// The pre-paint theme bootstrap — runs from `<head>`, never bundled with the other
 /// scripts.
-const BOOTSTRAP: &[Source] = &[Source {
-    name: "bootstrap.js",
-    embedded: include_str!("../theme/bootstrap.js"),
-}];
+const BOOTSTRAP: &[Source] = sources!["bootstrap.js"];
 
 /// Reads every listed source from `base`, falling back to the embedded copy per file on
 /// I/O errors. Parameterized over the base directory for tests.

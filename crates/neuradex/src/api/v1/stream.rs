@@ -95,13 +95,11 @@ pub(crate) async fn read_body(
     })
     .await;
 
-    // The reader is reaped on every path so it is never left detached. On success it finishes
-    // once the parser stops reading from the channel, aborting the rest of the response; on a
-    // failed read it is aborted first, so a stalled upstream cannot delay the error until the
-    // request timeout.
-    if !matches!(&read, Ok(Ok(_))) {
-        reader.abort();
-    }
+    // The parser is done reading, so the reader has no remaining consumer. Abort it even on
+    // success: it may be parked in `bytes_stream().next()`, which dropping the receiver does
+    // not interrupt, and a stalled upstream must not hold the response until the client
+    // timeout. On a failed read this also prevents a stalled body from delaying the error.
+    reader.abort();
 
     if let Err(error) = reader.await
         && !error.is_cancelled()
@@ -154,7 +152,11 @@ fn consume(
             break;
         }
 
-        let chunk = chunk.map_err(ApiError::upstream)?;
+        let chunk = chunk.map_err(|error| {
+            // `wreq::Error`'s renderings include the request URI; redact it before it can reach
+            // the 5xx log line.
+            ApiError::upstream(error.without_uri())
+        })?;
         bytes_read = bytes_read.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
 
         parser.feed(&chunk);
@@ -305,125 +307,166 @@ mod tests {
         assert_eq!(json.get("content-length").map(String::as_str), Some("42"));
     }
 
-    #[test]
-    fn reports_body_truncation_only_past_the_cap() {
-        // A body that exactly fits the cap is complete, not truncated.
-        let read = consume(std::iter::once(Ok(vec![b'x'; 8].into())), true, 8).expect("reads");
-
-        assert_eq!(read.bytes_read, 8);
-        assert_eq!(read.body.as_deref().map(<[u8]>::len), Some(8));
-        assert!(!read.truncated);
-
-        // Data after the cap proves the body was cut short; the overflowing chunk is discarded.
-        let read = consume(
-            [Ok(vec![b'x'; 8].into()), Ok(vec![b'y'; 4].into())].into_iter(),
-            true,
-            8,
+    /// Runs `consume` over chunks copied from `chunks`.
+    fn read_chunks(chunks: &[&[u8]], collect_body: bool, max_bytes: u64) -> StreamedBody {
+        consume(
+            chunks.iter().map(|chunk| Ok(Bytes::copy_from_slice(chunk))),
+            collect_body,
+            max_bytes,
         )
-        .expect("reads");
-
-        assert_eq!(read.bytes_read, 8);
-        assert_eq!(read.body.as_deref().map(<[u8]>::len), Some(8));
-        assert!(read.truncated);
+        .expect("reads")
     }
 
     #[test]
-    fn reports_truncation_when_the_only_chunk_crosses_the_cap() {
-        let read = consume(std::iter::once(Ok(vec![b'x'; 12].into())), true, 8).expect("reads");
+    fn reads_full_bodies_up_to_the_cap() {
+        struct Case {
+            name: &'static str,
+            chunks: &'static [&'static [u8]],
+            cap: u64,
+            bytes_read: u64,
+            body: &'static [u8],
+            truncated: bool,
+        }
 
-        assert_eq!(read.bytes_read, 12);
-        assert_eq!(read.body.as_deref().map(<[u8]>::len), Some(8));
-        assert!(read.truncated);
+        let cases = [
+            Case {
+                name: "a body that fits the cap exactly is complete",
+                chunks: &[b"xxxxxxxx"],
+                cap: 8,
+                bytes_read: 8,
+                body: b"xxxxxxxx",
+                truncated: false,
+            },
+            Case {
+                name: "a further chunk proves the body was cut short",
+                chunks: &[b"xxxxxxxx", b"yyyy"],
+                cap: 8,
+                bytes_read: 8,
+                body: b"xxxxxxxx",
+                truncated: true,
+            },
+            Case {
+                name: "a single chunk crossing the cap is truncated",
+                chunks: &[b"xxxxxxxxxxxx"],
+                cap: 8,
+                bytes_read: 12,
+                body: b"xxxxxxxx",
+                truncated: true,
+            },
+            Case {
+                name: "a final chunk crossing the cap is truncated",
+                chunks: &[b"xxxx", b"yyyyyyyy"],
+                cap: 8,
+                bytes_read: 12,
+                body: b"xxxxyyyy",
+                truncated: true,
+            },
+        ];
+
+        for case in cases {
+            let read = read_chunks(case.chunks, true, case.cap);
+
+            assert_eq!(
+                read.bytes_read, case.bytes_read,
+                "bytes_read for {}",
+                case.name
+            );
+            assert_eq!(
+                read.body.as_deref(),
+                Some(case.body),
+                "body for {}",
+                case.name
+            );
+            assert_eq!(
+                read.truncated, case.truncated,
+                "truncated for {}",
+                case.name
+            );
+        }
     }
 
     #[test]
-    fn does_not_report_truncation_when_the_only_chunk_fits_exactly() {
-        let read = consume(std::iter::once(Ok(vec![b'x'; 8].into())), true, 8).expect("reads");
+    fn reads_heads_up_to_the_head_or_the_cap() {
+        struct Case {
+            name: &'static str,
+            chunks: &'static [&'static [u8]],
+            collect_body: bool,
+            max_bytes: u64,
+            bytes_read: u64,
+            body: Option<&'static [u8]>,
+            truncated: bool,
+            title: Option<&'static str>,
+        }
 
-        assert_eq!(read.bytes_read, 8);
-        assert_eq!(read.body.as_deref().map(<[u8]>::len), Some(8));
-        assert!(!read.truncated);
-    }
+        const HTML: &[u8] = b"<html><head><title>Hello</title></head></html>";
+        const HEAD: &[u8] = b"<html><head><title>Hello</title></head>";
+        const TAIL: &[u8] = b"<body><p>Hello</p></body></html>";
+        const FULL: &[u8] =
+            b"<html><head><title>Hello</title></head><body><p>Hello</p></body></html>";
 
-    #[test]
-    fn reports_truncation_when_the_final_chunk_crosses_the_cap() {
-        let read = consume(
-            [Ok(vec![b'x'; 4].into()), Ok(vec![b'y'; 8].into())].into_iter(),
-            true,
-            8,
-        )
-        .expect("reads");
+        let cases = [
+            Case {
+                name: "a head that fits the cap exactly parses completely",
+                chunks: &[HTML],
+                collect_body: false,
+                max_bytes: u64::try_from(HTML.len()).expect("fits"),
+                bytes_read: u64::try_from(HTML.len()).expect("fits"),
+                body: None,
+                truncated: false,
+                title: Some("Hello"),
+            },
+            Case {
+                name: "a further chunk proves the head was cut short",
+                chunks: &[b"<<<<<<<<<<<<<<<<", b"xxxxxxxx"],
+                collect_body: false,
+                max_bytes: 16,
+                bytes_read: 16,
+                body: None,
+                truncated: true,
+                title: None,
+            },
+            Case {
+                name: "full mode keeps reading past the head",
+                chunks: &[HEAD, TAIL],
+                collect_body: true,
+                max_bytes: HEAD_MAX_BYTES,
+                bytes_read: u64::try_from(FULL.len()).expect("fits"),
+                body: Some(FULL),
+                truncated: false,
+                title: Some("Hello"),
+            },
+            Case {
+                name: "head mode stops at the end of the head",
+                chunks: &[HEAD, b"xxxxxxxx"],
+                collect_body: false,
+                max_bytes: HEAD_MAX_BYTES,
+                bytes_read: u64::try_from(HEAD.len()).expect("fits"),
+                body: None,
+                truncated: false,
+                title: Some("Hello"),
+            },
+        ];
 
-        assert_eq!(read.bytes_read, 12);
-        assert_eq!(read.body.as_deref(), Some(&b"xxxxyyyy"[..]));
-        assert!(read.truncated);
-    }
+        for case in cases {
+            let read = read_chunks(case.chunks, case.collect_body, case.max_bytes);
 
-    #[test]
-    fn reports_head_truncation_only_past_the_cap() {
-        let html = b"<html><head><title>Hello</title></head></html>";
-
-        // A head that exactly fits the cap parses completely.
-        let read = consume(
-            std::iter::once(Ok(html.to_vec().into())),
-            false,
-            u64::try_from(html.len()).expect("fits"),
-        )
-        .expect("reads");
-
-        assert_eq!(read.metadata.title.as_deref(), Some("Hello"));
-        assert!(!read.truncated);
-
-        // More bytes after the cap prove the head was cut short; the overflowing chunk is
-        // discarded.
-        let read = consume(
-            [Ok(vec![b'<'; 16].into()), Ok(vec![b'x'; 8].into())].into_iter(),
-            false,
-            16,
-        )
-        .expect("reads");
-
-        assert_eq!(read.bytes_read, 16);
-        assert!(read.truncated);
-    }
-
-    #[test]
-    fn keeps_reading_past_the_head_in_full_mode() {
-        let head = b"<html><head><title>Hello</title></head>".to_vec();
-        let tail = b"<body><p>Hello</p></body></html>".to_vec();
-        let mut expected = head.clone();
-        expected.extend_from_slice(&tail);
-        let expected_len = u64::try_from(expected.len()).expect("fits");
-
-        let read = consume(
-            [Ok(head.into()), Ok(tail.into())].into_iter(),
-            true,
-            HEAD_MAX_BYTES,
-        )
-        .expect("reads");
-
-        assert_eq!(read.metadata.title.as_deref(), Some("Hello"));
-        assert_eq!(read.body.as_deref(), Some(expected.as_slice()));
-        assert_eq!(read.bytes_read, expected_len);
-        assert!(!read.truncated);
-    }
-
-    #[test]
-    fn stops_reading_at_the_head_in_head_mode() {
-        let read = consume(
-            [
-                Ok(b"<html><head><title>Hello</title></head>".to_vec().into()),
-                Ok(vec![b'x'; 8].into()),
-            ]
-            .into_iter(),
-            false,
-            HEAD_MAX_BYTES,
-        )
-        .expect("reads");
-
-        assert_eq!(read.metadata.title.as_deref(), Some("Hello"));
-        assert_eq!(read.bytes_read, 39);
-        assert!(read.body.is_none());
-        assert!(!read.truncated);
+            assert_eq!(
+                read.metadata.title.as_deref(),
+                case.title,
+                "title for {}",
+                case.name
+            );
+            assert_eq!(
+                read.bytes_read, case.bytes_read,
+                "bytes_read for {}",
+                case.name
+            );
+            assert_eq!(read.body.as_deref(), case.body, "body for {}", case.name);
+            assert_eq!(
+                read.truncated, case.truncated,
+                "truncated for {}",
+                case.name
+            );
+        }
     }
 }

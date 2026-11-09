@@ -26,11 +26,7 @@ pub fn highlight_json(value: &Value, cap: usize) -> String {
 fn highlight_text(text: &str, cap: usize) -> String {
     let truncated = text.len() > cap;
     let slice = if truncated {
-        let mut cut = cap;
-        while !text.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        &text[..cut]
+        &text[..html::truncate_index(text, cap)]
     } else {
         text
     };

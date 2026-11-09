@@ -447,7 +447,7 @@ async fn a_cancelled_search_releases_the_session() {
 }
 
 #[tokio::test]
-async fn requests_beyond_capacity_wait_for_a_session() {
+async fn requests_beyond_capacity_wait_for_the_search_gate() {
     let harness = KagiHarness::start();
     let client = harness.client_with(1, Duration::from_secs(60));
     let session = harness.mock_session();
@@ -455,6 +455,8 @@ async fn requests_beyond_capacity_wait_for_a_session() {
     let stream =
         harness.mock_search_stream_reusable("search_stream_sse.bin", Duration::from_millis(200));
 
+    // The client's search gate has one permit, so the second search waits there rather than
+    // reaching the session pool; when it is admitted it reuses the checked-in session.
     let (a, b) = tokio::join!(client.search(QUERY), client.search(QUERY));
 
     a.expect("the first search succeeds");

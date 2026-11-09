@@ -12,7 +12,16 @@ axum-extra = { version = "0.12.6", default-features = false, features = ["query"
 clap = { version = "4.5", features = ["derive"] }
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 html5ever = "0.40.0"
-kagi = { path = "../kagi", default-features = false, features = ["rustls"] }
+# The compression features also make reqwest advertise `Accept-Encoding` and decode
+# compressed responses. A browser-impersonating client must send that header; without
+# it Kagi sees a non-browser request, and a compressed body would not be decoded.
+kagi = { path = "../kagi", default-features = false, features = [
+    "rustls",
+    "gzip",
+    "brotli",
+    "deflate",
+    "zstd",
+] }
 neuradex-docs = { path = "../neuradex-docs", optional = true }
 opentelemetry.workspace = true
 opentelemetry-appender-tracing.workspace = true

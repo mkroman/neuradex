@@ -125,7 +125,10 @@ pub(crate) async fn fetch_with_redirects(
             .map_err(|error| {
                 telemetry::record_error(&span, &error);
 
-                ApiError::upstream(error)
+                // The error's `Display`/`Debug` renderings include the request URI, which can
+                // carry a user's query or userinfo. Strip it before the error reaches the 5xx
+                // log line; the span already recorded the sanitized URL.
+                ApiError::upstream(error.without_uri())
             })?;
         telemetry::record_response(&span, &response);
 
@@ -197,6 +200,23 @@ fn redirect_location(base: &Url, location: &str) -> Option<Url> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn redacts_urls_from_upstream_errors() {
+        let client = wreq::Client::new();
+        let url =
+            Url::parse("http://user:password@127.0.0.1:0/path?token=query-secret#fragment-secret")
+                .expect("the test URL parses");
+
+        let Err(error) = fetch_with_redirects(&client, url, 0, false).await else {
+            panic!("port zero has no listener");
+        };
+        let rendered = format!("{error:?}");
+
+        for secret in ["user", "password", "query-secret", "fragment-secret"] {
+            assert!(!rendered.contains(secret), "the error leaked {secret:?}");
+        }
+    }
 
     #[test]
     fn extracts_media_types() {

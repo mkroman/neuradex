@@ -105,7 +105,8 @@ pub struct ClientOptions {
     /// capacity wait for a session to free up.
     ///
     /// In Privacy Pass mode there is no session pool; the same value bounds the number of
-    /// in-flight searches directly. Values below 1 are treated as 1.
+    /// in-flight searches directly. Values below 1 are treated as 1, and values above Tokio's
+    /// semaphore permit limit are clamped so construction cannot panic.
     pub max_sessions: usize,
     /// Privacy Pass authentication settings.
     ///
