@@ -138,8 +138,10 @@ async fn concurrent_searches_each_redeem_their_own_tokens() {
     let harness = PrivacyPassHarness::start();
     let flow = Flow::search(&harness);
     // Each search redeems one token for the document and one for the stream. A batch covers half
-    // of them, so the second batch is issued on demand.
-    let client = Arc::new(harness.client_with_tokens(SEARCHES));
+    // of them, so the second batch is issued on demand. The session limit matches the search
+    // count, so the search gate does not serialize the redemptions and mask a concurrent issuance
+    // race.
+    let client = Arc::new(harness.client_with_options(SEARCHES, SEARCHES, 0, SEARCHES));
     let mut tasks = Vec::with_capacity(SEARCHES);
 
     for _ in 0..SEARCHES {
