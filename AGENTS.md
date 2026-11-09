@@ -4,8 +4,6 @@ axum 0.8 HTTP service exposing LLM-agent tools as JSON: `GET /v1/{fetch,peek}`, 
 
 ## Workspace
 
-- Modules use the post-2018 layout: `foo.rs` for a leaf module, `foo.rs` plus `foo/bar.rs` for
-  children; never `foo/mod.rs`. Module names are `snake_case`.
 - Virtual workspace (edition 2024, resolver 3). `default-members = ["crates/neuradex"]`, so **root `cargo test`/`clippy` only cover the service** — pass `--workspace` for all members. Every direct child of `crates/` must be a package (glob `members`).
 - `crates/neuradex` — the service (binary + lib). Entry: `src/main.rs` (clap) → `src/http.rs::serve`; runtime configuration is `src/config.rs`, shared state is `src/state.rs`, routes are in `src/api/v1.rs`.
 - `crates/neuradex-docs` — renders `/docs` from the serialized OpenAPI JSON (`serde_json::Value`); `render()` is the only entry point the service uses. It has no `utoipa` dependency.
@@ -15,6 +13,20 @@ axum 0.8 HTTP service exposing LLM-agent tools as JSON: `GET /v1/{fetch,peek}`, 
 - Shared deps (and the tokio feature set) are pinned in `[workspace.dependencies]`; members add features on top. New dependencies must be justified.
 - `neuradex` and `test-support` enable `kagi`'s four compression features on purpose: reqwest only advertises `Accept-Encoding` — and decodes compressed responses — when they are on. Do not trim them when changing TLS features; the Kagi harness pins the header.
 - utoipa's `macros` feature can't be dropped (utoipa 6.0.0 doesn't compile without it); only the service uses the derives.
+
+## Module boundaries
+
+- Use the post-2018 layout: `foo.rs` for a leaf module, and `foo.rs` plus `foo/bar.rs` for a
+  module with children. Never add `foo/mod.rs`. Module names and their files are `snake_case`;
+  Cargo target files such as `benches/http-stack.rs` follow their target name and are not modules.
+- Keep the module graph acyclic and one-way: a consumer imports the producer, never the reverse.
+  The producer owns the shared types. For example, `parser_pool` owns `StreamedBody` and
+  `HEAD_MAX_BYTES`; `stream` imports them.
+- Use the narrowest visibility. Items used only inside `api::v1` are `pub(super)`, not
+  `pub(crate)`; `pub(crate)` inside a private module trips `clippy::redundant_pub_crate`. A
+  `pub(crate)` function must not return a type that is less visible than the function.
+- Read runtime configuration only in `src/config.rs`; CLI arguments stay in `main.rs`. Library
+  modules must not read `std::env`. A hidden environment variable is a drift, not a feature.
 
 ## Verify
 
