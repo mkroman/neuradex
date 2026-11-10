@@ -13,6 +13,12 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 assert_cmd = "2.2.2"
+aws-sdk-s3 = { version = "1", default-features = false, features = [
+    "behavior-version-latest",
+    "default-https-client",
+    "rt-tokio",
+    "rustls",
+] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "matched-path", "tokio", "tracing"] }
 base64 = "0.23.0"
 blake3 = "1.8"
@@ -21,7 +27,6 @@ hmac = "0.12"
 htmlize = { version = "1.1.0", features = ["unescape"] }
 http = "1"
 httpmock = "0.9.0"
-object_store = { version = "0.12", default-features = false, features = ["aws"] }
 opentelemetry = { version = "0.33.1", default-features = false, features = ["trace", "logs"] }
 opentelemetry-appender-tracing = { version = "0.33.1", default-features = false }
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = [
