@@ -145,6 +145,8 @@ spirit of Oxide RFD 1 and RFD 5. See [rfd/README.md](rfd/README.md) for the proc
 - [local-development.md](development/local-development.md) — compose stack and a working
   end-to-end loop.
 - [testing.md](development/testing.md) — test matrix and fixtures.
+- [style.md](development/style.md) — modern module layout (`foo.rs` + `foo/bar.rs`), naming,
+  paths, and visibility.
 - [ci.md](development/ci.md) — pipeline, gates, and what a docs/compose PR runs.
 
 ### Operations
@@ -188,4 +190,5 @@ same PR:
 | A ClickHouse column, view, or TTL | [reference/clickhouse-schema.md](reference/clickhouse-schema.md), `hack/clickhouse/init.sql` |
 | A Quickwit field, mapping, or retention | [reference/quickwit-index.md](reference/quickwit-index.md), `hack/quickwit/neuradex-events.yaml` |
 | A configuration variable | [reference/configuration.md](reference/configuration.md) |
+| A module layout or file name | [development/style.md](development/style.md) |
 | A failure mode or recovery step | [architecture/failure-model.md](architecture/failure-model.md), [operations/runbook.md](operations/runbook.md) |
