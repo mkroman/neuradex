@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 base64.workspace = true
+const-hex.workspace = true
 hmac.workspace = true
 http.workspace = true
 serde.workspace = true

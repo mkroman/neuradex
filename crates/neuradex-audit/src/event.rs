@@ -19,7 +19,7 @@ use time::OffsetDateTime;
 use time::UtcOffset;
 use time::format_description::well_known::Rfc3339;
 
-use crate::digest::{sha256_hex, to_hex};
+use crate::digest::sha256_hex;
 
 /// The schema version emitted in every [`AuditEvent`].
 pub const SCHEMA_VERSION: &str = "1.0.0";
@@ -661,7 +661,7 @@ impl SearchOperation {
 
         self.returned_result_count = Some(returned);
         self.zero_results = returned == 0;
-        self.result_digest = Some(to_hex(&digest.finalize()));
+        self.result_digest = Some(const_hex::encode(digest.finalize()));
         self.top_hosts = ranked;
         self
     }

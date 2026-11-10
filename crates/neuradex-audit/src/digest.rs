@@ -1,57 +1,20 @@
 //! Small digest helpers shared by the event schema and the header policy.
-//!
-//! `hmac` is not used here: the workspace pins `hmac` 0.12, which is built on digest 0.10,
-//! while `sha2` 0.11 is built on digest 0.11. The two cannot be combined in one HMAC
-//! implementation. HMAC-SHA256 is small enough to implement directly on top of `sha2`; the
-//! construction follows RFC 2104.
 
+use hmac::digest::KeyInit;
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 
 /// Returns the lowercase hex SHA-256 digest of `input`.
 pub fn sha256_hex(input: &[u8]) -> String {
-    to_hex(&Sha256::digest(input))
-}
-
-/// Renders bytes as lowercase hex.
-pub fn to_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-
-    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        output.push(char::from(HEX[usize::from(byte >> 4)]));
-        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    output
+    const_hex::encode(Sha256::digest(input))
 }
 
 /// Returns the lowercase hex HMAC-SHA256 of `message` under `key`.
 pub fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
-    const BLOCK_SIZE: usize = 64;
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts keys of any length");
+    mac.update(message);
 
-    let mut key_block = [0_u8; BLOCK_SIZE];
-    if key.len() > BLOCK_SIZE {
-        key_block[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        key_block[..key.len()].copy_from_slice(key);
-    }
-
-    let mut inner_pad = [0x36_u8; BLOCK_SIZE];
-    let mut outer_pad = [0x5c_u8; BLOCK_SIZE];
-    for (index, byte) in key_block.iter().enumerate() {
-        inner_pad[index] ^= byte;
-        outer_pad[index] ^= byte;
-    }
-
-    let mut inner = Sha256::new();
-    inner.update(inner_pad);
-    inner.update(message);
-    let inner_digest = inner.finalize();
-
-    let mut outer = Sha256::new();
-    outer.update(outer_pad);
-    outer.update(inner_digest);
-
-    to_hex(&outer.finalize())
+    const_hex::encode(mac.finalize().into_bytes())
 }
 
 #[cfg(test)]
