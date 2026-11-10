@@ -63,7 +63,8 @@ pub struct S3Config {
     pub secret_access_key: String,
     /// Whether to use path-style addressing. B2 requires this.
     pub force_path_style: bool,
-    /// Size of each multipart part, in bytes.
+    /// Size of each multipart part, in bytes. Values above the 16 MiB default
+    /// are capped so a large pack is never buffered as one part.
     pub multipart_part_size: u64,
     /// Maximum number of bytes returned by one range read.
     pub max_range_bytes: u64,
@@ -218,10 +219,11 @@ impl S3Store {
 
     /// Uploads the file at `path` to `key`.
     ///
-    /// Files at or below the configured part size use one `PutObject` call.
-    /// Larger files use a multipart upload so the whole pack is never held in
-    /// memory. Any multipart failure is followed by a best-effort abort. File
-    /// reads use `std::fs` and block the calling task.
+    /// Files at or below the smaller of the configured part size and the 16 MiB
+    /// default use one `PutObject` call. Larger files use a multipart upload
+    /// with parts capped at 16 MiB, so the whole pack is never held in memory.
+    /// Any multipart failure is followed by a best-effort abort. File reads use
+    /// `std::fs` and block the calling task.
     ///
     /// # Errors
     ///
@@ -406,6 +408,7 @@ impl S3Store {
         let max_size = self
             .config
             .multipart_part_size
+            .min(DEFAULT_MULTIPART_PART_SIZE)
             .checked_mul(MAX_MULTIPART_PARTS)
             .ok_or_else(|| StoreError::InvalidConfig {
                 message: "multipart limits overflowed".to_owned(),
@@ -463,10 +466,13 @@ impl S3Store {
         path: &Path,
         upload_id: &str,
     ) -> Result<Vec<CompletedPart>, StoreError> {
-        let part_size = usize::try_from(self.config.multipart_part_size).map_err(|_| {
-            StoreError::InvalidConfig {
-                message: "multipart part size does not fit in memory".to_owned(),
-            }
+        let part_size = usize::try_from(
+            self.config
+                .multipart_part_size
+                .min(DEFAULT_MULTIPART_PART_SIZE),
+        )
+        .map_err(|_| StoreError::InvalidConfig {
+            message: "multipart part size does not fit in memory".to_owned(),
         })?;
         let mut reader = BufReader::new(std::fs::File::open(path)?);
         let mut parts = Vec::new();
