@@ -29,14 +29,14 @@ jobs:
       - name: Lint chart
         run: helm lint chart/neuradex --set kagiSessionToken=ci-dummy
       - name: Validate event pipeline config
-        run: |
-          docker run --rm \
-            -e CLICKHOUSE_PASSWORD=test \
-            -e AWS_ACCESS_KEY_ID=test \
-            -e AWS_SECRET_ACCESS_KEY=test \
-            -v "$PWD/deploy/event-pipeline/vector.yaml:/etc/vector/vector.yaml:ro" \
-            timberio/vector:0.61.0-debian \
-            validate --no-environment /etc/vector/vector.yaml
+        uses: ./.github/actions/vector-validate
+        env:
+          CLICKHOUSE_PASSWORD: test
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+        with:
+          config: deploy/event-pipeline/vector.yaml
+          version: "0.61.0"
       - name: Render chart variants
         run: |
           helm template defaults chart/neuradex \

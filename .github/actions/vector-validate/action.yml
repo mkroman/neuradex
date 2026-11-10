@@ -1,0 +1,28 @@
+name: Validate Vector config
+description: Install Vector and validate a configuration file without running the pipeline.
+
+inputs:
+  config:
+    description: Path to the Vector configuration file.
+    required: true
+  version:
+    description: Vector release to install.
+    required: false
+    default: "0.61.0"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Vector
+      shell: bash
+      env:
+        VECTOR_VERSION: ${{ inputs.version }}
+      run: |
+        curl --proto '=https' --tlsv1.2 -sSfL https://sh.vector.dev \
+          | VECTOR_VERSION="${VECTOR_VERSION}" bash -s -- \
+              -y --prefix "${RUNNER_TEMP}/vector" --no-modify-path
+
+    - name: Validate
+      shell: bash
+      run: |
+        "${RUNNER_TEMP}/vector/bin/vector" validate --no-environment "${{ inputs.config }}"
