@@ -17,7 +17,6 @@ aws-sdk-s3 = { version = "1", default-features = false, features = [
     "behavior-version-latest",
     "default-https-client",
     "rt-tokio",
-    "rustls",
 ] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "matched-path", "tokio", "tracing"] }
 base64 = "0.23.0"
