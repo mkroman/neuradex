@@ -28,15 +28,14 @@ jobs:
           persist-credentials: false
       - name: Lint chart
         run: helm lint chart/neuradex --set kagiSessionToken=ci-dummy
+      - name: Lint event pipeline chart
+        run: helm lint chart/event-pipeline
       - name: Install Vector
         run: ./hack/install-tools.sh "$HOME/.local/bin" vector
-      - name: Add Vector Helm repository
-        run: helm repo add vector https://helm.vector.dev --force-update
       - name: Render event pipeline config
         run: |
-          helm template vector vector/vector --version 0.61.0 \
-            -f deploy/event-pipeline/values.yaml \
-            --show-only templates/configmap.yaml > "$RUNNER_TEMP/vector-configmap.yaml"
+          helm template event-pipeline chart/event-pipeline \
+            --show-only charts/vector/templates/configmap.yaml > "$RUNNER_TEMP/vector-configmap.yaml"
           awk '/^  vector.yaml: \|$/{found=1; next} found { sub(/^    /, ""); print }' \
             "$RUNNER_TEMP/vector-configmap.yaml" > "$RUNNER_TEMP/vector.yaml"
       - name: Validate event pipeline config

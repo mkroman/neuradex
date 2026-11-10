@@ -16,7 +16,7 @@ updated: 2026-11-10
 
 # RFD 10: Production event pipeline
 
-> **Status:** the reference deployment is checked in under `deploy/event-pipeline`; it uses the
+> **Status:** the reference deployment is checked in under `chart/event-pipeline`; it uses the
 > upstream Vector Helm chart. The local compose bridge remains the development path.
 
 ## Summary
@@ -28,7 +28,7 @@ and fans them out. The service never waits for a sink. B2 holds the durable arch
 `events/`; Quickwit and ClickHouse are derived, rebuildable views.
 
 The deployment does **not** add a DaemonSet, RBAC, or ConfigMap to the service chart. It uses the
-upstream Vector Helm chart and a checked-in `vector.yaml`; the service chart stays focused on the
+upstream Vector Helm chart as a vendored umbrella chart; the service chart stays focused on the
 service.
 
 ## Context and scope
@@ -81,7 +81,7 @@ Non-goals:
 
 Adopt **Option A**. The service stays a JSONL producer. The upstream Vector chart owns the
 DaemonSet and Kubernetes plumbing; this repository owns only
-`deploy/event-pipeline/values.yaml`, which supplies the chart's `customConfig` and credential
+`chart/event-pipeline/values.yaml`, which supplies the chart's `customConfig` and credential
 references. This keeps the moving parts versioned and avoids a second implementation of Vector's
 Kubernetes integration.
 
@@ -113,7 +113,7 @@ DaemonSet. The service does not detect or configure the collector.
 
 ### Collection
 
-`vector.yaml` uses Vector's `kubernetes_logs` source with:
+The values' `customConfig` uses Vector's `kubernetes_logs` source with:
 
 - `extra_label_selector` restricted to the neuradex service pods;
 - `read_from = "beginning"` and the chart's hostPath-backed `/var/lib/vector` data directory;
@@ -146,18 +146,17 @@ directory. A sink outage backpressures the pipeline instead of dropping audit ev
 
 ### Deployment
 
-`deploy/event-pipeline` contains:
+`chart/event-pipeline` contains:
 
-- `vector.yaml` — the Vector configuration, validated in CI;
-- `values.yaml` — upstream Vector chart values (`role: Agent`, `existingConfigMaps`, secret-backed
-  environment variables, tolerations, resources);
+- `Chart.yaml` — pins the vendored upstream Vector chart;
+- `values.yaml` — `vector.*` values (`role: Agent`, `customConfig`, secret-backed environment
+  variables, tolerations, resources);
 - `README.md` — the install sequence and verification.
 
-The ConfigMap is created with `kubectl create configmap --from-file`; the chart mounts it with
-`existingConfigMaps`. The chart's Agent role supplies the host log mounts, hostPath data
-directory, ServiceAccount, ClusterRole, and ClusterRoleBinding. The collector runs as root
-because node log files are root-owned; the chart's pod security settings can be tightened only if
-the cluster's log layout allows it.
+The upstream Vector chart renders `customConfig` into its own ConfigMap and supplies the
+DaemonSet, host log mounts, hostPath data directory, ServiceAccount, ClusterRole, and
+ClusterRoleBinding. The collector runs as root because node log files are root-owned; the chart's
+pod security settings can be tightened only if the cluster's log layout allows it.
 
 ### Configuration
 

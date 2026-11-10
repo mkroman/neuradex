@@ -38,7 +38,7 @@ or table that does not exist yet, the document says so explicitly.
 | Understand the packfile bytes | [reference/packfile-format.md](reference/packfile-format.md) |
 | Run the stack locally | [development/local-development.md](development/local-development.md) |
 | Deploy the service with Helm | [operations/deployment.md](operations/deployment.md) |
-| Ship audit events to Quickwit, ClickHouse, and B2 | [../deploy/event-pipeline/README.md](../deploy/event-pipeline/README.md) |
+| Ship audit events to Quickwit, ClickHouse, and B2 | [../chart/event-pipeline/README.md](../chart/event-pipeline/README.md) |
 | Debug missing or corrupt data | [operations/runbook.md](operations/runbook.md) |
 | Know what to monitor | [operations/observability.md](operations/observability.md) |
 | Make or review a design decision | [rfd/README.md](rfd/README.md), [rfd/TEMPLATE.md](rfd/TEMPLATE.md) |

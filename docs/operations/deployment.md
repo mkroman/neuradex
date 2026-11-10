@@ -68,8 +68,8 @@ policy.
 
 The optional event pipeline ships audit events to Quickwit, ClickHouse, and an S3-compatible
 archive. It is a separate deployment: the upstream Vector Helm chart runs a DaemonSet, and this
-repository provides only the Vector configuration and chart values in `deploy/event-pipeline`.
-See [the deployment README](../../deploy/event-pipeline/README.md) and
+repository provides only the Vector configuration and chart values in `chart/event-pipeline`.
+See [the deployment README](../../chart/event-pipeline/README.md) and
 [RFD 0010](../rfd/0010-production-event-pipeline.md).
 
 It requires audit events on stdout. Do not set `audit.logPath` on a release using the pipeline.
@@ -81,16 +81,12 @@ kubectl -n neuradex create secret generic neuradex-events \
   --from-literal=access-key-id="$B2_EVENTS_KEY_ID" \
   --from-literal=secret-access-key="$B2_EVENTS_APP_KEY"
 
-helm repo add vector https://helm.vector.dev
-helm repo update
-helm upgrade --install vector vector/vector \
-  -n neuradex \
-  --version 0.61.0 \
-  -f deploy/event-pipeline/values.yaml
+helm upgrade --install event-pipeline chart/event-pipeline \
+  -n neuradex
 ```
 
 Edit the endpoints, archive bucket, and `serviceSelector` in
-[`deploy/event-pipeline/values.yaml`](../../deploy/event-pipeline/values.yaml) first. The chart
+[`chart/event-pipeline/values.yaml`](../../chart/event-pipeline/values.yaml) first. The chart
 renders the values through its `customConfig`; there is no separate ConfigMap step. The collector
 has no Service or Ingress and runs as root because node log files are root-owned. It uses bounded
 disk buffers and delivers at-least-once; deduplicate by `event_id` when querying. The `events/`

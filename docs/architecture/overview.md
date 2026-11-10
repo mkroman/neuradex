@@ -59,7 +59,7 @@ flowchart TB
 The service is the only component that talks to Kagi and the only component that writes content.
 The audit JSONL file/stdout is the service's only audit output. Quickwit, ClickHouse, and the B2
 event archive are fed by Vector: the local `ingest` profile in development, or the reference
-upstream-chart deployment in `deploy/event-pipeline` in Kubernetes.
+upstream-chart deployment in `chart/event-pipeline` in Kubernetes.
 
 ## Components
 
@@ -117,7 +117,7 @@ Rules that follow from the split:
 | --- | --- | --- | --- | --- | --- | --- |
 | Local | `cargo run` on host | compose | compose | MinIO | compose | Development |
 | Staging | container/Helm | single node or managed | single node | real B2 bucket | OTLP collector | Internal real data |
-| Production | Helm, HPA | HA (TBD) | cluster (TBD) | real B2 bucket | TBD | Chart supports audit/content; `deploy/event-pipeline` ships events; HA topology TBD |
+| Production | Helm, HPA | HA (TBD) | cluster (TBD) | real B2 bucket | TBD | Chart supports audit/content; `chart/event-pipeline` ships events; HA topology TBD |
 
 Local differences that must not leak into production assumptions:
 
