@@ -14,6 +14,18 @@ axum 0.8 HTTP service exposing LLM-agent tools as JSON: `GET /v1/{fetch,peek}`, 
 - `neuradex` and `test-support` enable `kagi`'s four compression features on purpose: reqwest only advertises `Accept-Encoding` — and decodes compressed responses — when they are on. Do not trim them when changing TLS features; the Kagi harness pins the header.
 - utoipa's `macros` feature can't be dropped (utoipa 6.0.0 doesn't compile without it); only the service uses the derives.
 
+## Documentation and RFDs
+
+`docs/` is part of the deliverable: a change that alters a documented contract updates the matching page in the same PR. Start at `docs/README.md` — it is the index, status table, and "if you need to… read" map; follow its links instead of guessing paths.
+
+- `docs/architecture/` — current behavior: request lifecycle, event model, content plane, storage topology, failure model. Read the relevant page before changing a subsystem.
+- `docs/reference/` — contracts that must match the code exactly: configuration, event fields, packfile bytes, ClickHouse schema, Quickwit mapping, compose services.
+- `docs/operations/` — runbook, observability, capacity and cost. `docs/development/` — local stack, testing, CI, and style.
+- `docs/rfd/` — decisions and their history, not current state. Read `docs/rfd/README.md` for the process, the six Oxide states, and the index. New RFDs start from `docs/rfd/TEMPLATE.md` as `docs/rfd/NNNN-slug.md` with the next free number, and use `authors: [neuradex maintainers]`, never personal names.
+- RFD states: `discussion` is not a commitment, `published` means the direction is agreed, `committed` means it is implemented. Do not rewrite a merged RFD to reverse a decision — supersede it with a new RFD and add `supersedes`/`superseded-by` links to both.
+- The `/docs` HTTP page is generated from the OpenAPI document; edit the handler docs and `openapi.rs`, not HTML.
+- `docs/README.md` → "Keeping docs accurate" maps each kind of change to the page that must be updated.
+
 ## Verify
 
 Build needs `cmake`, `clang` and `libclang-dev` (wreq compiles BoringSSL). Full builds are slow, so iterate with targeted tests (`cargo test -p neuradex <name>`, `-p kagi`, `-p neuradex-docs`). Run fmt and clippy only once, at the end, in this order:
