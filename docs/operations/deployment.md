@@ -81,21 +81,20 @@ kubectl -n neuradex create secret generic neuradex-events \
   --from-literal=access-key-id="$B2_EVENTS_KEY_ID" \
   --from-literal=secret-access-key="$B2_EVENTS_APP_KEY"
 
-kubectl -n neuradex create configmap neuradex-event-pipeline \
-  --from-file=vector.yaml=deploy/event-pipeline/vector.yaml
-
 helm repo add vector https://helm.vector.dev
 helm repo update
 helm upgrade --install vector vector/vector \
   -n neuradex \
+  --version 0.61.0 \
   -f deploy/event-pipeline/values.yaml
 ```
 
-Edit the endpoints and bucket in `deploy/event-pipeline/vector.yaml` first; the default label
-selector matches a release named `neuradex`. The collector has no Service or Ingress and runs as
-root because node log files are root-owned. It uses bounded disk buffers and delivers
-at-least-once; deduplicate by `event_id` when querying. The `events/` archive prefix is covered
-by the retention policy.
+Edit the endpoints, archive bucket, and `serviceSelector` in
+[`deploy/event-pipeline/values.yaml`](../../deploy/event-pipeline/values.yaml) first. The chart
+renders the values through its `customConfig`; there is no separate ConfigMap step. The collector
+has no Service or Ingress and runs as root because node log files are root-owned. It uses bounded
+disk buffers and delivers at-least-once; deduplicate by `event_id` when querying. The `events/`
+archive prefix is covered by the retention policy.
 
 ## Content store
 

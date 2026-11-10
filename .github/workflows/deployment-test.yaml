@@ -30,12 +30,21 @@ jobs:
         run: helm lint chart/neuradex --set kagiSessionToken=ci-dummy
       - name: Install Vector
         run: ./hack/install-tools.sh "$HOME/.local/bin" vector
+      - name: Add Vector Helm repository
+        run: helm repo add vector https://helm.vector.dev --force-update
+      - name: Render event pipeline config
+        run: |
+          helm template vector vector/vector --version 0.61.0 \
+            -f deploy/event-pipeline/values.yaml \
+            --show-only templates/configmap.yaml > "$RUNNER_TEMP/vector-configmap.yaml"
+          awk '/^  vector.yaml: \|$/{found=1; next} found { sub(/^    /, ""); print }' \
+            "$RUNNER_TEMP/vector-configmap.yaml" > "$RUNNER_TEMP/vector.yaml"
       - name: Validate event pipeline config
         env:
           CLICKHOUSE_PASSWORD: test
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
-        run: "$HOME/.local/bin/vector" validate --no-environment deploy/event-pipeline/vector.yaml
+        run: "$HOME/.local/bin/vector" validate --no-environment "$RUNNER_TEMP/vector.yaml"
       - name: Render chart variants
         run: |
           helm template defaults chart/neuradex \

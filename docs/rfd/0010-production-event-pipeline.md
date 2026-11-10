@@ -80,10 +80,10 @@ Non-goals:
 ## Determination
 
 Adopt **Option A**. The service stays a JSONL producer. The upstream Vector chart owns the
-DaemonSet and Kubernetes plumbing; this repository owns only the data-plane configuration
-(`deploy/event-pipeline/vector.yaml`) and the chart values that inject credentials. This keeps
-the moving parts versioned and avoids a second implementation of Vector's Kubernetes
-integration.
+DaemonSet and Kubernetes plumbing; this repository owns only
+`deploy/event-pipeline/values.yaml`, which supplies the chart's `customConfig` and credential
+references. This keeps the moving parts versioned and avoids a second implementation of Vector's
+Kubernetes integration.
 
 The pipeline is a separate install and is not part of `chart/neuradex`.
 
@@ -163,16 +163,15 @@ the cluster's log layout allows it.
 
 | Input | Purpose |
 | --- | --- |
-| `vector.yaml` `extra_label_selector` | Which pods to read; default release `neuradex` |
-| `vector.yaml` Quickwit `uri` | Quickwit endpoint and index |
-| `vector.yaml` ClickHouse `endpoint`, database, table, user | ClickHouse connection |
+| `values.yaml` `serviceSelector` | Which service pods to read |
+| `values.yaml` `quickwit.endpoint`, `.index` | Quickwit endpoint and index |
+| `values.yaml` `clickhouse.endpoint`, `.database`, `.table`, `.user` | ClickHouse connection |
 | `values.yaml` `env` | `CLICKHOUSE_PASSWORD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
-| `vector.yaml` archive endpoint, region, bucket, prefix | S3-compatible archive |
+| `values.yaml` `archive.endpoint`, `.region`, `.bucket`, `.prefix` | S3-compatible archive |
 | `values.yaml` `tolerations`, `resources` | Placement and limits |
 
-Endpoints and the bucket are static in `vector.yaml`; operators review and edit them with the
-deployment. Credentials are never inlined. This is intentionally a configuration file, not a
-template language.
+Endpoints and the bucket are values, not a separate static config file. Credentials are never
+inlined. The chart renders `customConfig` with Helm and owns the Kubernetes plumbing.
 
 ### Retention
 
@@ -231,7 +230,6 @@ These are measurement gates, not guarantees.
 
 | Question | Why it is open | Trigger / owner |
 | --- | --- | --- |
-| Should the Quickwit/ClickHouse endpoints be templated per environment? | A static config file is simpler; a wrapper chart would add templating back | Decide if more than one production cluster appears |
 | Is one hourly archive object per node required, or are multiple objects per hour acceptable? | The sink batches hourly but can flush early on size | Measure object count and replay cost |
 | How large should the disk buffers be? | 256 MiB per sink is a starting point; node disk and outage duration vary | Load test and node disk budget |
 | Does Quickwit need authentication in production? | The local stack has none; the ingest API may be private | Deployment/security review |
