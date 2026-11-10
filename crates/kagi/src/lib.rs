@@ -5,6 +5,8 @@
 //!
 //! Searches can also use anonymous Privacy Pass tokens via [`Client::with_privacy_pass`] or
 //! [`ClientOptions::privacy_pass`]. The session token is then used only to issue tokens.
+//! Optionally, searches fall back to session authentication when Privacy Pass fails; see
+//! [`PrivacyPassOptions::fallback`].
 //!
 //! ## Features
 //!
@@ -112,7 +114,8 @@ pub struct ClientOptions {
     ///
     /// When set, searches redeem anonymous Privacy Pass tokens instead of sending the session
     /// token, session cookies, or `X-Kagi-Authorization`. The configured session token is still
-    /// used to authorize token issuance.
+    /// used to authorize token issuance. The [`PrivacyPassOptions::fallback`] setting retries a
+    /// failed Privacy Pass search with session authentication.
     pub privacy_pass: Option<PrivacyPassOptions>,
 }
 

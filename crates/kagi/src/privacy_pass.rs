@@ -15,16 +15,18 @@
 //! unconsumed tokens survive restarts. See [`PrivacyPassOptions::state_path`].
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE;
+use reqwest::StatusCode;
 use reqwest::header::{
     ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_TYPE, HeaderValue, WWW_AUTHENTICATE,
 };
 use secrecy::{ExposeSecret, SecretString};
+use time::{Month, OffsetDateTime, Time};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{Instrument, debug, warn};
 
@@ -109,6 +111,17 @@ pub struct PrivacyPassOptions {
     /// File access is synchronous and happens while the token store lock is held. The state
     /// file is small and local, so the brief block is acceptable.
     pub state_path: Option<PathBuf>,
+    /// Whether searches fall back to session authentication when Privacy Pass fails.
+    ///
+    /// A quota rejection (429) degrades Privacy Pass until the start of the next calendar
+    /// month, when Kagi's monthly generation epoch resets, and a subscription rejection (403)
+    /// until the client is dropped. A search that fails while degraded — and, for a rejected
+    /// fresh batch or a broken issuer response, only that search — is retried with the session
+    /// token and its cookies instead.
+    ///
+    /// The fallback trades away Privacy Pass's unlinkability: those searches are linked to the
+    /// account, so it is off by default.
+    pub fallback: bool,
 }
 
 impl Default for PrivacyPassOptions {
@@ -118,6 +131,7 @@ impl Default for PrivacyPassOptions {
             max_tokens: DEFAULT_MAX_TOKENS,
             low_token_count: DEFAULT_LOW_TOKEN_COUNT,
             state_path: None,
+            fallback: false,
         }
     }
 }
@@ -183,6 +197,37 @@ pub enum PrivacyPassError {
     NoTokens,
 }
 
+impl PrivacyPassError {
+    /// Returns whether the error means Kagi refused Privacy Pass issuance or served a response
+    /// that cannot be used, so session authentication may succeed where Privacy Pass cannot.
+    ///
+    /// Transport failures are excluded: they say nothing about Privacy Pass specifically, and
+    /// a session fallback fails just the same. A 401 issuance rejection means the session
+    /// token itself was refused, which session authentication depends on too.
+    #[must_use]
+    pub fn is_issuer_failure(&self) -> bool {
+        match self {
+            Self::TokenStatus(error) => matches!(
+                error.status(),
+                Some(StatusCode::TOO_MANY_REQUESTS | StatusCode::FORBIDDEN)
+            ),
+            Self::MissingChallenge
+            | Self::ChallengeCount(_)
+            | Self::InvalidChallenge
+            | Self::InvalidTokenResponse
+            | Self::EmptyBatch => true,
+            Self::ChallengeRequest(_)
+            | Self::Random
+            | Self::Blinding
+            | Self::Serialize
+            | Self::InvalidEndpointUrl
+            | Self::TokenRequest(_)
+            | Self::TokenBody(_)
+            | Self::NoTokens => false,
+        }
+    }
+}
+
 /// Issues, stores, and redeems Kagi Privacy Pass tokens.
 ///
 /// A client holds a cookie-free HTTP client, an authenticated session token used only for
@@ -204,6 +249,14 @@ pub struct PrivacyPassClient {
     batch_size: u16,
     /// Whether a background refill is already running.
     replenishing: AtomicBool,
+    /// Whether failed issuance falls back to session authentication.
+    fallback: bool,
+    /// Whether Privacy Pass is degraded; a cheap mirror of `degraded_until`.
+    is_degraded: AtomicBool,
+    /// When issuance may be retried again, or `None` for the rest of the client's lifetime.
+    ///
+    /// Guarded by a synchronous lock that is never held across an await point.
+    degraded_until: Mutex<Option<Instant>>,
 }
 
 impl PrivacyPassClient {
@@ -238,6 +291,9 @@ impl PrivacyPassClient {
             issuance: AsyncMutex::new(()),
             batch_size,
             replenishing: AtomicBool::new(false),
+            fallback: options.fallback,
+            is_degraded: AtomicBool::new(false),
+            degraded_until: Mutex::new(None),
         })
     }
 
@@ -245,6 +301,75 @@ impl PrivacyPassClient {
     #[must_use]
     pub fn store(&self) -> &TokenStore {
         &self.store
+    }
+
+    /// Returns whether Privacy Pass is degraded: searches use session authentication instead.
+    ///
+    /// A quota rejection (429) degrades until the start of the next calendar month, when
+    /// Kagi's monthly generation epoch resets, and a subscription rejection (403) for the rest
+    /// of the client's lifetime. Once the deadline has passed the state resets here, so the
+    /// next search attempts issuance again and re-degrades if the issuer still refuses.
+    #[must_use]
+    pub fn degraded(&self) -> bool {
+        if !self.is_degraded.load(Ordering::Acquire) {
+            return false;
+        }
+
+        let mut deadline = self.lock_degraded();
+        if let Some(until) = *deadline
+            && until <= Instant::now()
+        {
+            *deadline = None;
+            drop(deadline);
+            self.is_degraded.store(false, Ordering::Release);
+            debug!("the Privacy Pass degradation window passed; issuing tokens again");
+
+            return false;
+        }
+
+        true
+    }
+
+    /// Returns whether failed Privacy Pass searches fall back to session authentication.
+    #[must_use]
+    pub const fn fallback_enabled(&self) -> bool {
+        self.fallback
+    }
+
+    /// Degrades Privacy Pass after an issuance failure that session authentication covers.
+    ///
+    /// Only quota (429) and subscription (403) rejections degrade, and only when the fallback
+    /// is enabled: without a fallback the state would silently switch searches to session
+    /// authentication. Transport failures and broken issuer responses fail the one request.
+    fn consider_degrade(&self, error: &PrivacyPassError) {
+        if !self.fallback {
+            return;
+        }
+
+        let (until, window) = match degrade_deadline(error, SystemTime::now()) {
+            DegradeDeadline::Keep => return,
+            DegradeDeadline::Forever => (None, " for the client's lifetime"),
+            DegradeDeadline::Until(duration) => (
+                Some(Instant::now() + duration),
+                " until the next monthly epoch",
+            ),
+        };
+
+        *self.lock_degraded() = until;
+        self.is_degraded.store(true, Ordering::Release);
+        warn!(
+            "error.type" = "privacy_pass",
+            "exception.message" = %error,
+            "Privacy Pass is degraded; searches fall back to session authentication{}",
+            window,
+        );
+    }
+
+    /// Locks the degradation deadline, recovering it if a previous holder panicked.
+    fn lock_degraded(&self) -> std::sync::MutexGuard<'_, Option<Instant>> {
+        self.degraded_until
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Issues a fresh batch and adds it to the store, returning the number of tokens added.
@@ -353,7 +478,31 @@ impl PrivacyPassClient {
     }
 
     /// Issues a batch while the issuance lock is held.
+    ///
+    /// An issuance failure that session authentication can cover degrades Privacy Pass when
+    /// the fallback is enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PrivacyPassError`] if the challenge cannot be fetched or parsed, the issuer
+    /// request fails, or the token response is invalid.
     async fn issue_locked(&self) -> Result<usize, PrivacyPassError> {
+        let result = self.issue_batch().await;
+
+        if let Err(error) = &result {
+            self.consider_degrade(error);
+        }
+
+        result
+    }
+
+    /// Performs the challenge and issuance requests for one batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PrivacyPassError`] if the challenge cannot be fetched or parsed, the issuer
+    /// request fails, or the token response is invalid.
+    async fn issue_batch(&self) -> Result<usize, PrivacyPassError> {
         let challenge = self.fetch_challenge().await?;
         let (request, pending) = prepare_request(&challenge, self.batch_size)?;
         let request_body = URL_SAFE.encode(serialize_token_request(&request)?);
@@ -488,9 +637,79 @@ impl PrivacyPassClient {
     }
 }
 
+/// The retry deadline Privacy Pass earns from an issuance failure.
+enum DegradeDeadline {
+    /// The failure does not degrade Privacy Pass.
+    Keep,
+    /// Degrade until the end of the client's lifetime.
+    Forever,
+    /// Degrade until this duration from `now` has passed.
+    Until(Duration),
+}
+
+/// Classifies an issuance failure for degradation.
+fn degrade_deadline(error: &PrivacyPassError, now: SystemTime) -> DegradeDeadline {
+    let PrivacyPassError::TokenStatus(error) = error else {
+        return DegradeDeadline::Keep;
+    };
+
+    match error.status() {
+        Some(StatusCode::TOO_MANY_REQUESTS) => {
+            DegradeDeadline::Until(duration_until_next_month(now))
+        }
+        Some(StatusCode::FORBIDDEN) => DegradeDeadline::Forever,
+        _ => DegradeDeadline::Keep,
+    }
+}
+
+/// Returns the duration from `now` until the start of the next calendar month, in UTC.
+///
+/// Kagi's issuance quota is per calendar month ("epoch"), so a quota rejection is retried at
+/// the next month boundary; the exact reset time is not documented, so the client assumes the
+/// calendar month. A clock before the Unix epoch is treated as the epoch itself, and one
+/// beyond the calendar crate's representable range counts as already past the boundary.
+fn duration_until_next_month(now: SystemTime) -> Duration {
+    let secs = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        });
+    let Ok(current) = OffsetDateTime::from_unix_timestamp(secs) else {
+        return Duration::ZERO;
+    };
+    let (year, month, _) = current.date().to_calendar_date();
+    let is_december = month == Month::December;
+    let boundary = time::Date::from_calendar_date(
+        if is_december { year + 1 } else { year },
+        if is_december {
+            Month::January
+        } else {
+            Month::try_from(u8::from(month) + 1).expect("the month after 1..=11 is in 2..=12")
+        },
+        1,
+    )
+    .expect("the first day of a month is a valid date")
+    .with_time(Time::MIDNIGHT)
+    .assume_utc();
+
+    // The next month's boundary is strictly after `now`, so the difference is never negative.
+    (boundary - current).unsigned_abs()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MAX_TOKENS_PER_BATCH, PrivacyPassOptions};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    use reqwest::header::HeaderValue;
+    use secrecy::SecretString;
+    use time::{Month, OffsetDateTime, Time};
+
+    use super::{
+        MAX_TOKENS_PER_BATCH, PrivacyPassClient, PrivacyPassOptions, SystemTime,
+        duration_until_next_month,
+    };
 
     #[test]
     fn batch_size_is_clamped_to_the_request_limit() {
@@ -499,6 +718,7 @@ mod tests {
             max_tokens: 0,
             low_token_count: 0,
             state_path: None,
+            fallback: false,
         };
         let (batch, capacity, low) = options.normalized();
 
@@ -511,8 +731,103 @@ mod tests {
             max_tokens: 0,
             low_token_count: 0,
             state_path: None,
+            fallback: false,
         };
 
         assert_eq!(options.normalized().0, 1);
+    }
+
+    /// Builds a Privacy Pass client for degradation tests.
+    fn test_client(fallback: bool) -> PrivacyPassClient {
+        PrivacyPassClient::new(
+            reqwest::Url::parse("https://kagi.com/").expect("the base url parses"),
+            Arc::new(SecretString::from("test-token")),
+            HeaderValue::from_static("en-US"),
+            Duration::from_secs(5),
+            HeaderValue::from_static("kagi/1.0"),
+            &PrivacyPassOptions {
+                fallback,
+                ..PrivacyPassOptions::default()
+            },
+        )
+        .expect("the test client builds")
+    }
+
+    #[test]
+    fn degradation_reports_and_clears_itself() {
+        let client = test_client(true);
+
+        assert!(!client.degraded());
+
+        // A future deadline is degraded; once it passes, `degraded` clears the state.
+        client.set_degraded(Some(Instant::now() + Duration::from_secs(60)));
+        assert!(client.degraded());
+
+        client.set_degraded(Some(
+            Instant::now()
+                .checked_sub(Duration::from_secs(60))
+                .expect("the instant has a predecessor"),
+        ));
+        assert!(!client.degraded());
+        assert!(!client.degraded(), "the recovered state is cleared");
+
+        // A deadline without an instant degrades for the client's lifetime.
+        client.set_degraded(None);
+        assert!(client.degraded());
+    }
+
+    impl PrivacyPassClient {
+        /// Sets the degradation state directly, so the read path is testable without a real
+        /// quota rejection from the issuer. A `None` deadline degrades forever.
+        fn set_degraded(&self, until: Option<Instant>) {
+            *self.lock_degraded() = until;
+            self.is_degraded.store(true, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn the_month_boundary_duration_lands_on_the_first_of_the_next_month() {
+        for &(year, month, day, second_of_day) in &[
+            (2026, 1, 31, 86_399), // the last second of a 31-day month
+            (2026, 2, 1, 0),       // the first second of a month
+            (2024, 2, 29, 43_200), // leap-day noon, rolling into March
+            (2026, 4, 30, 86_399), // the last second before a 31-day month
+            (2026, 12, 31, 0),     // the year rollover
+            (1970, 1, 1, 1),
+        ] {
+            let month = Month::try_from(month).expect("a valid month");
+            let date =
+                time::Date::from_calendar_date(year, month, day).expect("a valid sample date");
+            let timestamp = date.with_time(Time::MIDNIGHT).assume_utc().unix_timestamp()
+                + i64::from(second_of_day);
+            let now = SystemTime::UNIX_EPOCH
+                + Duration::from_secs(u64::try_from(timestamp).expect("the sample is post-epoch"));
+
+            let duration = duration_until_next_month(now);
+            let boundary = OffsetDateTime::from_unix_timestamp(
+                timestamp + i64::try_from(duration.as_secs()).expect("the boundary is in range"),
+            )
+            .expect("the boundary is representable");
+
+            assert_eq!(boundary.time(), Time::MIDNIGHT, "the boundary is midnight");
+            assert_eq!(boundary.day(), 1, "the boundary is the first of the month");
+
+            let (expected_year, expected_month) = if month == Month::December {
+                (year + 1, 1)
+            } else {
+                (year, u8::from(month) + 1)
+            };
+
+            assert_eq!(boundary.year(), expected_year, "{date}");
+            assert_eq!(u8::from(boundary.month()), expected_month, "{date}");
+        }
+    }
+
+    #[test]
+    fn the_epoch_month_has_31_days_of_quota_left() {
+        assert_eq!(
+            duration_until_next_month(SystemTime::UNIX_EPOCH),
+            Duration::from_hours(31 * 24)
+        );
     }
 }

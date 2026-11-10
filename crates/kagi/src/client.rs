@@ -10,7 +10,7 @@ use reqwest::redirect::Policy;
 use secrecy::{ExposeSecret, SecretString};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 use tokio::time::Instant;
-use tracing::{Instrument, Span, debug, debug_span, field};
+use tracing::{Instrument, Span, debug, debug_span, field, warn};
 
 use super::parse::{
     extract_nonce, parse_image_result_messages, parse_search_result_messages, parse_stream,
@@ -316,7 +316,10 @@ impl Drop for SessionLease {
 ///
 /// With [`ClientOptions::privacy_pass`] set, searches redeem anonymous Privacy Pass tokens
 /// instead and the session pool is not used; [`ClientOptions::max_sessions`] still bounds
-/// in-flight searches.
+/// in-flight searches. When [`PrivacyPassOptions::fallback`] is enabled, a search whose
+/// issuance or redemption fails in a way session authentication can cover is retried on the
+/// session pool, and quota or subscription rejections degrade Privacy Pass until
+/// [`PrivacyPassClient::degraded`] clears.
 pub struct Client {
     /// Kagi login token.
     token: Arc<SecretString>,
@@ -435,7 +438,9 @@ impl Client {
         self.max_sessions
     }
 
-    /// Returns the search authentication mode for span fields.
+    /// Returns the configured search authentication mode for span fields.
+    ///
+    /// A fallback search records the mode it actually used on its own span.
     const fn authentication(&self) -> &'static str {
         if self.privacy_pass.is_some() {
             "privacy_pass"
@@ -752,14 +757,16 @@ impl Client {
     /// Connects to one of the socket stream endpoints (`search` or `images`) and returns the
     /// raw response body.
     ///
-    /// The session is checked out for the duration of the stream request and returned
-    /// afterwards — or immediately, if the caller's future is dropped mid-request.
+    /// Privacy Pass searches run first when the mode is enabled and not degraded; a failure
+    /// that session authentication may cover falls back to the session pool when the fallback
+    /// is enabled. The session is checked out for the duration of the stream request and
+    /// returned afterwards — or immediately, if the caller's future is dropped mid-request.
     ///
     /// # Errors
     ///
     /// Returns an [`Error`] if a session could not be established, the stream request could not
     /// be sent, or the response could not be read.
-    async fn stream_body(&self, endpoint: &str, query: &str) -> Result<String, Error> {
+    async fn stream_body(&self, endpoint: &str, query: &str, span: &Span) -> Result<String, Error> {
         // Bound in-flight searches in both authentication modes: the session pool already
         // caps session-mode searches, but Privacy Pass mode has no pool of its own.
         let _permit = self
@@ -768,10 +775,37 @@ impl Client {
             .await
             .expect("the search gate is never closed");
 
-        if let Some(privacy_pass) = &self.privacy_pass {
-            return self.privacy_pass_body(privacy_pass, endpoint, query).await;
+        if let Some(privacy_pass) = &self.privacy_pass
+            && !privacy_pass.degraded()
+        {
+            match self.privacy_pass_body(privacy_pass, endpoint, query).await {
+                Ok(body) => return Ok(body),
+                Err(error) => {
+                    if !privacy_pass.fallback_enabled() || !is_fallback_worthy(&error) {
+                        return Err(error);
+                    }
+
+                    warn!(
+                        "error.type" = "privacy_pass_fallback",
+                        "exception.message" = %error,
+                        "the Privacy Pass search failed; falling back to session authentication"
+                    );
+                    span.record("kagi.search.authentication", "session");
+                    span.record("kagi.search.privacy_pass_fallback", true);
+                }
+            }
         }
 
+        self.session_body(endpoint, query).await
+    }
+
+    /// Fetches a stream body through a session from the pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error`] if a session could not be established, the stream request could not
+    /// be sent, or the response could not be read.
+    async fn session_body(&self, endpoint: &str, query: &str) -> Result<String, Error> {
         let mut lease = self.acquire(endpoint, query).await?;
         let nonce = lease.take_nonce();
 
@@ -987,7 +1021,7 @@ impl Client {
     pub async fn search(&self, query: &str) -> Result<Vec<SearchResult>, Error> {
         let span = search_span("search", self.authentication(), query);
         let result = async {
-            let body = self.stream_body("search", query).await?;
+            let body = self.stream_body("search", query, &span).await?;
 
             let parse_span = Span::current();
             tokio::task::spawn_blocking(move || {
@@ -1017,7 +1051,7 @@ impl Client {
     pub async fn images(&self, query: &str) -> Result<Vec<ImageResult>, Error> {
         let span = search_span("images", self.authentication(), query);
         let result = async {
-            let body = self.stream_body("images", query).await?;
+            let body = self.stream_body("images", query, &span).await?;
 
             let parse_span = Span::current();
             tokio::task::spawn_blocking(move || {
@@ -1053,6 +1087,7 @@ fn search_span(endpoint: &'static str, authentication: &'static str, query: &str
         "otel.kind" = "internal",
         "kagi.search.endpoint" = endpoint,
         "kagi.search.authentication" = authentication,
+        "kagi.search.privacy_pass_fallback" = field::Empty,
         "kagi.search.query.length" = query.chars().count(),
         "kagi.search.result_count" = field::Empty,
         "error.type" = field::Empty,
@@ -1291,6 +1326,22 @@ fn backoff_after_failures(failures: u32) -> Duration {
 /// itself — rate limits and server errors keep it.
 fn invalidates_session(status: StatusCode) -> bool {
     matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+}
+
+/// Returns whether `error` is a Privacy Pass failure that session authentication may cover:
+/// the issuer refused issuance or served garbage, or a redeemed token was rejected.
+///
+/// Transport failures are excluded — they say nothing about Privacy Pass specifically, and a
+/// session fallback fails just the same. This is only consulted on the Privacy Pass path, so
+/// the same statuses reaching the session path are unaffected.
+fn is_fallback_worthy(error: &Error) -> bool {
+    match error {
+        Error::PrivacyPass(error) => error.is_issuer_failure(),
+        Error::StreamStatus(error) | Error::RequestNonce(error) => {
+            error.status().is_some_and(invalidates_session)
+        }
+        _ => false,
+    }
 }
 
 /// Parses and normalizes the configured base URL.
