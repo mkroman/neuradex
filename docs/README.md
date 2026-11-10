@@ -36,6 +36,7 @@ or table that does not exist yet, the document says so explicitly.
 | Know every audit field and its type | [reference/event-fields.md](reference/event-fields.md) |
 | Understand the packfile bytes | [reference/packfile-format.md](reference/packfile-format.md) |
 | Run the stack locally | [development/local-development.md](development/local-development.md) |
+| Deploy the service with Helm | [operations/deployment.md](operations/deployment.md) |
 | Debug missing or corrupt data | [operations/runbook.md](operations/runbook.md) |
 | Know what to monitor | [operations/observability.md](operations/observability.md) |
 | Make or review a design decision | [rfd/README.md](rfd/README.md), [rfd/TEMPLATE.md](rfd/TEMPLATE.md) |
@@ -161,6 +162,7 @@ spirit of Oxide RFD 1 and RFD 5. See [rfd/README.md](rfd/README.md) for the proc
 
 ### Operations
 
+- [deployment.md](operations/deployment.md) — Helm install, audit and content wiring, retention.
 - [runbook.md](operations/runbook.md) — decision tree and procedures.
 - [observability.md](operations/observability.md) — signals, SLOs, and alerts.
 - [capacity-and-cost.md](operations/capacity-and-cost.md) — measured and modelled cost.
@@ -200,5 +202,6 @@ same PR:
 | A ClickHouse column, view, or TTL | [reference/clickhouse-schema.md](reference/clickhouse-schema.md), `hack/clickhouse/init.sql` |
 | A Quickwit field, mapping, or retention | [reference/quickwit-index.md](reference/quickwit-index.md), `hack/quickwit/neuradex-events.yaml` |
 | A configuration variable | [reference/configuration.md](reference/configuration.md) |
+| A Helm value, secret source, or content volume | [operations/deployment.md](operations/deployment.md), `chart/neuradex` |
 | A module layout or file name | [development/style.md](development/style.md) |
 | A failure mode or recovery step | [architecture/failure-model.md](architecture/failure-model.md), [operations/runbook.md](operations/runbook.md) |
