@@ -158,15 +158,15 @@ Use the modern `foo.rs` + `foo/bar.rs` layout, not a `foo/mod.rs` module root:
 crates/neuradex-audit/src/
 ├── lib.rs
 ├── event.rs
-├── event/
-│   ├── header_policy.rs
-│   └── request_record.rs
+├── header_policy.rs
+├── request_record.rs
 └── sink.rs
 ```
 
-`lib.rs` declares `mod event; mod sink;`; `event.rs` declares `mod header_policy; mod
-request_record;`. The module name matches the file stem, and `foo/bar.rs` is a submodule of `foo`
-without an intermediate `mod.rs`.
+`lib.rs` declares `mod event; mod header_policy; mod request_record; mod sink;`. If `event` grows
+submodules, add `event/header_policy.rs` and declare `mod header_policy;` from `event.rs`;
+`event.rs` remains the module root. The module name matches the file stem, and `foo/bar.rs` is a
+submodule of `foo` without an intermediate `mod.rs`.
 
 This follows the Rust 2018 Edition Guide's
 [Path and module system changes](https://doc.rust-lang.org/edition-guide/rust-2018/path-changes.html)
