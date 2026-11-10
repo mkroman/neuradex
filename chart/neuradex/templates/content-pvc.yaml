@@ -1,0 +1,17 @@
+{{- if and (eq .Values.content.store "local") .Values.content.local.persistence.enabled (not .Values.content.local.persistence.existingClaim) -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "neuradex.contentClaimName" . }}
+  labels:
+    {{- include "neuradex.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.content.local.persistence.accessModes | nindent 4 }}
+  {{- with .Values.content.local.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ required "content.local.persistence.size is required when content.local.persistence.enabled=true" .Values.content.local.persistence.size }}
+{{- end }}

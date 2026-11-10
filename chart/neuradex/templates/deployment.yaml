@@ -1,4 +1,5 @@
 {{- $fullname := include "neuradex.fullname" . -}}
+{{- include "neuradex.validate" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -23,6 +24,12 @@ spec:
       {{- $annotations := dict }}
       {{- if not .Values.existingSecret }}
       {{- $_ := set $annotations "checksum/secret" (include (print $.Template.BasePath "/secret.yaml") . | sha256sum) }}
+      {{- end }}
+      {{- if and .Values.audit.hmacKey (not .Values.audit.existingSecret) }}
+      {{- $_ := set $annotations "checksum/audit-secret" (include (print $.Template.BasePath "/audit-secret.yaml") . | sha256sum) }}
+      {{- end }}
+      {{- if and (eq .Values.content.store "s3") (not .Values.content.s3.existingSecret) .Values.content.s3.accessKeyId .Values.content.s3.secretAccessKey }}
+      {{- $_ := set $annotations "checksum/content-secret" (include (print $.Template.BasePath "/content-secret.yaml") . | sha256sum) }}
       {{- end }}
       {{- range $key, $value := .Values.podAnnotations }}
       {{- $_ := set $annotations $key $value }}
@@ -100,6 +107,57 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.existingSecret | default $fullname }}
                   key: {{ .Values.kagiSessionTokenKey }}
+            {{- with .Values.audit.logPath }}
+            - name: AUDIT_LOG_PATH
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if or .Values.audit.existingSecret .Values.audit.hmacKey }}
+            - name: AUDIT_HMAC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.audit.existingSecret | default (include "neuradex.auditSecretName" .) }}
+                  key: {{ .Values.audit.hmacKeyKey }}
+            {{- end }}
+            - name: CONTENT_STORE
+              value: {{ .Values.content.store | quote }}
+            {{- if eq .Values.content.store "local" }}
+            - name: CONTENT_LOCAL_PATH
+              value: {{ .Values.content.local.path | quote }}
+            {{- end }}
+            {{- if eq .Values.content.store "s3" }}
+            - name: CONTENT_S3_ENDPOINT
+              value: {{ .Values.content.s3.endpoint | quote }}
+            - name: CONTENT_S3_REGION
+              value: {{ .Values.content.s3.region | quote }}
+            - name: CONTENT_S3_BUCKET
+              value: {{ .Values.content.s3.bucket | quote }}
+            {{- with .Values.content.s3.prefix }}
+            - name: CONTENT_S3_PREFIX
+              value: {{ . | quote }}
+            {{- end }}
+            - name: CONTENT_S3_FORCE_PATH_STYLE
+              value: {{ .Values.content.s3.forcePathStyle | quote }}
+            - name: CONTENT_S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.content.s3.existingSecret | default (include "neuradex.contentSecretName" .) }}
+                  key: {{ .Values.content.s3.accessKeyIdKey }}
+            - name: CONTENT_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.content.s3.existingSecret | default (include "neuradex.contentSecretName" .) }}
+                  key: {{ .Values.content.s3.secretAccessKeyKey }}
+            {{- end }}
+            - name: CONTENT_PACK_TARGET_BYTES
+              value: {{ .Values.content.packTargetBytes | int64 | quote }}
+            - name: CONTENT_MAX_PACK_AGE_SECS
+              value: {{ .Values.content.maxPackAgeSecs | int64 | quote }}
+            - name: CONTENT_MAX_BODY_BYTES
+              value: {{ .Values.content.maxBodyBytes | int64 | quote }}
+            - name: CONTENT_RETENTION_DAYS
+              value: {{ .Values.content.retentionDays | int64 | quote }}
+            - name: CONTENT_COMPRESSION_LEVEL
+              value: {{ .Values.content.compressionLevel | int64 | quote }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -128,12 +186,25 @@ spec:
             # filesystem is read-only.
             - name: tmp
               mountPath: /tmp
+            {{- if eq .Values.content.store "local" }}
+            - name: content
+              mountPath: {{ .Values.content.local.path | quote }}
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if eq .Values.content.store "local" }}
+        - name: content
+          {{- if .Values.content.local.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "neuradex.contentClaimName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

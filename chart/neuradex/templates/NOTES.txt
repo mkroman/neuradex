@@ -18,3 +18,15 @@ The neuradex service has been deployed{{ if .Values.ingress.enabled }} and an In
 2. Health probe: GET /healthz returns 204.
 
 3. Kagi token supply: {{ if .Values.existingSecret }}referencing the existing secret "{{ .Values.existingSecret }}"{{ else }}chart-managed secret "{{ $fullname }}" (the token is stored in release state; prefer existingSecret in production){{ end }}.
+
+4. Audit: {{ if .Values.audit.logPath }}JSONL audit events are written to "{{ .Values.audit.logPath }}". The container root filesystem is read-only: mount a writable volume at or above the file's parent directory via extraVolumes/extraVolumeMounts, and make sure that directory exists.{{ else }}JSONL audit events go to stdout.{{ end }}
+   HMAC key: {{ if .Values.audit.existingSecret }}referencing existing secret "{{ .Values.audit.existingSecret }}" (key "{{ .Values.audit.hmacKeyKey }}"){{ else if .Values.audit.hmacKey }}chart-managed secret "{{ include "neuradex.auditSecretName" . }}" (the key is stored in release state; prefer audit.existingSecret in production){{ else }}not configured; identifying headers are redacted in audit output.{{ end }}
+
+5. Content store: {{ if eq .Values.content.store "off" -}}
+disabled (CONTENT_STORE=off).
+{{- else if eq .Values.content.store "local" -}}
+local at "{{ .Values.content.local.path }}", {{ if .Values.content.local.persistence.enabled }}{{ if .Values.content.local.persistence.existingClaim }}using existing claim "{{ .Values.content.local.persistence.existingClaim }}".{{ else }}backed by chart-managed PVC "{{ include "neuradex.contentClaimName" . }}" ({{ .Values.content.local.persistence.size }}{{ with .Values.content.local.persistence.storageClass }}, StorageClass "{{ . }}"{{ else }}, default StorageClass{{ end }}).{{ end }}{{ else }}backed by an emptyDir. WARNING: captured content is ephemeral and is lost whenever the pod restarts or is rescheduled; set content.local.persistence.enabled=true for durable storage.{{ end }}
+{{- else if eq .Values.content.store "s3" -}}
+S3-compatible bucket "{{ .Values.content.s3.bucket }}" at "{{ .Values.content.s3.endpoint }}" (region "{{ .Values.content.s3.region }}"){{ with .Values.content.s3.prefix }}, prefix "{{ . }}"{{ end }}.
+{{- end }}
+   Credentials: {{ if eq .Values.content.store "s3" }}{{ if .Values.content.s3.existingSecret }}referencing existing secret "{{ .Values.content.s3.existingSecret }}".{{ else }}chart-managed secret "{{ include "neuradex.contentSecretName" . }}" (the credentials are stored in release state; prefer content.s3.existingSecret in production).{{ end }}{{ else }}not used because the content store is not s3.{{ end }}

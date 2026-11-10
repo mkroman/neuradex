@@ -45,6 +45,37 @@ jobs:
           helm template digest-pinned chart/neuradex \
             --set kagiSessionToken=ci-dummy \
             --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 > /dev/null
+          helm template audit-managed chart/neuradex \
+            --set kagiSessionToken=ci-dummy \
+            --set audit.hmacKey=ci-audit-key \
+            --set audit.logPath=/var/log/neuradex/audit.jsonl > /dev/null
+          helm template audit-existing-secret chart/neuradex \
+            --set kagiSessionToken=ci-dummy \
+            --set audit.existingSecret=audit \
+            --set audit.hmacKeyKey=hmac-key > /dev/null
+          helm template content-local-pvc chart/neuradex \
+            --set kagiSessionToken=ci-dummy \
+            --set content.store=local \
+            --set content.local.persistence.enabled=true > /dev/null
+          helm template content-local-emptydir chart/neuradex \
+            --set kagiSessionToken=ci-dummy \
+            --set content.store=local \
+            --set content.local.persistence.enabled=false > /dev/null
+          helm template content-s3-existing-secret chart/neuradex \
+            --set kagiSessionToken=ci-dummy \
+            --set content.store=s3 \
+            --set content.s3.endpoint=https://s3.example.test \
+            --set content.s3.region=us-east-1 \
+            --set content.s3.bucket=neuradex \
+            --set content.s3.existingSecret=content > /dev/null
+          helm template content-s3-inline chart/neuradex \
+            --set kagiSessionToken=ci-dummy \
+            --set content.store=s3 \
+            --set content.s3.endpoint=https://s3.example.test \
+            --set content.s3.region=us-east-1 \
+            --set content.s3.bucket=neuradex \
+            --set content.s3.accessKeyId=ci-access-key-id \
+            --set content.s3.secretAccessKey=ci-secret-access-key > /dev/null
 
   kind:
     name: Kind Deployment
