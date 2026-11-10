@@ -28,6 +28,23 @@ jobs:
           persist-credentials: false
       - name: Lint chart
         run: helm lint chart/neuradex --set kagiSessionToken=ci-dummy
+      - name: Lint event pipeline chart
+        run: helm lint chart/event-pipeline
+      - name: Install Vector
+        run: ./hack/install-tools.sh "$HOME/.local/bin" vector
+      - name: Render event pipeline config
+        run: |
+          helm template event-pipeline chart/event-pipeline \
+            --show-only charts/vector/templates/configmap.yaml > "$RUNNER_TEMP/vector-configmap.yaml"
+          awk '/^  vector.yaml: \|$/{found=1; next} found { sub(/^    /, ""); print }' \
+            "$RUNNER_TEMP/vector-configmap.yaml" > "$RUNNER_TEMP/vector.yaml"
+      - name: Validate event pipeline config
+        env:
+          CLICKHOUSE_PASSWORD: test
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+        run: |
+          "$HOME/.local/bin/vector" validate --no-environment "$RUNNER_TEMP/vector.yaml"
       - name: Render chart variants
         run: |
           helm template defaults chart/neuradex \

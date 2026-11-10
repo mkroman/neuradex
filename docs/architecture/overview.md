@@ -35,6 +35,7 @@ flowchart TB
         QW["Quickwit 0.9.3<br/>hot 30 days"]
         CH["ClickHouse<br/>analytics 365 days"]
         B2["Backblaze B2 / S3<br/>content packs<br/>(when CONTENT_STORE=s3)"]
+        Archive["B2 event archive<br/>events/ 365 days"]
         Jaeger["Jaeger / OTLP<br/>traces"]
     end
 
@@ -48,15 +49,17 @@ flowchart TB
     API --> Capture
     Capture --> Packer
     Audit --> JSONL["Audit JSONL<br/>file or stdout"]
-    JSONL -. optional Vector .-> QW
-    JSONL -. optional Vector .-> CH
+    JSONL -. Vector (local or DaemonSet) .-> QW
+    JSONL -. Vector (local or DaemonSet) .-> CH
+    JSONL -. Vector (local or DaemonSet) .-> Archive
     Packer --> Store["Local directory or S3 bucket"]
     API -.->|OTLP| Jaeger
 ```
 
 The service is the only component that talks to Kagi and the only component that writes content.
-The audit JSONL file/stdout is the service's only audit output. Quickwit/ClickHouse are fed by the
-optional local Vector bridge, and an object-store archive is future work.
+The audit JSONL file/stdout is the service's only audit output. Quickwit, ClickHouse, and the B2
+event archive are fed by Vector: the local `ingest` profile in development, or the reference
+upstream-chart deployment in `chart/event-pipeline` in Kubernetes.
 
 ## Components
 
@@ -114,7 +117,7 @@ Rules that follow from the split:
 | --- | --- | --- | --- | --- | --- | --- |
 | Local | `cargo run` on host | compose | compose | MinIO | compose | Development |
 | Staging | container/Helm | single node or managed | single node | real B2 bucket | OTLP collector | Internal real data |
-| Production | Helm, HPA | HA (TBD) | cluster (TBD) | real B2 bucket | TBD | Topology not implemented; the chart supports the audit/content settings |
+| Production | Helm, HPA | HA (TBD) | cluster (TBD) | real B2 bucket | TBD | Chart supports audit/content; `chart/event-pipeline` ships events; HA topology TBD |
 
 Local differences that must not leak into production assumptions:
 

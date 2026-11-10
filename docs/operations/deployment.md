@@ -64,6 +64,34 @@ An `emptyDir` is lost on restart; use a PVC or stdout for durable audit. The ser
 the file and does not rotate it, so file-based audit needs an external shipper and rotation
 policy.
 
+## Event pipeline
+
+The optional event pipeline ships audit events to Quickwit, ClickHouse, and an S3-compatible
+archive. It is a separate deployment: the upstream Vector Helm chart runs a DaemonSet, and this
+repository provides only the Vector configuration and chart values in `chart/event-pipeline`.
+See [the deployment README](../../chart/event-pipeline/README.md) and
+[RFD 0010](../rfd/0010-production-event-pipeline.md).
+
+It requires audit events on stdout. Do not set `audit.logPath` on a release using the pipeline.
+
+```sh
+kubectl -n neuradex create secret generic neuradex-clickhouse \
+  --from-literal=clickhouse-password="$CLICKHOUSE_PASSWORD"
+kubectl -n neuradex create secret generic neuradex-events \
+  --from-literal=access-key-id="$B2_EVENTS_KEY_ID" \
+  --from-literal=secret-access-key="$B2_EVENTS_APP_KEY"
+
+helm upgrade --install event-pipeline chart/event-pipeline \
+  -n neuradex
+```
+
+Edit the endpoints, archive bucket, and `serviceSelector` in
+[`chart/event-pipeline/values.yaml`](../../chart/event-pipeline/values.yaml) first. The chart
+renders the values through its `customConfig`; there is no separate ConfigMap step. The collector
+has no Service or Ingress and runs as root because node log files are root-owned. It uses bounded
+disk buffers and delivers at-least-once; deduplicate by `event_id` when querying. The `events/`
+archive prefix is covered by the retention policy.
+
 ## Content store
 
 `content.store` is `off` by default. It captures fetch response bodies, peek head bytes, and

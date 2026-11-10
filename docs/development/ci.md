@@ -56,7 +56,7 @@ test matrix job, rustdoc, or shellcheck fails.
 | `continuous-integration.yaml` | `Rustdoc` | PR + main | `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --all-features` | via `ci-success` |
 | `continuous-integration.yaml` | `Shellcheck` | PR + main | `shellcheck hack/*.sh` | via `ci-success` |
 | `continuous-integration.yaml` | `CI Success` | PR + main | Aggregates the above | **yes** |
-| `deployment-test.yaml` | `Chart Lint` | PR + main | `helm lint`/`helm template` variants | yes (own check) |
+| `deployment-test.yaml` | `Chart Lint` | PR + main | `helm lint`/`helm template` variants plus upstream Vector chart render/validate | yes (own check) |
 | `deployment-test.yaml` | `Kind Deployment` | PR + main | Build image, kind cluster, chart install, smoke script | yes (own check) |
 | `security.yaml` | `Cargo Deny` | PR + main + weekly | `cargo-deny check advisories` | yes (own check) |
 | `doc.yaml` | `Documentation` | reusable | Builds rustdoc; uploads only on main | via `ci-success` |

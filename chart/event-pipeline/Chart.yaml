@@ -1,0 +1,10 @@
+apiVersion: v2
+name: event-pipeline
+description: Production audit event pipeline for neuradex (upstream Vector chart wrapper).
+type: application
+version: 0.1.0
+appVersion: "0.61.0"
+dependencies:
+  - name: vector
+    version: 0.61.0
+    repository: https://helm.vector.dev

@@ -24,6 +24,7 @@ or table that does not exist yet, the document says so explicitly.
 | Content-addressed packfiles | implemented; `CONTENT_STORE` defaults to `off` | [RFD 0002](rfd/0002-content-addressed-storage.md), [reference/packfile-format.md](reference/packfile-format.md) |
 | Hashing rules (BLAKE3 / SHA-256 / XXH3) | implemented in the audit/packfile crates | [RFD 0003](rfd/0003-hashing.md) |
 | Quickwit + ClickHouse + B2 storage topology | local stack implemented; production topology specified | [RFD 0004](rfd/0004-storage-and-analytics.md) |
+| Production event pipeline (Vector → Quickwit/ClickHouse/B2) | reference deployment checked in | [RFD 0010](rfd/0010-production-event-pipeline.md) |
 | Capacity, cost, and 365-day retention | under discussion | [RFD 0008](rfd/0008-capacity-cost-and-retention.md) |
 | Named access and read audit | specified | [RFD 0009](rfd/0009-access-and-read-audit.md) |
 
@@ -37,6 +38,7 @@ or table that does not exist yet, the document says so explicitly.
 | Understand the packfile bytes | [reference/packfile-format.md](reference/packfile-format.md) |
 | Run the stack locally | [development/local-development.md](development/local-development.md) |
 | Deploy the service with Helm | [operations/deployment.md](operations/deployment.md) |
+| Ship audit events to Quickwit, ClickHouse, and B2 | [../chart/event-pipeline/README.md](../chart/event-pipeline/README.md) |
 | Debug missing or corrupt data | [operations/runbook.md](operations/runbook.md) |
 | Know what to monitor | [operations/observability.md](operations/observability.md) |
 | Make or review a design decision | [rfd/README.md](rfd/README.md), [rfd/TEMPLATE.md](rfd/TEMPLATE.md) |
@@ -136,6 +138,7 @@ spirit of Oxide RFD 1 and RFD 5. See [rfd/README.md](rfd/README.md) for the proc
 | [0007](rfd/0007-local-testing-stack.md) | Local testing stack | committed |
 | [0008](rfd/0008-capacity-cost-and-retention.md) | Capacity, cost, and retention | discussion |
 | [0009](rfd/0009-access-and-read-audit.md) | Access and read audit | published |
+| [0010](rfd/0010-production-event-pipeline.md) | Production event pipeline | published |
 
 ### Architecture
 

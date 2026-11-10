@@ -124,6 +124,7 @@ Do not edit a merged RFD to reverse a decision. Supersede it with a new RFD and 
 | [0007](0007-local-testing-stack.md) | Local testing stack | committed | developer experience |
 | [0008](0008-capacity-cost-and-retention.md) | Capacity, cost, and retention | discussion | operations / finance |
 | [0009](0009-access-and-read-audit.md) | Access and read audit | published | security |
+| [0010](0010-production-event-pipeline.md) | Production event pipeline | published | observability / operations |
 
 ## References
 

@@ -45,7 +45,7 @@ flowchart TB
 | Content packs | `packs/{operation}/{yyyy-mm-ddTHH}/{pid}-{sequence}.pack` in the local root or S3 bucket | implemented when `CONTENT_STORE` is `local`/`s3` |
 | Large content objects | `objects/{blake3}` in the same store | implemented at the 30 MiB threshold |
 | Hourly request index | Object store | future; not written by the service |
-| Hourly event archive | Object store | future; not written by the service |
+| Hourly event archive | `events/` partition in the archive bucket | reference event pipeline; not the service |
 
 The service does not configure bucket lifecycle rules. `CONTENT_RETENTION_DAYS` is a policy
 value that is logged at startup; retention enforcement is an external B2/S3 lifecycle concern.
@@ -103,7 +103,8 @@ Current write order:
    `objects/{blake3}`.
 3. Every 5 seconds (and once at shutdown) the content writer flushes, sealing open packs and
    uploading them. The reference is durable only after that upload.
-4. Optional Vector tails the audit JSONL into Quickwit/ClickHouse.
+4. The optional event pipeline (the local Vector profile or the reference DaemonSet) tails audit
+   output into Quickwit/ClickHouse and archives it under `events/`.
 
 There is no request index and no per-request manifest. A pack reference resolves by searching the
 pack footer for the BLAKE3 hash; the event carries the pack key and hash.
@@ -129,7 +130,7 @@ pack footer for the BLAKE3 hash; the event carries the pack key and hash.
 | Audit file path | Parent missing/unwritable | Startup fails | Create the parent; fix permissions |
 | Quickwit node | Crash/corrupt index | Hot search down | Recreate/replay from JSONL |
 | ClickHouse node | Crash/disk full | Analytics down | Replay from JSONL; restore DDL |
-| Vector | Stopped/misconfigured | Local hot/analytics stops | Restart; JSONL remains |
+| Event collector | Stopped/misconfigured | Hot/analytics/archive lag | Restart; checkpoints and node logs remain until rotation |
 | Clock | Skew | Pack hour key differs; still unique | NTP |
 
 ## Local vs production
@@ -138,7 +139,7 @@ pack footer for the BLAKE3 hash; the event carries the pack key and hash.
 | --- | --- | --- |
 | Content store | `CONTENT_STORE=local` (default off) or MinIO via `s3` | B2 S3 API or another S3-compatible store |
 | Content credentials | `neuradex` / `neuradex-local-secret` for MinIO | Scoped application keys |
-| Audit output | `AUDIT_LOG_PATH=.local/neuradex/events.jsonl` or stdout | Managed file/log collector |
+| Audit output | `AUDIT_LOG_PATH=.local/neuradex/events.jsonl` or stdout | stdout + Vector DaemonSet (or a managed collector) |
 | Quickwit storage | File under named volume | S3-backed splits + metastore (TBD) |
 | ClickHouse | Single node, local user | Cluster/managed (TBD), TLS |
 | Traces | Jaeger in-memory | OTLP collector/backend (TBD) |

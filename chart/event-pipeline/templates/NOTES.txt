@@ -1,0 +1,9 @@
+The neuradex event pipeline is installed.
+
+1. Check the collector:
+   kubectl -n {{ .Release.Namespace }} get daemonset -l app.kubernetes.io/instance={{ .Release.Name }}
+
+2. Send one request through the service, then verify the same request_id in Quickwit,
+   ClickHouse, and the events/ prefix of the archive bucket.
+
+3. If the collector is not ready, inspect its pod logs for sink connection or credential errors.

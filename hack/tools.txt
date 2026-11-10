@@ -50,3 +50,12 @@ tag=${version}
 asset=kind-linux-amd64
 binary=kind-linux-amd64
 archive=raw
+
+[vector]
+repo=vectordotdev/vector
+version=v0.61.0
+sha256=84a27c3ad6b772fdb05bb76ea01a31498bfc8f5e71f32cc78a0d96841f1aa827
+tag=${version}
+asset=vector-${version_nov}-x86_64-unknown-linux-gnu.tar.gz
+binary=vector-x86_64-unknown-linux-gnu/bin/vector
+archive=tar.gz

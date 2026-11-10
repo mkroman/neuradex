@@ -1,8 +1,9 @@
 # Observability
 
 **Status:** structured logs, OpenTelemetry spans, and JSONL audit events exist in the service.
-Content references appear when `CONTENT_STORE` is enabled. The Quickwit/ClickHouse pipeline is
-an optional local Vector bridge; metrics/alerts below are partly target design.
+Content references appear when `CONTENT_STORE` is enabled. Quickwit/ClickHouse/archive delivery
+is an optional Vector bridge locally and a reference upstream-chart deployment in production;
+metrics/alerts below are partly target design.
 
 ## Signal flow
 
@@ -11,8 +12,9 @@ flowchart LR
     S["neuradex"] -->|tracing events| L["stdout logs<br/>text or JSON"]
     S -->|OTLP spans/logs| J["Jaeger / collector"]
     S -->|audit JSONL| A["AUDIT_LOG_PATH / stdout"]
-    A -. optional Vector .-> Q["Quickwit"]
-    A -. optional Vector .-> C["ClickHouse"]
+    A -. Vector (local or DaemonSet) .-> Q["Quickwit"]
+    A -. Vector (local or DaemonSet) .-> C["ClickHouse"]
+    A -. Vector (local or DaemonSet) .-> E["B2 event archive"]
     S -->|packs/objects| B["Local / S3 store"]
     Q --> D["Dashboards / ad-hoc"]
     C --> D
@@ -25,7 +27,7 @@ There are three planes:
 | --- | --- | --- | --- |
 | Logs | `RUST_LOG`, JSON fields | Log platform | Debugging one request |
 | Traces | OTLP spans | Jaeger local / backend | Latency and call graph |
-| Audit events | JSONL file/stdout; optional Vector to Quickwit/ClickHouse | Operator-managed; 30/365 in the local stack | Accountability, analytics, capacity |
+| Audit events | JSONL file/stdout; Vector to Quickwit/ClickHouse/B2 | Operator-managed; 30/365 in the local stack | Accountability, analytics, capacity |
 
 Do not use logs as the audit record. A log line can be sampled or dropped; an audit event is the
 record.
@@ -72,7 +74,8 @@ request metadata.
 | Fetch latency p95 | < 2 s (excluding upstream) | `http_duration_ms` by route |
 | Search queue wait p95 | < 1 s | `queue_ms` |
 | Audit event completeness | ≥ 99.99% of requests | Events vs request count |
-| Event searchability | < 30 s p95 (local Vector path) | Request timestamp vs Quickwit ingest lag |
+| Event searchability | < 30 s p95 (Vector path) | Request timestamp vs Quickwit ingest lag |
+| Event archive durability | < 15 min after hour close | Archive object timestamp vs event hour |
 | Content capture rate | ≥ 99.9% of successful fetches | fetch events with `content_reference_count > 0` / fetch events |
 | Content read availability | 99.9% | Read API success |
 | Read audit completeness | 100% of reads (future) | Read audit count vs read requests; not in schema 1.0.0 |
@@ -235,12 +238,14 @@ sinks are down; readiness should reflect the HTTP path, not B2/Quickwit/ClickHou
 ## Dashboards to build
 
 1. **Golden signals:** requests, errors, p95/p99 by route.
-2. **Audit pipeline:** audit JSONL writes, Vector lag (optional), duplicates.
+2. **Audit pipeline:** audit JSONL writes, Vector lag, buffer usage, archive errors, duplicates.
 3. **Content pipeline:** capture rate, bytes/day, p50/p95/p99 body size, truncation, upload
    failures, pack count, compression ratio, dedupe rate.
 4. **Access:** read audit by principal/action/bytes, denied requests, break-glass.
 5. **Cost:** bytes/day vs model, pack count/day, B2 object count, retention countdown.
 6. **Local:** compose health, Quickwit commit lag, ClickHouse insert errors, Vector errors.
+7. **Collector:** per-node buffer utilization, sink retry/error counts, checkpoint lag, pod
+   restarts.
 
 ## Open questions
 
