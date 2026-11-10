@@ -206,6 +206,21 @@ impl S3Store {
         })
     }
 
+    /// Returns the underlying S3 client.
+    ///
+    /// This is intended for administrative operations, such as bucket lifecycle management,
+    /// that are outside the content store's read/write path.
+    #[must_use]
+    pub const fn client(&self) -> &Client {
+        &self.client
+    }
+
+    /// Returns the configured bucket name.
+    #[must_use]
+    pub fn bucket(&self) -> &str {
+        &self.config.bucket
+    }
+
     /// Writes `bytes` to `key` with a single `PutObject` call.
     ///
     /// # Errors

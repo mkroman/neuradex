@@ -201,7 +201,7 @@ same PR:
 | A ClickHouse column, view, or TTL | [reference/clickhouse-schema.md](reference/clickhouse-schema.md), `hack/clickhouse/init.sql` |
 | A Quickwit field, mapping, or retention | [reference/quickwit-index.md](reference/quickwit-index.md), `hack/quickwit/neuradex-events.yaml` |
 | A configuration variable | [reference/configuration.md](reference/configuration.md) |
-| A retention window or lifecycle rule | [operations/deployment.md](operations/deployment.md), `hack/content-lifecycle.sh` |
+| A retention window or lifecycle rule | [operations/deployment.md](operations/deployment.md), `crates/neuradex-admin` |
 | A Helm value, secret source, or content volume | [operations/deployment.md](operations/deployment.md), `chart/neuradex` |
 | A module layout or file name | [development/style.md](development/style.md) |
 | A failure mode or recovery step | [architecture/failure-model.md](architecture/failure-model.md), [operations/runbook.md](operations/runbook.md) |

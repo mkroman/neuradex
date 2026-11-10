@@ -136,9 +136,8 @@ whenever the pod restarts or moves. An existing claim can be used with
 ## Retention
 
 The service records `CONTENT_RETENTION_DAYS` but never deletes packs or objects. Retention is
-enforced by bucket lifecycle rules. [`hack/content-lifecycle.sh`](../../hack/content-lifecycle.sh)
-generates the B2 policy for the prefixes the content plane uses now and the stores it will use
-later:
+enforced by bucket lifecycle rules. `neuradex-admin content-lifecycle` generates the B2 policy
+for the prefixes the content plane uses now and the stores it will use later:
 
 | Prefix | Contents |
 | --- | --- |
@@ -184,17 +183,16 @@ export CONTENT_S3_SECRET_ACCESS_KEY=...
 export CONTENT_S3_FORCE_PATH_STYLE=true   # optional; default true
 export CONTENT_S3_PREFIX=neuradex         # optional; must match the service
 
-hack/content-lifecycle.sh --print > lifecycle.json   # default mode; no AWS calls
-hack/content-lifecycle.sh --check                    # exit 1 on drift
-hack/content-lifecycle.sh --apply                    # explicit write
+cargo run -p neuradex-admin -- content-lifecycle print > lifecycle.json
+cargo run -p neuradex-admin -- content-lifecycle check
+cargo run -p neuradex-admin -- content-lifecycle apply
 ```
 
-`--print` needs only `jq` and is the review artifact; it does not validate the S3 connection
-settings and never calls AWS. `--output FILE` writes it to a file instead of stdout. `--check`
-and `--apply` also need the AWS CLI v2; the script maps the `CONTENT_S3_*` credentials to the
-CLI's `AWS_*` variables without echoing them. `--apply` verifies that bucket versioning is
-enabled, then replaces the bucket's entire lifecycle configuration. Exit status is 0 for success
-or in sync, 1 for drift or an operation failure, and 2 for a usage or configuration error.
+`print` needs no AWS access and writes the JSON policy to stdout for review. `check` and `apply`
+read the same `CONTENT_S3_*` settings as the service and use the AWS SDK directly; they do not
+need the AWS CLI. `apply` verifies that bucket versioning is enabled, then replaces the bucket's
+entire lifecycle configuration. Exit status is 0 for success or in sync and 1 for drift or an
+operation failure; clap uses 2 for usage errors.
 
 Prerequisites and access:
 

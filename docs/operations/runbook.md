@@ -216,9 +216,11 @@ Symptoms: a request event has content refs but the index object for its hour is 
    the future request index and archive, 30 days for Quickwit, and the ClickHouse table TTL. The
    service does not delete content; bucket lifecycle rules do.
 2. Generate the B2 policy from the settings the service uses:
-   `hack/content-lifecycle.sh --print > lifecycle.json`. Review the four prefixes (`packs/`,
-   `objects/`, `index/`, `events/`) and the retention days. This mode does not touch AWS.
-3. Compare the live configuration: `hack/content-lifecycle.sh --check`. Exit 1 means drift.
+   `cargo run -p neuradex-admin -- content-lifecycle print > lifecycle.json`. Review the four
+   prefixes (`packs/`, `objects/`, `index/`, `events/`) and the retention days. This mode does not
+   touch AWS.
+3. Compare the live configuration:
+   `cargo run -p neuradex-admin -- content-lifecycle check`. Exit 1 means drift.
    Inspect the live rules with:
    ```sh
    aws --endpoint-url "$CONTENT_S3_ENDPOINT" s3api get-bucket-lifecycle-configuration \
@@ -226,8 +228,9 @@ Symptoms: a request event has content refs but the index object for its hour is 
    ```
    Confirm nobody edited the rules in the B2 console or with `b2_update_bucket`, then re-apply
    through the script after review. Do not hand-edit rules.
-4. `hack/content-lifecycle.sh --apply` replaces the entire lifecycle configuration. Check for
-   unmanaged rules first, and use the lifecycle-admin key, not the service's content key.
+4. `cargo run -p neuradex-admin -- content-lifecycle apply` replaces the entire lifecycle
+   configuration. Check for unmanaged rules first, and use the lifecycle-admin key, not the
+   service's content key.
 5. Each prefix needs both halves of the B2 mapping: `Expiration.Days` hides the current version,
    and `NoncurrentVersionExpiration.NoncurrentDays` deletes the hidden version. Hiding alone does
    not free storage. B2's S3 API rejects overlapping prefixes; a legacy or console-created
