@@ -1,0 +1,59 @@
+# Values for the upstream Vector Helm chart.
+#
+#   kubectl -n neuradex create configmap neuradex-event-pipeline \
+#     --from-file=vector.yaml=deploy/event-pipeline/vector.yaml
+#   helm repo add vector https://helm.vector.dev
+#   helm upgrade --install vector vector/vector -n neuradex -f deploy/event-pipeline/values.yaml
+#
+# The ConfigMap is mounted into /etc/vector; Vector reads it with --config-dir. The chart
+# supplies the DaemonSet, RBAC, host log mounts, and hostPath data directory.
+
+role: Agent
+
+image:
+  repository: docker.io/timberio/vector
+  tag: 0.61.0-debian
+
+# The collector has no listener.
+service:
+  enabled: false
+serviceHeadless:
+  enabled: false
+
+# Vector's --config-dir reads every file in the mounted ConfigMap.
+existingConfigMaps:
+  - neuradex-event-pipeline
+dataDir: /var/lib/vector
+
+env:
+  - name: CLICKHOUSE_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: neuradex-clickhouse
+        key: clickhouse-password
+  - name: AWS_ACCESS_KEY_ID
+    valueFrom:
+      secretKeyRef:
+        name: neuradex-events
+        key: access-key-id
+  - name: AWS_SECRET_ACCESS_KEY
+    valueFrom:
+      secretKeyRef:
+        name: neuradex-events
+        key: secret-access-key
+
+podLabels:
+  app.kubernetes.io/part-of: neuradex
+  app.kubernetes.io/component: event-pipeline
+
+# Run on every node, including nodes with taints. Remove this if the cluster should exclude
+# some nodes; the collector only sees the selected neuradex pods either way.
+tolerations:
+  - operator: Exists
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi

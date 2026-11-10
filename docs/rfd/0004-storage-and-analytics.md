@@ -270,6 +270,7 @@ Performance targets:
 - [RFD 0002: Content-addressed storage](0002-content-addressed-storage.md)
 - [RFD 0008: Capacity, cost, and retention](0008-capacity-cost-and-retention.md)
 - [RFD 0009: Access and read audit](0009-access-and-read-audit.md)
+- [RFD 0010: Production event pipeline](0010-production-event-pipeline.md)
 - [Storage topology](../architecture/storage-topology.md)
 - [ClickHouse schema](../reference/clickhouse-schema.md)
 - [Quickwit index](../reference/quickwit-index.md)
