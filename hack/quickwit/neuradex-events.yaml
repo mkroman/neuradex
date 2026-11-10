@@ -1,0 +1,296 @@
+# Quickwit index for the actual `neuradex-audit` AuditEvent (schema_version 1.0.0).
+#
+# Version 0.8 is the index-config format accepted by Quickwit 0.8.2 (the node config stays on
+# the 0.7 format). The mapping follows the serialized event exactly:
+#
+#   event / schema_version / event_id / timestamp / observed_at
+#   service { name, version, environment? }
+#   trace_id / span_id / request_id
+#   http { method, route?, path, status?, request_body_bytes?, response_body_bytes?, duration_ms }
+#   outcome / error_type?
+#   operation { type, ...search/fetch/peek/infrastructure fields }
+#   content_references [ { storage, key, blake3, sha256, size, content_type? } ]
+#   request_headers / response_headers (HeaderCapture objects)
+#
+# `content_references` and the header captures are stored as JSON and not indexed. The
+# operation union is a Quickwit object; fields that do not apply to a given operation type are
+# simply absent. `mode: lenient` keeps a new event field from breaking ingestion.
+#
+# The audit crate does not emit query text, auth subject, or read-audit fields. Do not add
+# mappings for them until the event schema does.
+
+version: 0.8
+
+index_id: neuradex-events
+
+doc_mapping:
+  mode: lenient
+  store_source: true
+  timestamp_field: timestamp
+
+  field_mappings:
+    - name: event
+      type: text
+      tokenizer: raw
+      fast: true
+      stored: true
+
+    - name: schema_version
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: event_id
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: timestamp
+      type: datetime
+      input_formats: [rfc3339]
+      output_format: rfc3339
+      fast: true
+      fast_precision: milliseconds
+      stored: true
+
+    - name: observed_at
+      type: datetime
+      input_formats: [rfc3339]
+      output_format: rfc3339
+      fast: true
+      fast_precision: milliseconds
+      stored: true
+
+    - name: service
+      type: object
+      field_mappings:
+        - name: name
+          type: text
+          tokenizer: raw
+          fast: true
+          stored: true
+        - name: version
+          type: text
+          tokenizer: raw
+          stored: true
+        - name: environment
+          type: text
+          tokenizer: raw
+          fast: true
+          stored: true
+
+    - name: trace_id
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: span_id
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: request_id
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: http
+      type: object
+      field_mappings:
+        - name: method
+          type: text
+          tokenizer: raw
+          fast: true
+          stored: true
+        - name: route
+          type: text
+          tokenizer: raw
+          fast: true
+          stored: true
+        - name: path
+          type: text
+          tokenizer: default
+          stored: true
+        - name: status
+          type: u64
+          fast: true
+          stored: true
+        - name: request_body_bytes
+          type: u64
+          stored: true
+        - name: response_body_bytes
+          type: u64
+          stored: true
+        - name: duration_ms
+          type: u64
+          fast: true
+          stored: true
+
+    - name: outcome
+      type: text
+      tokenizer: raw
+      fast: true
+      stored: true
+
+    - name: error_type
+      type: text
+      tokenizer: raw
+      fast: true
+      stored: true
+
+    # The operation is a tagged union: operation.type selects the applicable fields. All
+    # fields are declared here so a fetch, peek, search, openwebui_search, or infrastructure
+    # event can be ingested by the same index.
+    - name: operation
+      type: object
+      field_mappings:
+        - name: type
+          type: text
+          tokenizer: raw
+          fast: true
+          stored: true
+
+        # search / openwebui_search
+        - name: query_length
+          type: u64
+          stored: true
+        - name: query_terms
+          type: u64
+          stored: true
+        - name: query_sha256
+          type: text
+          tokenizer: raw
+          stored: true
+        - name: limit
+          type: u64
+          stored: true
+        - name: count
+          type: u64
+          stored: true
+        - name: auth_mode
+          type: text
+          tokenizer: raw
+          fast: true
+          stored: true
+        - name: queue_ms
+          type: u64
+          fast: true
+          stored: true
+        - name: upstream_ms
+          type: u64
+          fast: true
+          stored: true
+        - name: upstream_result_count
+          type: u64
+          stored: true
+        - name: returned_result_count
+          type: u64
+          stored: true
+        - name: zero_results
+          type: bool
+          fast: true
+          stored: true
+        - name: result_digest
+          type: text
+          tokenizer: raw
+          stored: true
+        - name: top_hosts
+          type: json
+          indexed: false
+          stored: true
+
+        # fetch / peek
+        - name: target_scheme
+          type: text
+          tokenizer: raw
+          stored: true
+        - name: target_host
+          type: text
+          tokenizer: raw
+          fast: true
+          stored: true
+        - name: target_port
+          type: u64
+          stored: true
+        - name: target_path
+          type: text
+          tokenizer: default
+          stored: true
+        - name: target_url_sha256
+          type: text
+          tokenizer: raw
+          stored: true
+        - name: redirects
+          type: u64
+          stored: true
+        - name: final_host
+          type: text
+          tokenizer: raw
+          fast: true
+          stored: true
+        - name: upstream_status
+          type: u64
+          fast: true
+          stored: true
+        - name: content_type
+          type: text
+          tokenizer: raw
+          fast: true
+          stored: true
+        - name: content_length
+          type: u64
+          stored: true
+        - name: bytes_read
+          type: u64
+          stored: true
+        - name: ttfb_ms
+          type: u64
+          fast: true
+          stored: true
+        - name: total_ms
+          type: u64
+          fast: true
+          stored: true
+        - name: truncated
+          type: bool
+          fast: true
+          stored: true
+        - name: stopped_at_head
+          type: bool
+          fast: true
+          stored: true
+
+        # infrastructure
+        - name: kind
+          type: text
+          tokenizer: raw
+          fast: true
+          stored: true
+
+    - name: content_references
+      type: json
+      indexed: false
+      stored: true
+
+    - name: request_headers
+      type: json
+      indexed: false
+      stored: true
+
+    - name: response_headers
+      type: json
+      indexed: false
+      stored: true
+
+indexing_settings:
+  commit_timeout_secs: 10
+
+search_settings:
+  # There is no query text in the event; searchable content is the fetch/peek path.
+  default_search_fields: [operation.target_path]
+
+# Hot search only. The 365-day source of truth is the B2 event archive; ClickHouse serves
+# longer-range aggregates.
+retention:
+  period: 30 days
+  schedule: daily

@@ -1,0 +1,152 @@
+# Optional local event ingester for the compose `ingest` profile.
+#
+# The neuradex service appends one JSON object per line to the spool. This config tails that
+# file, parses each line, flattens the AuditEvent's nested service/http/operation objects into
+# ClickHouse columns, and fans out to Quickwit's ingest API and ClickHouse.
+#
+# The event is NOT flat: `service`, `http`, `operation`, `content_references`, and the header
+# captures are nested. Quickwit indexes the nested objects directly. ClickHouse gets flattened
+# columns plus JSON strings for the array/header fields.
+#
+# Validate with:
+#   docker compose --profile ingest run --rm --no-deps vector \
+#     validate --no-environment /etc/vector/vector.toml
+
+data_dir = "/var/lib/vector"
+
+[sources.neuradex_events]
+type = "file"
+include = ["/var/lib/neuradex/events.jsonl"]
+read_from = "beginning"
+ignore_older_secs = 604800
+max_line_bytes = 1048576
+
+[transforms.parse_events]
+type = "remap"
+inputs = ["neuradex_events"]
+source = '''
+  . = parse_json!(string!(.message))
+'''
+
+# Flatten the actual AuditEvent shape for ClickHouse. Quickwit reads parse_events directly.
+# Quickwit's `json` field accepts a JSON object, not a top-level array. Wrap the two array
+# values so they can be stored (they are not indexed). The archive and ClickHouse keep the
+# original array shape; this shaping is only for the hot index.
+[transforms.shape_quickwit]
+type = "remap"
+inputs = ["parse_events"]
+source = '''
+  if is_array(.content_references) {
+    .content_references = {"items": .content_references}
+  }
+  if exists(.operation.top_hosts) && is_array(.operation.top_hosts) {
+    .operation.top_hosts = {"items": .operation.top_hosts}
+  }
+'''
+
+[transforms.flatten]
+type = "remap"
+inputs = ["parse_events"]
+source = '''
+  .service_name = to_string(.service.name) ?? ""
+  .service_version = to_string(.service.version) ?? ""
+  .service_environment = to_string(.service.environment) ?? ""
+
+  .http_method = to_string(.http.method) ?? ""
+  .http_route = to_string(.http.route) ?? ""
+  .http_path = to_string(.http.path) ?? ""
+  .http_status = to_int(.http.status) ?? 0
+  .http_request_body_bytes = to_int(.http.request_body_bytes) ?? 0
+  .http_response_body_bytes = to_int(.http.response_body_bytes) ?? 0
+  .http_duration_ms = to_int(.http.duration_ms) ?? 0
+
+  .operation_type = to_string(.operation.type) ?? ""
+  .query_length = to_int(.operation.query_length) ?? 0
+  .query_terms = to_int(.operation.query_terms) ?? 0
+  .query_sha256 = to_string(.operation.query_sha256) ?? ""
+  .query_limit = to_int(.operation.limit) ?? 0
+  .query_count = to_int(.operation.count) ?? 0
+  .auth_mode = to_string(.operation.auth_mode) ?? ""
+  .queue_ms = to_int(.operation.queue_ms) ?? 0
+  .upstream_ms = to_int(.operation.upstream_ms) ?? 0
+  .upstream_result_count = to_int(.operation.upstream_result_count) ?? 0
+  .returned_result_count = to_int(.operation.returned_result_count) ?? 0
+  .zero_results = to_bool(.operation.zero_results) ?? false
+  .result_digest = to_string(.operation.result_digest) ?? ""
+  .top_hosts = if exists(.operation.top_hosts) { encode_json(.operation.top_hosts) } else { "[]" }
+
+  .target_scheme = to_string(.operation.target_scheme) ?? ""
+  .target_host = to_string(.operation.target_host) ?? ""
+  .target_port = to_int(.operation.target_port) ?? 0
+  .target_path = to_string(.operation.target_path) ?? ""
+  .target_url_sha256 = to_string(.operation.target_url_sha256) ?? ""
+  .redirects = to_int(.operation.redirects) ?? 0
+  .final_host = to_string(.operation.final_host) ?? ""
+  .upstream_status = to_int(.operation.upstream_status) ?? 0
+  .content_type = to_string(.operation.content_type) ?? ""
+  .content_length = to_int(.operation.content_length) ?? 0
+  .bytes_read = to_int(.operation.bytes_read) ?? 0
+  .ttfb_ms = to_int(.operation.ttfb_ms) ?? 0
+  .total_ms = to_int(.operation.total_ms) ?? 0
+  .truncated = to_bool(.operation.truncated) ?? false
+  .stopped_at_head = to_bool(.operation.stopped_at_head) ?? false
+  .infrastructure_kind = to_string(.operation.kind) ?? ""
+
+  # Derived content summary. The content references are the source; these columns only make
+  # capacity queries cheaper. content_bytes is the sum of the reference sizes.
+  .content_reference_count = 0
+  .content_bytes = 0
+  .content_storage = ""
+  .content_key = ""
+  .content_blake3 = ""
+  .content_sha256 = ""
+  .refs = if is_array(.content_references) { .content_references } else { [] }
+  .refs = array!(.refs)
+  .content_reference_count = length(.refs)
+  for_each(.refs) -> |_index, ref| {
+    .content_bytes = .content_bytes + (to_int(ref.size) ?? 0)
+  }
+  if .content_reference_count > 0 {
+    .content_storage = to_string(.refs[0].storage) ?? ""
+    .content_key = to_string(.refs[0].key) ?? ""
+    .content_blake3 = to_string(.refs[0].blake3) ?? ""
+    .content_sha256 = to_string(.refs[0].sha256) ?? ""
+  }
+  .content_references = encode_json(.refs)
+
+  .request_headers = if exists(.request_headers) { encode_json(.request_headers) } else { "{}" }
+  .response_headers = if exists(.response_headers) { encode_json(.response_headers) } else { "{}" }
+
+  del(.service)
+  del(.http)
+  del(.operation)
+  del(.refs)
+'''
+
+[sinks.quickwit]
+type = "http"
+inputs = ["shape_quickwit"]
+uri = "http://quickwit:7280/api/v1/neuradex-events/ingest?commit=auto"
+method = "post"
+encoding.codec = "json"
+framing.method = "newline_delimited"
+request.headers.Content-Type = "application/x-ndjson"
+batch.max_events = 1000
+batch.timeout_secs = 5
+# Quickwit's ingest endpoint is a POST; the generic healthcheck would GET it.
+healthcheck.enabled = false
+
+[sinks.clickhouse]
+type = "clickhouse"
+inputs = ["flatten"]
+endpoint = "http://clickhouse:8123"
+database = "neuradex"
+table = "events"
+format = "json_each_row"
+skip_unknown_fields = true
+date_time_best_effort = true
+auth.strategy = "basic"
+auth.user = "neuradex"
+auth.password = "neuradex-local-secret"
+batch.max_events = 1000
+batch.timeout_secs = 5
