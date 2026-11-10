@@ -3,7 +3,7 @@ rfd: 6
 title: Crate boundaries
 authors:
   - neuradex maintainers
-state: published
+state: committed
 discussion: https://github.com/mkroman/neuradex/pull/70
 labels:
   - architecture
@@ -14,6 +14,10 @@ updated: 2026-11-10
 ---
 
 # RFD 6: Crate boundaries
+
+> **Status:** implemented as specified: `neuradex-audit`, `neuradex-packfile`, and
+> `neuradex-content` exist with the one-way dependency direction, and the service composes
+> them (PRs #67–#69, #76).
 
 ## Summary
 

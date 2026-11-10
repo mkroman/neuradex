@@ -3,7 +3,7 @@ rfd: 3
 title: Hashing
 authors:
   - neuradex maintainers
-state: published
+state: committed
 discussion: https://github.com/mkroman/neuradex/pull/70
 labels:
   - content
@@ -16,7 +16,7 @@ updated: 2026-11-10
 # RFD 3: Hashing
 
 > **Status:** the BLAKE3/SHA-256/XXH3 rules are implemented in `neuradex-packfile` and
-> `neuradex-audit`. The content orchestration that applies them to live requests is not wired.
+> `neuradex-audit`, and the wired content pipeline applies them to live requests (PR #76).
 
 ## Summary
 

@@ -3,7 +3,7 @@ rfd: 1
 title: Audit event model
 authors:
   - neuradex maintainers
-state: published
+state: committed
 discussion: https://github.com/mkroman/neuradex/pull/70
 labels:
   - audit
@@ -14,6 +14,10 @@ updated: 2026-11-10
 ---
 
 # RFD 1: Audit event model
+
+> **Status:** implemented in `neuradex-audit` and wired into the service by the request
+> middleware in PR #71 (shape and sinks) and PR #76 (content references and operation
+> enrichment). See `crates/neuradex/src/audit.rs`.
 
 ## Summary
 
