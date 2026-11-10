@@ -29,7 +29,7 @@ flowchart TB
 
     subgraph DEP["Deployment Test"]
         CH["Chart Lint<br/>helm lint/template"]
-        K["Kind Deployment<br/>build + install + smoke"]
+        K["Kind Deployment<br/>build + install + e2e"]
         CH --> K
     end
 
@@ -57,7 +57,7 @@ test matrix job, rustdoc, or shellcheck fails.
 | `continuous-integration.yaml` | `Shellcheck` | PR + main | `shellcheck hack/*.sh` | via `ci-success` |
 | `continuous-integration.yaml` | `CI Success` | PR + main | Aggregates the above | **yes** |
 | `deployment-test.yaml` | `Chart Lint` | PR + main | `helm lint`/`helm template` variants | yes (own check) |
-| `deployment-test.yaml` | `Kind Deployment` | PR + main | Build image, kind cluster, chart install, smoke script | yes (own check) |
+| `deployment-test.yaml` | `Kind Deployment` | PR + main | Build image, kind cluster, chart install, hermetic e2e suite | yes (own check) |
 | `security.yaml` | `Cargo Deny` | PR + main + weekly | `cargo deny check advisories` | yes (own check) |
 | `doc.yaml` | `Documentation` | reusable | Builds rustdoc; uploads only on main | via `ci-success` |
 | `zizmor.yaml` | `Zizmor Audit` | PR + main | Workflow security audit (SARIF) | not blocking by default |
@@ -70,7 +70,7 @@ The Kind job has a scope check:
 - If every changed file is `*.md` or under `docs/`, it skips the image build and cluster, and
   still reports success.
 - A PR that also changes `compose.yaml` or `hack/` is **not** docs-only. The Kind job builds the
-  image and installs the chart, so expect the full runtime.
+  image, installs the chart, and runs the e2e suite, so expect the full runtime.
 - The Rust jobs run regardless. A PR that does not touch `crates/` or `Cargo.toml` still runs
   the full test matrix and rustdoc.
 
@@ -91,6 +91,7 @@ available when debugging a failure.
 | Shellcheck | `mise run shellcheck` |
 | Cargo Deny | `mise run deny` |
 | Chart lint | `mise exec -- helm lint chart/neuradex --set kagiSessionToken=ci-dummy` |
+| Kind e2e | `mise exec -- ./hack/e2e.sh` (see [testing.md](testing.md#kind-end-to-end-e2e)) |
 | Compose config | `docker compose config --quiet` |
 | Workflow audit | `zizmor .github/workflows` (if installed) |
 
@@ -160,8 +161,8 @@ module layout.
 - The `Dockerfile` copies `Cargo.toml`, `Cargo.lock`, `crates/`, `mise.docker.toml`, and
   `mise.docker.lock`; a new build-time file must be added there. Docs and compose do not affect
   the image.
-- A change to `chart/` triggers Helm lint/template. A change to `hack/smoke-test.sh` should be
-  reflected in the Kind smoke run.
+- A change to `chart/` triggers Helm lint/template. A change to `hack/e2e.sh`, its fixtures, or
+  an API contract should be reflected in the Kind e2e run.
 
 ## Cache and runtime
 
@@ -181,7 +182,7 @@ module layout.
 | `cargo test --workspace` | Test failure in a crate | Run the crate test locally with `--nocapture` |
 | Lean test | A `docs`-gated item used unconditionally | Gate the code or the test |
 | Shellcheck | Quoting/portability | Fix the script; keep `hack/` scripts POSIX-ish |
-| Kind Deployment | Image/chart/smoke failure | Reproduce with the commands in `deployment-test.yaml` |
+| Kind Deployment | Image/chart/e2e failure | Run `mise exec -- ./hack/e2e.sh` against a local kind cluster; inspect the namespace it leaves behind |
 | Chart Lint | Missing `kagiSessionToken` or `existingSecret` | Pass `--set kagiSessionToken=ci-dummy` |
 | Cargo Deny | New advisory | Update the dependency or document an exception in `deny.toml` |
 | Zizmor | Unpinned action or unsafe workflow | Pin to a SHA and fix the finding |

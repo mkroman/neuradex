@@ -19,6 +19,7 @@ should cover.
 | Lifecycle policy | `cargo test -p neuradex-admin` | 12 B2 rules, prefixes, retention, unique IDs | seconds | implemented |
 | Service integration | `cargo test -p neuradex` | HTTP routes, extraction, errors | minutes | implemented |
 | Compose smoke | `docker compose up -d` + curl/jq | Real Quickwit/ClickHouse/MinIO mappings | manual | implemented |
+| Kind e2e | [`hack/e2e.sh`](#kind-end-to-end-e2e) | Chart install, fetch/peek/search, audit, S3 packs | minutes | implemented |
 | Failure injection | stop a sink; corrupt a frame | Degradation and verification | manual | planned |
 
 The first five rows are the Rust CI gates. They are also mise tasks (`mise run fmt`,
@@ -42,8 +43,10 @@ mise run deny
 mise run shellcheck
 ```
 
-`mise run check` runs the same seven tasks. Each task wraps the raw command CI uses (the Rust
-tasks add `--locked`); when a task fails, run the equivalent directly for clearer output:
+`mise run check` runs the same seven tasks. For changes to the chart, deployment workflow, or
+`hack/e2e.sh`, also run the [kind e2e suite](#kind-end-to-end-e2e). Each task wraps the raw
+command CI uses (the Rust tasks add `--locked`); when a task fails, run the equivalent directly
+for clearer output:
 
 ```sh
 cargo fmt --all -- --check       # `cargo fmt` rewrites the files
@@ -169,6 +172,7 @@ pattern for request events. Do not add a new global subscriber in another test b
 | Event JSON | inline in tests | Audit serialization and sink contract |
 | Pack bytes | generated in tests | Round-trip and corruption tests |
 | Compose event | [local-development.md](local-development.md#send-events-to-the-optional-stack) | Manual end-to-end |
+| E2E page/Kagi mock | `hack/e2e/fixtures` | Kind fetch/peek/search, audit, and content checks |
 
 Do not commit real page bodies, real URLs, tokens, or user data. Use `example.com` and
 synthetic HTML.
@@ -189,6 +193,32 @@ curl -sS 'http://127.0.0.1:8123/?user=neuradex&password=neuradex-local-secret' \
 Expected: one Quickwit hit and one ClickHouse row. If the Quickwit hit is zero, wait for the
 10-second commit; if it is still zero, check the Quickwit log for a mapping error (usually a
 header sent as a string instead of an object).
+
+## Kind end-to-end (e2e)
+
+`hack/e2e.sh` installs the chart into a disposable kind cluster and runs a hermetic suite. It
+deploys an nginx fixture service that serves a known page, a redirect, a binary response, and a
+mock Kagi search flow, plus MinIO for the S3 content store. It then drives `/v1/fetch`,
+`/v1/peek`, `/v1/search`, and `/v1/openwebui_search`; asserts the JSON bodies and error
+envelopes; verifies the audit events (including no `/healthz` event and query hashing); and
+checks that every content reference points at a real pack in MinIO.
+
+Prerequisites: `docker`, `kind`, `kubectl`, `helm`, `curl`, and `jq`. Build and load the image,
+create a cluster, then run the suite:
+
+```sh
+docker build -t ghcr.io/mkroman/neuradex:ci .
+mise exec -- kind create cluster --name neuradex-e2e
+mise exec -- kind load docker-image ghcr.io/mkroman/neuradex:ci --name neuradex-e2e
+mise exec -- ./hack/e2e.sh
+mise exec -- kind delete cluster --name neuradex-e2e
+```
+
+`E2E_KEEP=1 mise exec -- ./hack/e2e.sh` keeps the `neuradex-e2e` namespace after a successful
+run; failures always leave it in place for inspection. `E2E_NAMESPACE`, `E2E_IMAGE`, and
+`E2E_PORT` override the defaults. The suite needs no Kagi account: the fixture service is the
+only search upstream, and the chart's NetworkPolicy already allows the in-cluster port-80
+traffic.
 
 ## Failure injection
 
@@ -215,4 +245,4 @@ harness.
 See [ci.md](ci.md) for the pipeline and gates. In short: `ci-success` is the required check; it
 aggregates lint, both test matrix jobs, rustdoc, and shellcheck. The Kind deployment job skips
 docs-only PRs; a PR that changes `compose.yaml` or `hack/` is not docs-only and will build the
-image.
+image and run the e2e suite.

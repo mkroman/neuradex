@@ -81,17 +81,18 @@ jobs:
             --set content.s3.bucket=neuradex \
             --set content.s3.accessKeyId=ci-access-key-id \
             --set content.s3.secretAccessKey=ci-secret-access-key > /dev/null
+      - name: Render e2e values
+        run: helm template e2e chart/neuradex -f hack/e2e/values.yaml --set image.tag=ci > /dev/null
 
   kind:
     name: Kind Deployment
     needs:
       - chart
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       IMAGE: ghcr.io/mkroman/neuradex:ci
-      # renovate: datasource=docker depName=curlimages/curl
-      CURL_IMAGE: curlimages/curl:8.23.0
+      E2E_NAMESPACE: neuradex-e2e
     permissions:
       contents: read
       # The registry build cache lives in GHCR; only main logs in and writes it.
@@ -194,28 +195,20 @@ jobs:
       - name: Load image into the cluster
         if: github.event_name == 'push' || steps.scope.outputs.build != 'false'
         run: kind load docker-image "$IMAGE" --name neuradex
-      - name: Install chart
+      - name: Run e2e suite (hack/e2e.sh)
         if: github.event_name == 'push' || steps.scope.outputs.build != 'false'
-        run: |
-          helm install neuradex chart/neuradex \
-            --set image.repository=ghcr.io/mkroman/neuradex \
-            --set image.tag=ci \
-            --set image.pullPolicy=Never \
-            --set kagiSessionToken=ci-dummy \
-            --wait --timeout 2m
-      - name: Run in-cluster smoke checks (hack/smoke-test.sh)
-        if: github.event_name == 'push' || steps.scope.outputs.build != 'false'
-        run: |
-          kubectl run curl --quiet --restart=Never --image="$CURL_IMAGE" --command -- sleep 300
-          kubectl wait --for=condition=Ready pod/curl --timeout=120s
-          kubectl exec -i curl -- sh -s http://neuradex < hack/smoke-test.sh
+        env:
+          E2E_IMAGE: ${{ env.IMAGE }}
+        run: ./hack/e2e.sh
       - name: Dump cluster state on failure
         if: failure() && steps.kind.outcome == 'success'
         run: |
-          kubectl get pods -o wide || true
-          kubectl describe deployment/neuradex || true
-          kubectl get events --sort-by=.lastTimestamp | tail -30 || true
-          kubectl logs deployment/neuradex || true
+          kubectl -n "$E2E_NAMESPACE" get pods -o wide || true
+          kubectl -n "$E2E_NAMESPACE" describe deployment/neuradex || true
+          kubectl -n "$E2E_NAMESPACE" describe deployment/minio || true
+          kubectl -n "$E2E_NAMESPACE" get events --sort-by=.lastTimestamp | tail -30 || true
+          kubectl -n "$E2E_NAMESPACE" logs deployment/neuradex --tail=200 || true
+          kubectl -n "$E2E_NAMESPACE" logs deployment/minio --tail=100 || true
       - name: Delete cluster
         if: always() && steps.kind.outcome == 'success'
         run: kind delete cluster --name neuradex || true

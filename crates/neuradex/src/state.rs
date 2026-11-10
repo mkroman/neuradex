@@ -104,20 +104,54 @@ impl AppState {
         privacy_pass_state: Option<&Path>,
         audit: AuditConfig,
     ) -> Result<Self, BuildError> {
-        let max_sessions = max_sessions.clamp(1, crate::config::MAX_SEARCH_SESSIONS);
-        let kagi_client = kagi::Client::with_token_and_options(
+        Self::try_new_with_audit_and_base_url(
+            user_agent,
             kagi_token,
-            &kagi::ClientOptions {
-                max_sessions,
-                privacy_pass: privacy_pass.then(|| kagi::PrivacyPassOptions {
-                    state_path: privacy_pass_state.map(Path::to_path_buf),
-                    fallback: privacy_pass_fallback,
-                    ..kagi::PrivacyPassOptions::default()
-                }),
-                // Keep the Kagi client on the same timeout as the page-fetch client.
-                timeout,
-                ..kagi::ClientOptions::default()
-            },
+            kagi::BASE_URL,
+            timeout,
+            max_sessions,
+            privacy_pass,
+            privacy_pass_fallback,
+            privacy_pass_state,
+            audit,
+        )
+    }
+
+    /// Constructs the application state with an explicit Kagi base URL and audit configuration.
+    ///
+    /// `kagi_base_url` is normally [`kagi::BASE_URL`]. The `KAGI_BASE_URL` setting exposes it
+    /// so tests and local deployments can point the client at a mock or proxy; the Kagi client
+    /// validates the URL and startup fails when it is unusable.
+    ///
+    /// The remaining arguments are the same as [`AppState::try_new_with_audit`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP or Kagi clients fail to build.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the explicit constructor mirrors the configuration fields its callers pass"
+    )]
+    pub fn try_new_with_audit_and_base_url(
+        user_agent: &str,
+        kagi_token: SecretString,
+        kagi_base_url: &str,
+        timeout: Duration,
+        max_sessions: usize,
+        privacy_pass: bool,
+        privacy_pass_fallback: bool,
+        privacy_pass_state: Option<&Path>,
+        audit: AuditConfig,
+    ) -> Result<Self, BuildError> {
+        let max_sessions = max_sessions.clamp(1, crate::config::MAX_SEARCH_SESSIONS);
+        let kagi_client = build_kagi_client(
+            kagi_token,
+            kagi_base_url,
+            timeout,
+            max_sessions,
+            privacy_pass,
+            privacy_pass_fallback,
+            privacy_pass_state,
         )?;
 
         Self::try_new_with_kagi_client_and_audit(user_agent, kagi_client, timeout, audit)
@@ -213,6 +247,33 @@ impl AppState {
     pub(crate) const fn audit(&self) -> &AuditConfig {
         &self.audit
     }
+}
+
+/// Builds the Kagi client from the service configuration.
+fn build_kagi_client(
+    kagi_token: SecretString,
+    kagi_base_url: &str,
+    timeout: Duration,
+    max_sessions: usize,
+    privacy_pass: bool,
+    privacy_pass_fallback: bool,
+    privacy_pass_state: Option<&Path>,
+) -> Result<kagi::Client, kagi::Error> {
+    kagi::Client::with_token_and_options(
+        kagi_token,
+        &kagi::ClientOptions {
+            base_url: kagi_base_url.to_string(),
+            max_sessions,
+            privacy_pass: privacy_pass.then(|| kagi::PrivacyPassOptions {
+                state_path: privacy_pass_state.map(Path::to_path_buf),
+                fallback: privacy_pass_fallback,
+                ..kagi::PrivacyPassOptions::default()
+            }),
+            // Keep the Kagi client on the same timeout as the page-fetch client.
+            timeout,
+            ..kagi::ClientOptions::default()
+        },
+    )
 }
 
 /// Returns the request headers layered on top of the emulated browser profile.
@@ -328,6 +389,41 @@ mod tests {
                 .expect("privacy pass is enabled")
                 .fallback_enabled()
         );
+    }
+
+    #[test]
+    fn accepts_a_custom_kagi_base_url() {
+        AppState::try_new_with_audit_and_base_url(
+            "test-agent",
+            SecretString::from("test-token"),
+            "http://127.0.0.1:9",
+            Duration::from_secs(5),
+            1,
+            false,
+            false,
+            None,
+            AuditConfig::default(),
+        )
+        .expect("valid state");
+    }
+
+    #[test]
+    fn rejects_an_invalid_kagi_base_url() {
+        let error = AppState::try_new_with_audit_and_base_url(
+            "test-agent",
+            SecretString::from("test-token"),
+            "not a url",
+            Duration::from_secs(5),
+            1,
+            false,
+            false,
+            None,
+            AuditConfig::default(),
+        )
+        .map(|_| ())
+        .expect_err("invalid base URL");
+
+        assert!(matches!(error, BuildError::KagiClient(_)));
     }
 
     #[test]

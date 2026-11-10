@@ -11,16 +11,6 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Update the curl image used by the kind deployment smoke test",
-      "managerFilePatterns": [
-        "/^\\.github\\/workflows\\/deployment-test\\.yaml$/"
-      ],
-      "matchStrings": [
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*CURL_IMAGE: [^:\\s]+:(?<currentValue>\\S+)"
-      ]
-    },
-    {
-      "customType": "regex",
       "description": "Update the pinned kind node image and digest",
       "managerFilePatterns": [
         "/^\\.github\\/workflows\\/deployment-test\\.yaml$/"
@@ -45,6 +35,14 @@
         "mise.docker.toml"
       ],
       "groupName": "docker build tools",
+      "minimumReleaseAge": "7 days"
+    },
+    {
+      "description": "Group e2e fixture image updates",
+      "matchFileNames": [
+        "hack/e2e/manifests.yaml"
+      ],
+      "groupName": "e2e fixtures",
       "minimumReleaseAge": "7 days"
     }
   ]

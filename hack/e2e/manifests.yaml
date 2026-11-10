@@ -1,0 +1,151 @@
+# Fixture and MinIO services for the in-cluster neuradex e2e suite.
+#
+# hack/e2e.sh creates the `e2e-fixtures` and `e2e-nginx` ConfigMaps from the
+# repository files before applying this manifest; the namespace is supplied
+# with `kubectl apply --namespace ...`, so no namespace is set here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fixtures
+  labels:
+    app.kubernetes.io/name: neuradex-e2e-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: neuradex-e2e-fixtures
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: neuradex-e2e-fixtures
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.29.0-alpine@sha256:845b5424415de5f77dd5753cbb7c1be8bd8e44cc81f20f9705783a02f8848317
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /page
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: fixtures
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+              readOnly: true
+      volumes:
+        - name: fixtures
+          configMap:
+            name: e2e-fixtures
+        - name: nginx-conf
+          configMap:
+            name: e2e-nginx
+            items:
+              - key: default.conf
+                path: default.conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fixtures
+  labels:
+    app.kubernetes.io/name: neuradex-e2e-fixtures
+spec:
+  selector:
+    app.kubernetes.io/name: neuradex-e2e-fixtures
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP
+---
+# MinIO stands in for the S3-compatible content store. It runs as root so it
+# can bind port 80 and write the emptyDir; the credentials are local-only.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  labels:
+    app.kubernetes.io/name: neuradex-e2e-minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: neuradex-e2e-minio
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: neuradex-e2e-minio
+    spec:
+      securityContext:
+        runAsUser: 0
+      containers:
+        - name: minio
+          image: cgr.dev/chainguard/minio@sha256:5cfb31567972802ece1a39bb076078fda00095c7d11e82be65e762c528994608
+          args:
+            - server
+            - /data
+            - --address
+            - ":80"
+          env:
+            - name: MINIO_ROOT_USER
+              value: neuradex
+            - name: MINIO_ROOT_PASSWORD
+              value: neuradex-local-secret
+            # This mc build mis-parses IPv4 literals; use localhost.
+            - name: MC_HOST_e2e
+              value: http://neuradex:neuradex-local-secret@localhost:80
+          ports:
+            - name: s3
+              containerPort: 80
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: s3
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  labels:
+    app.kubernetes.io/name: neuradex-e2e-minio
+spec:
+  selector:
+    app.kubernetes.io/name: neuradex-e2e-minio
+  ports:
+    - name: s3
+      port: 80
+      targetPort: 80
+      protocol: TCP

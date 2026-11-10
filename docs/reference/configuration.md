@@ -12,6 +12,7 @@ cannot start without `KAGI_SESSION_TOKEN`.
 | Variable | Required | Default | Valid values | Meaning |
 | --- | --- | --- | --- | --- |
 | `KAGI_SESSION_TOKEN` | yes to serve | — | non-empty string | Kagi session token; the service refuses to start without it. Not needed for `export-docs`. |
+| `KAGI_BASE_URL` | no | `https://kagi.com` | HTTP(S) URL | Kagi base URL override, mainly for tests, mocks, or a proxy. Empty or whitespace uses the default; an unusable URL fails startup. |
 | `LISTEN_ADDR` | no | `127.0.0.1:8080` | socket address | HTTP listen address |
 | `USER_AGENT` | no | `kagi::USER_AGENT` | valid header value | `User-Agent` sent with fetches and searches |
 | `KAGI_MAX_SESSIONS` | no | `2` | integer 1–64 | Maximum simultaneous searches; out-of-range is a startup error |
@@ -32,6 +33,9 @@ cannot start without `KAGI_SESSION_TOKEN`.
 Notes:
 
 - `KAGI_MAX_SESSIONS` is not silently clamped: values outside 1–64 fail startup.
+- `KAGI_BASE_URL` is trimmed; empty or whitespace selects the default. The URL must be usable
+  HTTP(S); the Kagi client validates it during startup. The session token is sent to this host,
+  so use HTTPS outside a local mock or trusted proxy.
 - `KAGI_PRIVACY_PASS` accepts `1/true/yes/on` and `0/false/no/off`, case-insensitive, trimmed.
 - `KAGI_PRIVACY_PASS_FALLBACK` accepts the same boolean spellings and has no effect when
   `KAGI_PRIVACY_PASS=false`.
@@ -217,7 +221,7 @@ remote endpoint. The S3 access key and secret are secrets; do not log or commit 
 ## Precedence and validation
 
 - Environment variables override built-in defaults; there is no config file.
-- Invalid `LISTEN_ADDR`, `KAGI_MAX_SESSIONS`, `KAGI_PRIVACY_PASS`,
+- Invalid `LISTEN_ADDR`, `KAGI_BASE_URL`, `KAGI_MAX_SESSIONS`, `KAGI_PRIVACY_PASS`,
   `KAGI_PRIVACY_PASS_FALLBACK`, a missing/empty `KAGI_SESSION_TOKEN`, invalid content values, or
   an invalid selected content store is a startup error with a human-readable message.
 - Booleans accept `1/true/yes/on` and `0/false/no/off`, case-insensitive, trimmed.

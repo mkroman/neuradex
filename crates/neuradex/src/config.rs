@@ -37,6 +37,9 @@ const HOME_ENV: &str = "HOME";
 /// The environment variable holding the Kagi session token.
 const KAGI_TOKEN_ENV: &str = "KAGI_SESSION_TOKEN";
 
+/// The environment variable overriding the Kagi base URL.
+const KAGI_BASE_URL_ENV: &str = "KAGI_BASE_URL";
+
 /// The environment variable holding the JSONL audit log path.
 const AUDIT_LOG_PATH_ENV: &str = "AUDIT_LOG_PATH";
 
@@ -212,6 +215,8 @@ pub struct Config {
     pub user_agent: String,
     /// The Kagi session token.
     kagi_token: SecretString,
+    /// The base URL used by the Kagi search client.
+    kagi_base_url: String,
     /// The maximum number of simultaneous searches.
     pub max_sessions: usize,
     /// Whether searches authenticate with anonymous Privacy Pass tokens.
@@ -246,6 +251,12 @@ impl Config {
     #[must_use]
     pub const fn kagi_token(&self) -> &SecretString {
         &self.kagi_token
+    }
+
+    /// Returns the base URL used by the Kagi search client.
+    #[must_use]
+    pub fn kagi_base_url(&self) -> &str {
+        &self.kagi_base_url
     }
 
     /// Returns the JSONL audit log path, or `None` when audit events go to stdout.
@@ -313,6 +324,11 @@ impl Config {
             .map(SecretString::from)
             .ok_or(ConfigError::MissingToken)?;
 
+        let kagi_base_url = get(KAGI_BASE_URL_ENV)
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| kagi::BASE_URL.to_owned());
+
         let audit_log_path = get(AUDIT_LOG_PATH_ENV)
             .map(|path| path.trim().to_owned())
             .filter(|path| !path.is_empty() && path != "-")
@@ -328,6 +344,7 @@ impl Config {
             listen_addr,
             user_agent,
             kagi_token,
+            kagi_base_url,
             max_sessions,
             privacy_pass,
             privacy_pass_state,
@@ -637,6 +654,7 @@ mod tests {
         assert!(config.privacy_pass);
         assert!(!config.privacy_pass_fallback);
         assert_eq!(config.kagi_token().expose_secret(), "token");
+        assert_eq!(config.kagi_base_url(), kagi::BASE_URL);
         assert_eq!(config.privacy_pass_state(), None);
         assert_eq!(config.audit_log_path(), None);
         assert!(config.audit_hmac_key().is_none());
@@ -665,6 +683,14 @@ mod tests {
     }
 
     #[test]
+    fn ignores_an_empty_kagi_base_url() {
+        let config = parse_env(&[(KAGI_TOKEN_ENV, "token"), (KAGI_BASE_URL_ENV, "  ")])
+            .expect("valid config");
+
+        assert_eq!(config.kagi_base_url(), kagi::BASE_URL);
+    }
+
+    #[test]
     fn reads_valid_overrides() {
         let config = parse_env(&[
             (LISTEN_ADDR_ENV, "0.0.0.0:9000"),
@@ -673,6 +699,7 @@ mod tests {
             (KAGI_PRIVACY_PASS_ENV, "off"),
             (KAGI_PRIVACY_PASS_FALLBACK_ENV, "on"),
             (KAGI_TOKEN_ENV, "secret"),
+            (KAGI_BASE_URL_ENV, " http://fixtures "),
             (AUDIT_LOG_PATH_ENV, " /var/log/neuradex/audit.jsonl "),
             (AUDIT_HMAC_KEY_ENV, "hmac-secret"),
             (CONTENT_STORE_ENV, "local"),
@@ -691,6 +718,7 @@ mod tests {
         assert!(!config.privacy_pass);
         assert!(config.privacy_pass_fallback);
         assert_eq!(config.kagi_token().expose_secret(), "secret");
+        assert_eq!(config.kagi_base_url(), "http://fixtures");
         assert_eq!(
             config.audit_log_path(),
             Some(Path::new("/var/log/neuradex/audit.jsonl"))
