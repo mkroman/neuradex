@@ -4,9 +4,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::Extension;
-use axum::Json;
+use axum::body::Body;
 use axum::extract::State;
-use neuradex_audit::SearchOperation;
+use axum::http::header::CONTENT_TYPE;
+use axum::response::{IntoResponse, Response};
+use neuradex_audit::{AuthMode, SearchOperation};
 use serde::Serialize;
 use tracing::Instrument;
 
@@ -104,11 +106,14 @@ impl From<kagi::SearchResult> for SearchResult {
 pub(crate) async fn search(
     State(state): State<Arc<AppState>>,
     audit: Option<Extension<RequestAuditHandle>>,
-    ApiJson { value: request, .. }: ApiJson<SearchRequest>,
-) -> Result<Json<SearchResponse>, ApiError> {
-    request.validate()?;
+    ApiJson {
+        value: request,
+        raw,
+    }: ApiJson<SearchRequest>,
+) -> Result<Response, ApiError> {
+    let audit = audit.as_deref();
 
-    if let Some(Extension(audit)) = audit {
+    if let Some(audit) = audit {
         let mut operation = SearchOperation::new(&request.query);
         if let Some(limit) = request.limit {
             operation = operation.with_limit(limit);
@@ -118,33 +123,92 @@ pub(crate) async fn search(
         });
     }
 
+    crate::content::capture(
+        state.content(),
+        audit,
+        "search-request",
+        &raw.bytes,
+        Some("application/json"),
+    )
+    .await;
+
+    request.validate()?;
+
     let started = Instant::now();
     let timeout = request.timeout.map(Duration::from_secs);
 
-    let QueuedSearch { queue_ms, results } = queued_search(&state, &request.query, timeout).await?;
+    let QueuedSearch {
+        queue_ms,
+        upstream_ms,
+        results,
+    } = queued_search(&state, &request.query, timeout).await?;
+    let upstream_count = results.len();
     let results: Vec<SearchResult> = results
         .into_iter()
         .take(request.limit.unwrap_or(usize::MAX))
         .map(SearchResult::from)
         .collect();
+    let returned_count = results.len();
 
     let metrics = SearchMetrics {
         queue_ms,
         total_ms: duration_ms(started.elapsed()),
-        result_count: results.len(),
+        result_count: returned_count,
     };
 
-    Ok(Json(SearchResponse {
+    let payload = SearchResponse {
         query: request.query,
         results,
         metrics,
-    }))
+    };
+
+    if let Some(audit) = audit {
+        let auth_mode = if state.kagi_client().privacy_pass().is_some() {
+            AuthMode::PrivacyPass
+        } else {
+            AuthMode::Session
+        };
+        let urls: Vec<String> = payload
+            .results
+            .iter()
+            .map(|result| result.url.clone())
+            .collect();
+        audit.update_search(move |search| {
+            *search = search
+                .clone()
+                .with_auth_mode(auth_mode)
+                .with_queue_ms(queue_ms)
+                .with_upstream_ms(upstream_ms)
+                .with_result_counts(upstream_count, returned_count)
+                .with_results(urls);
+        });
+    }
+
+    let encoded = serde_json::to_vec(&payload).map_err(ApiError::internal)?;
+
+    if let Some(audit) = audit {
+        audit.update(|record| {
+            record.set_response_body_bytes(u64::try_from(encoded.len()).unwrap_or(u64::MAX));
+        });
+    }
+    crate::content::capture(
+        state.content(),
+        audit,
+        "search-response",
+        &encoded,
+        Some("application/json"),
+    )
+    .await;
+
+    Ok(([(CONTENT_TYPE, "application/json")], Body::from(encoded)).into_response())
 }
 
 /// A completed search and the time it waited for a slot.
 pub(crate) struct QueuedSearch {
     /// The time spent waiting for a search slot before the search started, in milliseconds.
     pub queue_ms: u64,
+    /// The time spent in the upstream search, in milliseconds.
+    pub upstream_ms: u64,
     /// The raw results returned by Kagi.
     pub results: Vec<kagi::SearchResult>,
 }
@@ -182,16 +246,22 @@ pub(crate) async fn queued_search(
         })?;
         let queue_ms = duration_ms(queued.elapsed());
 
+        let upstream_started = Instant::now();
         let results = state
             .kagi_client
             .search(query)
             .await
             .map_err(ApiError::upstream)?;
+        let upstream_ms = duration_ms(upstream_started.elapsed());
 
         // The permit is scoped to the search itself, not the response mapping.
         drop(permit);
 
-        Ok::<_, ApiError>(QueuedSearch { queue_ms, results })
+        Ok::<_, ApiError>(QueuedSearch {
+            queue_ms,
+            upstream_ms,
+            results,
+        })
     };
 
     let result = match timeout {

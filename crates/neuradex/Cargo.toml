@@ -34,6 +34,7 @@ kagi = { path = "../kagi", default-features = false, features = [
     "zstd",
 ] }
 neuradex-audit = { path = "../neuradex-audit" }
+neuradex-content = { path = "../neuradex-content", features = ["s3"] }
 neuradex-docs = { path = "../neuradex-docs", optional = true }
 opentelemetry.workspace = true
 opentelemetry-appender-tracing.workspace = true
@@ -65,6 +66,7 @@ docs = ["dep:neuradex-docs"]
 [dev-dependencies]
 assert_cmd.workspace = true
 criterion.workspace = true
+neuradex-packfile = { path = "../neuradex-packfile" }
 predicates.workspace = true
 scraper.workspace = true
 tempfile.workspace = true

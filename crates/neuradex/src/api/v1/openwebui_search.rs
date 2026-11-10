@@ -11,9 +11,11 @@
 use std::sync::Arc;
 
 use axum::Extension;
-use axum::Json;
+use axum::body::Body;
 use axum::extract::State;
-use neuradex_audit::SearchOperation;
+use axum::http::header::CONTENT_TYPE;
+use axum::response::{IntoResponse, Response};
+use neuradex_audit::{AuthMode, SearchOperation};
 use serde::{Deserialize, Serialize};
 
 use crate::api::v1::error::ApiError;
@@ -125,25 +127,77 @@ impl From<kagi::SearchResult> for OpenWebUiSearchResult {
 pub(crate) async fn openwebui_search(
     State(state): State<Arc<AppState>>,
     audit: Option<Extension<RequestAuditHandle>>,
-    ApiJson { value: request, .. }: ApiJson<OpenWebUiSearchRequest>,
-) -> Result<Json<Vec<OpenWebUiSearchResult>>, ApiError> {
-    request.validate()?;
+    ApiJson {
+        value: request,
+        raw,
+    }: ApiJson<OpenWebUiSearchRequest>,
+) -> Result<Response, ApiError> {
+    let audit = audit.as_deref();
+    let count = request.count();
 
-    if let Some(Extension(audit)) = audit {
-        let count = request.count();
+    if let Some(audit) = audit {
         audit.update(|record| {
             record.set_openwebui_search(SearchOperation::new(&request.query).with_count(count));
         });
     }
 
-    let count = request.count();
-    let search::QueuedSearch { results, .. } =
-        search::queued_search(&state, &request.query, None).await?;
-    let results = results
+    crate::content::capture(
+        state.content(),
+        audit,
+        "openwebui-search-request",
+        &raw.bytes,
+        Some("application/json"),
+    )
+    .await;
+
+    request.validate()?;
+
+    let search::QueuedSearch {
+        queue_ms,
+        upstream_ms,
+        results,
+    } = search::queued_search(&state, &request.query, None).await?;
+    let upstream_count = results.len();
+    let results: Vec<OpenWebUiSearchResult> = results
         .into_iter()
         .take(count)
         .map(OpenWebUiSearchResult::from)
         .collect();
+    let returned_count = results.len();
 
-    Ok(Json(results))
+    if let Some(audit) = audit {
+        let auth_mode = if state.kagi_client().privacy_pass().is_some() {
+            AuthMode::PrivacyPass
+        } else {
+            AuthMode::Session
+        };
+        let urls: Vec<String> = results.iter().map(|result| result.link.clone()).collect();
+        audit.update_search(move |search| {
+            *search = search
+                .clone()
+                .with_auth_mode(auth_mode)
+                .with_queue_ms(queue_ms)
+                .with_upstream_ms(upstream_ms)
+                .with_result_counts(upstream_count, returned_count)
+                .with_results(urls);
+        });
+    }
+
+    let encoded = serde_json::to_vec(&results).map_err(ApiError::internal)?;
+
+    if let Some(audit) = audit {
+        audit.update(|record| {
+            record.set_response_body_bytes(u64::try_from(encoded.len()).unwrap_or(u64::MAX));
+        });
+    }
+    crate::content::capture(
+        state.content(),
+        audit,
+        "openwebui-search-response",
+        &encoded,
+        Some("application/json"),
+    )
+    .await;
+
+    Ok(([(CONTENT_TYPE, "application/json")], Body::from(encoded)).into_response())
 }

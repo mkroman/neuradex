@@ -1,5 +1,6 @@
 //! The shared application state and the clients it owns.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use secrecy::SecretString;
@@ -8,6 +9,7 @@ use wreq::redirect::Policy;
 use wreq_util::Emulation;
 
 use crate::audit::AuditConfig;
+use crate::content::ContentPipeline;
 
 /// Errors that can occur while constructing the application state.
 #[derive(Debug, thiserror::Error)]
@@ -43,6 +45,8 @@ pub struct AppState {
     pub(crate) default_headers: HeaderMap,
     /// The audit sink, header policy, and body-capture limit for request events.
     pub(crate) audit: AuditConfig,
+    /// The optional content pipeline that stores request and response bodies.
+    pub(crate) content: Option<Arc<ContentPipeline>>,
 }
 
 impl AppState {
@@ -160,7 +164,24 @@ impl AppState {
             search_gate: tokio::sync::Semaphore::new(max_sessions),
             default_headers,
             audit,
+            content: None,
         })
+    }
+
+    /// Enables content storage for request and response bodies.
+    ///
+    /// Content is disabled by default, so existing callers keep the previous behavior until they
+    /// opt in with this builder.
+    #[must_use]
+    pub fn with_content(mut self, content: Arc<ContentPipeline>) -> Self {
+        self.content = Some(content);
+
+        self
+    }
+
+    /// Returns the content pipeline, when content storage is enabled.
+    pub(crate) fn content(&self) -> Option<&ContentPipeline> {
+        self.content.as_deref()
     }
 
     /// Returns the Kagi client used for searches.

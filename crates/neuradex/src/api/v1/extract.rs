@@ -156,9 +156,7 @@ pub(crate) struct ApiJson<T> {
     pub(crate) value: T,
     /// The raw request body bytes.
     ///
-    /// Content storage reads this in a follow-up; until then only the extractor itself and the
-    /// raw-body tests read it.
-    #[allow(dead_code)]
+    /// Content storage reads this so the stored body is exactly what the client sent.
     pub(crate) raw: CapturedBody,
 }
 

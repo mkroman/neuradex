@@ -108,8 +108,9 @@ pub(crate) async fn fetch(
     let redirects = params.redirects()?;
     let includes = params.includes(FETCH_INCLUDES)?;
     let requested = url.to_string();
+    let audit = audit.as_deref();
 
-    if let Some(Extension(audit)) = audit
+    if let Some(audit) = audit
         && let Ok(uri) = requested.parse::<axum::http::Uri>()
     {
         audit.update(|record| {
@@ -122,6 +123,7 @@ pub(crate) async fn fetch(
         redirect::fetch_with_redirects(&state.client, url, redirects, includes.redirects).await?;
 
     stream::ensure_text_content(fetched.info.content_type.as_deref())?;
+    let final_host = fetched.url.host_str().map(str::to_owned);
 
     let response_headers = includes
         .headers
@@ -136,6 +138,45 @@ pub(crate) async fn fetch(
     let body = String::from_utf8(read.body.expect("full mode collects the body"))
         .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
     let metrics = fetched.into_metrics(read.bytes_read, read.truncated, started);
+
+    if let Some(audit) = audit {
+        audit.update_fetch(|fetch| {
+            let mut updated = fetch
+                .clone()
+                .with_redirects(metrics.redirects_followed)
+                .with_upstream_status(metrics.status)
+                .with_bytes_read(metrics.bytes_read)
+                .with_ttfb_ms(metrics.ttfb_ms)
+                .with_total_ms(metrics.total_ms)
+                .with_truncated(metrics.truncated);
+
+            if let Some(host) = &final_host {
+                updated = updated.with_final_host(host.clone());
+            }
+            if let Some(content_type) = &metrics.content_type {
+                updated = updated.with_content_type(content_type.clone());
+            }
+            if let Some(content_length) = metrics.content_length {
+                updated = updated.with_content_length(content_length);
+            }
+
+            *fetch = updated;
+        });
+    }
+
+    crate::content::capture(
+        state.content(),
+        audit,
+        "fetch-response",
+        body.as_bytes(),
+        Some(
+            metrics
+                .content_type
+                .as_deref()
+                .unwrap_or("application/octet-stream"),
+        ),
+    )
+    .await;
 
     // Serialize into a pre-sized buffer: axum's `Json` starts from a small buffer and grows it
     // geometrically, re-copying a body of several megabytes as it does.
@@ -154,6 +195,12 @@ pub(crate) async fn fetch(
 
     let mut encoded = Vec::with_capacity(body_capacity);
     serde_json::to_writer(&mut encoded, &payload).map_err(ApiError::internal)?;
+
+    if let Some(audit) = audit {
+        audit.update(|record| {
+            record.set_response_body_bytes(u64::try_from(encoded.len()).unwrap_or(u64::MAX));
+        });
+    }
 
     Ok(([(CONTENT_TYPE, "application/json")], Body::from(encoded)).into_response())
 }

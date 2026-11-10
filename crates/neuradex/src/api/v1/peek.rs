@@ -7,8 +7,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::Extension;
-use axum::Json;
+use axum::body::Body;
 use axum::extract::State;
+use axum::http::header::CONTENT_TYPE;
+use axum::response::{IntoResponse, Response};
 use neuradex_audit::FetchOperation;
 use serde::Serialize;
 
@@ -85,13 +87,14 @@ pub(crate) async fn peek(
     State(state): State<Arc<AppState>>,
     audit: Option<Extension<RequestAuditHandle>>,
     ApiQuery(params): ApiQuery<PageParams>,
-) -> Result<Json<PeekResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     let url = params.url()?;
     let redirects = params.redirects()?;
     let includes = params.includes(PEEK_INCLUDES)?;
     let requested = url.to_string();
+    let audit = audit.as_deref();
 
-    if let Some(Extension(audit)) = audit
+    if let Some(audit) = audit
         && let Ok(uri) = requested.parse::<axum::http::Uri>()
     {
         audit.update(|record| {
@@ -104,13 +107,95 @@ pub(crate) async fn peek(
         redirect::fetch_with_redirects(&state.client, url, redirects, includes.redirects).await?;
 
     stream::ensure_text_content(fetched.info.content_type.as_deref())?;
+    let final_host = fetched.url.host_str().map(str::to_owned);
 
-    let read = stream::read_body(response, stream::BodyMode::Head, None).await?;
-    let metrics = fetched.into_metrics(read.bytes_read, read.truncated, started);
+    // Only capture the head bytes when content storage is enabled; otherwise the parser keeps
+    // its previous zero-copy behavior.
+    let read = stream::read_body(
+        response,
+        stream::BodyMode::Head {
+            capture: state.content().is_some(),
+        },
+        None,
+    )
+    .await?;
+    let stream::StreamedBody {
+        metadata,
+        body,
+        bytes_read,
+        truncated,
+    } = read;
+    let metrics = fetched.into_metrics(bytes_read, truncated, started);
+    let content_type = metrics.content_type.clone();
 
-    Ok(Json(PeekResponse {
+    if let Some(audit) = audit {
+        audit.update_fetch(|fetch| {
+            let mut updated = fetch
+                .clone()
+                .with_redirects(metrics.redirects_followed)
+                .with_upstream_status(metrics.status)
+                .with_bytes_read(metrics.bytes_read)
+                .with_ttfb_ms(metrics.ttfb_ms)
+                .with_total_ms(metrics.total_ms)
+                .with_truncated(metrics.truncated)
+                .with_stopped_at_head(true);
+
+            if let Some(host) = &final_host {
+                updated = updated.with_final_host(host.clone());
+            }
+            if let Some(content_type) = &metrics.content_type {
+                updated = updated.with_content_type(content_type.clone());
+            }
+            if let Some(content_length) = metrics.content_length {
+                updated = updated.with_content_length(content_length);
+            }
+
+            *fetch = updated;
+        });
+    }
+
+    let payload = PeekResponse {
         url: requested,
-        metadata: read.metadata,
+        metadata,
         metrics,
-    }))
+    };
+    let encoded = serde_json::to_vec(&payload).map_err(ApiError::internal)?;
+
+    if let Some(audit) = audit {
+        audit.update(|record| {
+            record.set_response_body_bytes(u64::try_from(encoded.len()).unwrap_or(u64::MAX));
+        });
+    }
+
+    match body {
+        // Store only the bytes peek actually read: the head, never the rest of the page.
+        Some(body) => {
+            crate::content::capture(
+                state.content(),
+                audit,
+                "peek-response",
+                &body,
+                Some(
+                    content_type
+                        .as_deref()
+                        .unwrap_or("application/octet-stream"),
+                ),
+            )
+            .await;
+        }
+        // A capture-disabled read has no body bytes; the event still gets the response JSON so
+        // the request has a content reference consistent with the other endpoints.
+        None => {
+            crate::content::capture(
+                state.content(),
+                audit,
+                "peek-response",
+                &encoded,
+                Some("application/json"),
+            )
+            .await;
+        }
+    }
+
+    Ok(([(CONTENT_TYPE, "application/json")], Body::from(encoded)).into_response())
 }
