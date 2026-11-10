@@ -4,7 +4,7 @@ title: Production event pipeline
 authors:
   - neuradex maintainers
 state: published
-discussion: TBD
+discussion: https://github.com/mkroman/neuradex/pull/93
 labels:
   - audit
   - analytics
