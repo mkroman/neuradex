@@ -76,14 +76,14 @@ runtime implementation yet.
 | **S3 API** | The object API used for B2. The service uses `aws-sdk-s3`, not `object_store`. |
 | **bucket** | A B2 bucket. `neuradex-content` holds packs, indexes, and archives; `neuradex-quickwit` is reserved for Quickwit remote storage. |
 | **prefix** | A key namespace inside a bucket, e.g. `packs/<operation>/2026-11-10T12/`. |
-| **Quickwit** | The full-text search engine for hot audit events. Version 0.8.2; 30-day retention. |
+| **Quickwit** | The full-text search engine for hot audit events. Version 0.9.3; 30-day retention. |
 | **index** | A Quickwit index with a fixed document mapping. `neuradex-events` is the local index. |
 | **split** | A Quickwit immutable segment. Splits are published by the indexer after `commit_timeout_secs`. |
 | **ClickHouse** | The columnar analytics database. Database `neuradex`, table `events`, daily materialized views. |
 | **MergeTree** | The ClickHouse table engine used for `events`: partitioned by date, ordered by `(timestamp, request_id)`, TTL 365 days. |
 | **materialized view** | A ClickHouse view that writes aggregates into a target table on insert. Two daily views exist: `events_daily` and `content_daily`. |
 | **hot / cold** | Hot = Quickwit, 30 days, low-latency search. Cold = B2 archive, 365 days, source of truth. ClickHouse is the 365-day analytical middle. |
-| **Jaeger** | Local OTLP trace UI and collector. Version 2.22.0 in the compose stack. |
+| **Jaeger** | Local OTLP trace UI and collector. Version 2.23.0 in the compose stack. |
 | **OTLP** | OpenTelemetry Protocol. The service exports traces/logs over OTLP/HTTP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. |
 | **Vector** | Optional local log shipper. It tails the audit JSONL and writes NDJSON to Quickwit and JSONEachRow to ClickHouse. |
 | **lifecycle rule** | A B2 bucket rule that expires objects by prefix/age. It is a safety net for the 365-day policy, not a per-request delete mechanism. |

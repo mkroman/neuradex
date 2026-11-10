@@ -16,7 +16,7 @@ flowchart TB
 
     subgraph Optional["Optional local bridge"]
         V["Vector (profile ingest)"]
-        QW["Quickwit 0.8.2<br/>30 days"]
+        QW["Quickwit 0.9.3<br/>30 days"]
         CH["ClickHouse<br/>365 days"]
     end
 

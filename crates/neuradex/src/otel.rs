@@ -243,15 +243,43 @@ fn resource() -> Resource {
         .with_detector(Box::new(TelemetryResourceDetector))
         .with_schema_url([], SCHEMA_URL);
 
-    if !resource_attribute_is_set(SERVICE_NAME) {
-        builder = builder.with_attribute(KeyValue::new(SERVICE_NAME, "neuradex"));
-    }
+    // `EnvResourceDetector` only reads `OTEL_RESOURCE_ATTRIBUTES`, so `OTEL_SERVICE_NAME`
+    // must be applied explicitly. The helper gives it the spec-mandated precedence over
+    // `service.name` in `OTEL_RESOURCE_ATTRIBUTES`, then falls back to the service default.
+    builder = builder.with_attribute(KeyValue::new(SERVICE_NAME, service_name()));
 
     if !resource_attribute_is_set(SERVICE_VERSION) {
         builder = builder.with_attribute(KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")));
     }
 
     builder.build()
+}
+
+/// Resolves the resource's `service.name` from the environment and the default.
+fn service_name() -> String {
+    service_name_from(
+        env_value(OTEL_SERVICE_NAME).as_deref(),
+        env::var(OTEL_RESOURCE_ATTRIBUTES).ok().as_deref(),
+    )
+}
+
+/// Applies OpenTelemetry's `service.name` precedence: `OTEL_SERVICE_NAME`, then the
+/// `service.name` entry in `OTEL_RESOURCE_ATTRIBUTES`, then `neuradex`.
+fn service_name_from(service_name: Option<&str>, attributes: Option<&str>) -> String {
+    service_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| attributes.and_then(|value| resource_attribute_value(value, SERVICE_NAME)))
+        .unwrap_or_else(|| "neuradex".to_owned())
+}
+
+/// Returns the value of `name` in a comma-separated `OTEL_RESOURCE_ATTRIBUTES` value.
+fn resource_attribute_value(attributes: &str, name: &str) -> Option<String> {
+    attributes.split(',').find_map(|entry| {
+        let (key, value) = entry.split_once('=')?;
+        (key.trim() == name).then(|| value.trim().to_owned())
+    })
 }
 
 /// Returns whether the SDK is disabled by `OTEL_SDK_DISABLED`.
@@ -306,6 +334,34 @@ fn contains_resource_attribute(attributes: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_name_uses_the_standard_precedence() {
+        assert_eq!(
+            service_name_from(Some("neuradex-api"), Some("service.name=other")),
+            "neuradex-api"
+        );
+        assert_eq!(
+            service_name_from(None, Some("service.name=other,deployment=test")),
+            "other"
+        );
+        assert_eq!(service_name_from(Some("  "), None), "neuradex");
+        assert_eq!(service_name_from(None, None), "neuradex");
+    }
+
+    #[test]
+    fn reads_resource_attribute_values() {
+        let attributes = "service.name=api, service.version=1.2.3";
+        assert_eq!(
+            resource_attribute_value(attributes, SERVICE_NAME).as_deref(),
+            Some("api")
+        );
+        assert_eq!(
+            resource_attribute_value(attributes, SERVICE_VERSION).as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(resource_attribute_value(attributes, "missing"), None);
+    }
 
     #[test]
     fn finds_resource_attribute_keys() {

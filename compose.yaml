@@ -17,6 +17,8 @@ services:
     command: ["run", "--config", "/quickwit/config/quickwit.yaml"]
     environment:
       QW_DISABLE_TELEMETRY: "true"
+      # The image has no curl; the CLI is the only health probe available.
+      QW_CLUSTER_ENDPOINT: http://127.0.0.1:7280
     ports:
       - "127.0.0.1:7280:7280"
       - "127.0.0.1:7281:7281"
@@ -24,7 +26,7 @@ services:
       - ./hack/quickwit/quickwit.yaml:/quickwit/config/quickwit.yaml:ro
       - quickwit_data:/quickwit/qwdata
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7280/health/livez >/dev/null || exit 1"]
+      test: ["CMD", "quickwit", "index", "list"]
       interval: 5s
       timeout: 5s
       retries: 30

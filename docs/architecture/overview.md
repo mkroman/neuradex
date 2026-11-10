@@ -32,7 +32,7 @@ flowchart TB
     end
 
     subgraph Stores["Storage and analytics"]
-        QW["Quickwit 0.8.2<br/>hot 30 days"]
+        QW["Quickwit 0.9.3<br/>hot 30 days"]
         CH["ClickHouse<br/>analytics 365 days"]
         B2["Backblaze B2 / S3<br/>content packs<br/>(when CONTENT_STORE=s3)"]
         Jaeger["Jaeger / OTLP<br/>traces"]
@@ -68,10 +68,10 @@ optional local Vector bridge, and an object-store archive is future work.
 | Pack builder | Seal packs on the 5 s flush or size/age policy; 96-byte frame headers, footer, 128-byte trailer; upload | Content availability | `crates/neuradex-content` + `crates/neuradex-packfile` |
 | Request index writer | Hourly `request_id → frame` object | Content lookup | future; not wired |
 | Event archive writer | Hourly NDJSON.zst object | Cold audit truth | future; not wired |
-| Quickwit | Full-text search over the last 30 days (via optional local Vector) | Hot search unavailable | Quickwit 0.8.2 |
-| ClickHouse | Typed analytics and daily aggregates over 365 days (via optional local Vector) | Dashboards/analytics unavailable | ClickHouse 25.8 |
+| Quickwit | Full-text search over the last 30 days (via optional local Vector) | Hot search unavailable | Quickwit 0.9.3 |
+| ClickHouse | Typed analytics and daily aggregates over 365 days (via optional local Vector) | Dashboards/analytics unavailable | ClickHouse 26.10 |
 | Local/S3 store | Packs and objects | Content/source-of-truth loss | Local directory or B2/S3 |
-| Jaeger | Local OTLP traces | Trace visibility only | Jaeger 2.22.0 |
+| Jaeger | Local OTLP traces | Trace visibility only | Jaeger 2.23.0 |
 | Vector (optional local) | Tail the audit JSONL; fan out to Quickwit/ClickHouse | Local ingest demo only | Vector 0.49 |
 
 ## Data planes
