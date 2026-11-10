@@ -114,7 +114,7 @@ Rules that follow from the split:
 | --- | --- | --- | --- | --- | --- | --- |
 | Local | `cargo run` on host | compose | compose | MinIO | compose | Development |
 | Staging | container/Helm | single node or managed | single node | real B2 bucket | OTLP collector | Internal real data |
-| Production | Helm, HPA | HA (TBD) | cluster (TBD) | real B2 bucket | TBD | Not in this PR |
+| Production | Helm, HPA | HA (TBD) | cluster (TBD) | real B2 bucket | TBD | Topology not implemented; the chart supports the audit/content settings |
 
 Local differences that must not leak into production assumptions:
 

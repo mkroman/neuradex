@@ -19,7 +19,7 @@ or table that does not exist yet, the document says so explicitly.
 | Area | Status | Source of truth |
 | --- | --- | --- |
 | HTTP API (`/v1/fetch`, `/v1/peek`, `/v1/search`, `/v1/openwebui_search`, `/healthz`) | implemented | `crates/neuradex` |
-| Local observability stack (Quickwit, MinIO, ClickHouse, Jaeger, optional Vector) | implemented by this PR | `compose.yaml`, `hack/` |
+| Local observability stack (Quickwit, MinIO, ClickHouse, Jaeger, optional Vector) | implemented | `compose.yaml`, `hack/` |
 | Audit event schema and header policy | implemented and wired into the service | [RFD 0001](rfd/0001-audit-event-model.md), [RFD 0005](rfd/0005-header-policy.md) |
 | Content-addressed packfiles | implemented; `CONTENT_STORE` defaults to `off` | [RFD 0002](rfd/0002-content-addressed-storage.md), [reference/packfile-format.md](reference/packfile-format.md) |
 | Hashing rules (BLAKE3 / SHA-256 / XXH3) | implemented in the audit/packfile crates | [RFD 0003](rfd/0003-hashing.md) |
@@ -185,8 +185,7 @@ spirit of Oxide RFD 1 and RFD 5. See [rfd/README.md](rfd/README.md) for the proc
 - `request_id`, `pack_id`, and hashes are opaque strings to consumers; do not parse them.
 - Examples use `example.com`, `neuradex`, and `neuradex-local-secret`. None are production
   credentials.
-- "Planned" means the design is agreed but the code is not in this branch. "Scaffolded" means
-  the crate exists with a doc comment and manifest only.
+- "Planned" means the design is agreed but the code is not implemented yet.
 
 ## Keeping docs accurate
 

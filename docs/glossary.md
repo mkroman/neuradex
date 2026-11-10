@@ -1,7 +1,7 @@
 # Glossary
 
 Terms are grouped by the plane they belong to. A term marked **planned** has a design but no
-runtime implementation in this branch.
+runtime implementation yet.
 
 ## Process
 
