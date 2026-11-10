@@ -2623,6 +2623,7 @@ dependencies = [
  "futures",
  "html5ever",
  "kagi",
+ "neuradex-audit",
  "neuradex-docs",
  "opentelemetry",
  "opentelemetry-appender-tracing",

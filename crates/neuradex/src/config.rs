@@ -1,6 +1,7 @@
 //! Service configuration read from the environment.
 
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 
 use secrecy::SecretString;
 
@@ -19,8 +20,20 @@ const KAGI_PRIVACY_PASS_ENV: &str = "KAGI_PRIVACY_PASS";
 /// The environment variable holding the Kagi session token.
 const KAGI_TOKEN_ENV: &str = "KAGI_SESSION_TOKEN";
 
+/// The environment variable holding the JSONL audit log path.
+const AUDIT_LOG_PATH_ENV: &str = "AUDIT_LOG_PATH";
+
+/// The environment variable holding the header HMAC key.
+const AUDIT_HMAC_KEY_ENV: &str = "AUDIT_HMAC_KEY";
+
+/// The environment variable holding the maximum captured body size.
+const CONTENT_MAX_BODY_BYTES_ENV: &str = "CONTENT_MAX_BODY_BYTES";
+
 /// The default listen address.
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:8080";
+
+/// The default maximum number of request body bytes captured for the content pipeline.
+pub(crate) const DEFAULT_CONTENT_MAX_BODY_BYTES: usize = 25 * 1024 * 1024;
 
 /// The largest accepted `KAGI_MAX_SESSIONS` value.
 ///
@@ -41,6 +54,12 @@ pub struct Config {
     pub max_sessions: usize,
     /// Whether searches authenticate with anonymous Privacy Pass tokens.
     pub privacy_pass: bool,
+    /// The JSONL audit log path; `None` writes audit events to stdout.
+    audit_log_path: Option<PathBuf>,
+    /// The optional HMAC key used to hash identifiers and IP addresses in audit headers.
+    audit_hmac_key: Option<SecretString>,
+    /// The maximum number of captured request body bytes.
+    pub content_max_body_bytes: usize,
 }
 
 impl Config {
@@ -58,6 +77,18 @@ impl Config {
     #[must_use]
     pub const fn kagi_token(&self) -> &SecretString {
         &self.kagi_token
+    }
+
+    /// Returns the JSONL audit log path, or `None` when audit events go to stdout.
+    #[must_use]
+    pub fn audit_log_path(&self) -> Option<&Path> {
+        self.audit_log_path.as_deref()
+    }
+
+    /// Returns the optional HMAC key for identifiers and IP addresses in audit headers.
+    #[must_use]
+    pub const fn audit_hmac_key(&self) -> Option<&SecretString> {
+        self.audit_hmac_key.as_ref()
     }
 
     /// Parses the configuration from `get`, a lookup of environment values by name.
@@ -96,12 +127,34 @@ impl Config {
             .map(SecretString::from)
             .ok_or(ConfigError::MissingToken)?;
 
+        let audit_log_path = get(AUDIT_LOG_PATH_ENV)
+            .map(|path| path.trim().to_owned())
+            .filter(|path| !path.is_empty() && path != "-")
+            .map(PathBuf::from);
+
+        let audit_hmac_key = get(AUDIT_HMAC_KEY_ENV)
+            .filter(|key| !key.is_empty())
+            .map(SecretString::from);
+
+        let content_max_body_bytes = match get(CONTENT_MAX_BODY_BYTES_ENV) {
+            Some(value) => value
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|bytes| *bytes > 0)
+                .ok_or_else(|| ConfigError::InvalidContentMaxBodyBytes(value.clone()))?,
+            None => DEFAULT_CONTENT_MAX_BODY_BYTES,
+        };
+
         Ok(Self {
             listen_addr,
             user_agent,
             kagi_token,
             max_sessions,
             privacy_pass,
+            audit_log_path,
+            audit_hmac_key,
+            content_max_body_bytes,
         })
     }
 }
@@ -121,6 +174,9 @@ pub enum ConfigError {
     /// The Privacy Pass setting is not a boolean.
     #[error("invalid KAGI_PRIVACY_PASS: expected a boolean, got {0:?}")]
     InvalidPrivacyPass(String),
+    /// The body-capture limit is not a positive integer.
+    #[error("invalid CONTENT_MAX_BODY_BYTES: expected a positive integer, got {0:?}")]
+    InvalidContentMaxBodyBytes(String),
     /// The Kagi session token is missing or empty.
     #[error("KAGI_SESSION_TOKEN is required")]
     MissingToken,
@@ -159,6 +215,12 @@ mod tests {
         assert_eq!(config.max_sessions, kagi::DEFAULT_MAX_SESSIONS);
         assert!(config.privacy_pass);
         assert_eq!(config.kagi_token().expose_secret(), "token");
+        assert_eq!(config.audit_log_path(), None);
+        assert!(config.audit_hmac_key().is_none());
+        assert_eq!(
+            config.content_max_body_bytes,
+            DEFAULT_CONTENT_MAX_BODY_BYTES
+        );
     }
 
     #[test]
@@ -169,6 +231,9 @@ mod tests {
             (KAGI_MAX_SESSIONS_ENV, " 4 "),
             (KAGI_PRIVACY_PASS_ENV, "off"),
             (KAGI_TOKEN_ENV, "secret"),
+            (AUDIT_LOG_PATH_ENV, " /var/log/neuradex/audit.jsonl "),
+            (AUDIT_HMAC_KEY_ENV, "hmac-secret"),
+            (CONTENT_MAX_BODY_BYTES_ENV, " 1048576 "),
         ])
         .expect("valid config");
 
@@ -177,6 +242,55 @@ mod tests {
         assert_eq!(config.max_sessions, 4);
         assert!(!config.privacy_pass);
         assert_eq!(config.kagi_token().expose_secret(), "secret");
+        assert_eq!(
+            config.audit_log_path(),
+            Some(Path::new("/var/log/neuradex/audit.jsonl"))
+        );
+        assert_eq!(
+            config.audit_hmac_key().map(ExposeSecret::expose_secret),
+            Some("hmac-secret")
+        );
+        assert_eq!(config.content_max_body_bytes, 1_048_576);
+    }
+
+    #[test]
+    fn treats_dash_and_empty_audit_paths_as_stdout() {
+        for path in ["-", "", " - "] {
+            let config = parse_env(&[(KAGI_TOKEN_ENV, "token"), (AUDIT_LOG_PATH_ENV, path)])
+                .expect("valid config");
+
+            assert_eq!(config.audit_log_path(), None, "{path:?}");
+        }
+    }
+
+    #[test]
+    fn treats_an_empty_hmac_key_as_disabled() {
+        let config = parse_env(&[(KAGI_TOKEN_ENV, "token"), (AUDIT_HMAC_KEY_ENV, "")])
+            .expect("valid config");
+
+        assert!(config.audit_hmac_key().is_none());
+    }
+
+    #[test]
+    fn rejects_invalid_body_capture_limits() {
+        for value in ["0", "-1", "many", ""] {
+            let error = parse_env(&[
+                (KAGI_TOKEN_ENV, "token"),
+                (CONTENT_MAX_BODY_BYTES_ENV, value),
+            ])
+            .expect_err("invalid body capture limit");
+
+            assert!(
+                matches!(error, ConfigError::InvalidContentMaxBodyBytes(_)),
+                "{value:?}"
+            );
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "invalid CONTENT_MAX_BODY_BYTES: expected a positive integer, got {value:?}"
+                )
+            );
+        }
     }
 
     #[test]

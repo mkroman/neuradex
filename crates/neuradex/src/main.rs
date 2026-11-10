@@ -4,15 +4,20 @@
 //! documentation page to disk. Arguments are parsed with clap, so unknown arguments and typo'd
 //! subcommands print the usage to stderr and exit with status 2 — they never start the server.
 
-use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
+use neuradex_audit::{AuditSink, HeaderPolicy, JsonlSink};
+use secrecy::ExposeSecret;
 
 #[cfg(feature = "docs")]
 mod export;
 mod otel;
 
+use neuradex::audit::AuditConfig;
 use neuradex::config::Config;
 use neuradex::http;
 use neuradex::state::AppState;
@@ -28,7 +33,7 @@ const LOG_FORMAT_ENV: &str = "LOG_FORMAT";
 #[command(
     name = "neuradex",
     version,
-    after_help = "Environment:\n  KAGI_SESSION_TOKEN   the Kagi session token; required to serve, never for export-docs\n  LISTEN_ADDR          the address to bind to (default: 127.0.0.1:8080)\n  USER_AGENT           the user agent sent with fetches (default: a current Firefox one)\n  KAGI_MAX_SESSIONS    simultaneous searches (default: 2, maximum: 64)\n  KAGI_PRIVACY_PASS    use anonymous Privacy Pass search tokens (default: true)\n  RUST_LOG             tracing filter (default: info)\n  LOG_FORMAT           text or json for the log line format (default: text)\n  OTEL_SERVICE_NAME    service.name resource attribute (default: neuradex)\n  OTEL_RESOURCE_ATTRIBUTES  extra resource attributes, e.g. deployment.environment.name=production\n  OTEL_EXPORTER_OTLP_ENDPOINT  OTLP/HTTP endpoint for traces and logs; unset disables export\n  OTEL_TRACES_EXPORTER / OTEL_LOGS_EXPORTER  set none to disable a signal\n  OTEL_SDK_DISABLED    set true to disable OpenTelemetry entirely\n"
+    after_help = "Environment:\n  KAGI_SESSION_TOKEN   the Kagi session token; required to serve, never for export-docs\n  LISTEN_ADDR          the address to bind to (default: 127.0.0.1:8080)\n  USER_AGENT           the user agent sent with fetches (default: a current Firefox one)\n  KAGI_MAX_SESSIONS    simultaneous searches (default: 2, maximum: 64)\n  KAGI_PRIVACY_PASS    use anonymous Privacy Pass search tokens (default: true)\n  RUST_LOG             tracing filter (default: info)\n  LOG_FORMAT           text or json for the log line format (default: text)\n  AUDIT_LOG_PATH       JSONL audit event log path (- or unset: stdout)\n  AUDIT_HMAC_KEY       key for hashing identifiers and IPs in audit headers\n  CONTENT_MAX_BODY_BYTES  maximum captured request body bytes (default: 26214400)\n  OTEL_SERVICE_NAME    service.name resource attribute (default: neuradex)\n  OTEL_RESOURCE_ATTRIBUTES  extra resource attributes, e.g. deployment.environment.name=production\n  OTEL_EXPORTER_OTLP_ENDPOINT  OTLP/HTTP endpoint for traces and logs; unset disables export\n  OTEL_TRACES_EXPORTER / OTEL_LOGS_EXPORTER  set none to disable a signal\n  OTEL_SDK_DISABLED    set true to disable OpenTelemetry entirely\n"
 )]
 struct Cli {
     /// The subcommand to run; without one, the HTTP service is served.
@@ -160,15 +165,45 @@ fn run_service() -> Result<(), Box<dyn std::error::Error>> {
 
     let runtime = tokio::runtime::Runtime::new()?;
 
-    let state = AppState::try_new(
+    let state = AppState::try_new_with_audit(
         &config.user_agent,
         config.kagi_token().clone(),
         REQUEST_TIMEOUT,
         config.max_sessions,
         config.privacy_pass,
+        audit_config(&config)?,
     )?;
 
     let served = runtime.block_on(http::serve(state, config.listen_addr));
 
     Ok(served?)
+}
+
+/// Builds the audit sink and header policy from the service configuration.
+///
+/// Audit events are always written as JSON Lines by the sink itself, independently of
+/// `RUST_LOG` and `LOG_FORMAT`; the local tracing formatter never filters them. Without
+/// `AUDIT_LOG_PATH` (or with `-`), events go to stdout.
+fn audit_config(config: &Config) -> Result<AuditConfig, Box<dyn std::error::Error>> {
+    let mut header_policy = HeaderPolicy::new();
+
+    if let Some(key) = config.audit_hmac_key() {
+        header_policy = header_policy.with_hmac_key(key.expose_secret().as_bytes().to_vec());
+    }
+
+    let sink: Arc<dyn AuditSink> = match config.audit_log_path() {
+        Some(path) => Arc::new(JsonlSink::new(open_audit_log(path)?)),
+        None => Arc::new(JsonlSink::new(std::io::stdout())),
+    };
+
+    Ok(AuditConfig::new(
+        sink,
+        header_policy,
+        config.content_max_body_bytes,
+    ))
+}
+
+/// Opens the audit log for appending, creating it when it does not exist.
+fn open_audit_log(path: &Path) -> std::io::Result<std::fs::File> {
+    OpenOptions::new().create(true).append(true).open(path)
 }

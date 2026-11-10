@@ -10,13 +10,16 @@
 
 use std::sync::Arc;
 
+use axum::Extension;
 use axum::Json;
 use axum::extract::State;
+use neuradex_audit::SearchOperation;
 use serde::{Deserialize, Serialize};
 
 use crate::api::v1::error::ApiError;
 use crate::api::v1::extract::ApiJson;
 use crate::api::v1::search;
+use crate::audit::RequestAuditHandle;
 use crate::state::AppState;
 
 /// The number of results returned when the request carries no `count`.
@@ -121,9 +124,17 @@ impl From<kagi::SearchResult> for OpenWebUiSearchResult {
 )]
 pub(crate) async fn openwebui_search(
     State(state): State<Arc<AppState>>,
-    ApiJson(request): ApiJson<OpenWebUiSearchRequest>,
+    audit: Option<Extension<RequestAuditHandle>>,
+    ApiJson { value: request, .. }: ApiJson<OpenWebUiSearchRequest>,
 ) -> Result<Json<Vec<OpenWebUiSearchResult>>, ApiError> {
     request.validate()?;
+
+    if let Some(Extension(audit)) = audit {
+        let count = request.count();
+        audit.update(|record| {
+            record.set_openwebui_search(SearchOperation::new(&request.query).with_count(count));
+        });
+    }
 
     let count = request.count();
     let search::QueuedSearch { results, .. } =

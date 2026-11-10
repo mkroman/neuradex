@@ -3,13 +3,16 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axum::Extension;
 use axum::Json;
 use axum::extract::State;
+use neuradex_audit::SearchOperation;
 use serde::Serialize;
 use tracing::Instrument;
 
 use crate::api::v1::error::ApiError;
 use crate::api::v1::extract::{ApiJson, SearchRequest};
+use crate::audit::RequestAuditHandle;
 use crate::metrics::{SearchMetrics, duration_ms};
 use crate::state::AppState;
 
@@ -100,9 +103,20 @@ impl From<kagi::SearchResult> for SearchResult {
 )]
 pub(crate) async fn search(
     State(state): State<Arc<AppState>>,
-    ApiJson(request): ApiJson<SearchRequest>,
+    audit: Option<Extension<RequestAuditHandle>>,
+    ApiJson { value: request, .. }: ApiJson<SearchRequest>,
 ) -> Result<Json<SearchResponse>, ApiError> {
     request.validate()?;
+
+    if let Some(Extension(audit)) = audit {
+        let mut operation = SearchOperation::new(&request.query);
+        if let Some(limit) = request.limit {
+            operation = operation.with_limit(limit);
+        }
+        audit.update(|record| {
+            record.set_search(operation);
+        });
+    }
 
     let started = Instant::now();
     let timeout = request.timeout.map(Duration::from_secs);

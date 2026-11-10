@@ -4,21 +4,25 @@
 //! the request (queries through `ApiQuery`, a thin extractor over
 //! [`axum_extra::extract::Query`], which uses `serde_html_form`, so the `include` parameter may
 //! be repeated — `include=redirects&include=headers` — or comma-separated; JSON bodies through
-//! `ApiJson`, a thin extractor over [`axum::extract::Json`]), document the OpenAPI query
-//! parameters or request body, and expose the validation each endpoint applies to its own
-//! request.
+//! `ApiJson`, which captures the raw bytes and parses them with the same JSON content type and
+//! rejection contract as [`axum::extract::Json`]), document the OpenAPI query parameters or
+//! request body, and expose the validation each endpoint applies to its own request.
 
-use axum::Json;
-use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, FromRequestParts, Request};
+use axum::http::HeaderMap;
+use axum::http::header::CONTENT_TYPE;
 use axum::http::request::Parts;
 use axum_extra::extract::Query;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use url::Url;
 
+use crate::api::v1::body_capture::{
+    BodyCaptureLimit, CapturedBody, JSON_MAX_BODY_BYTES, capture_body,
+};
 use crate::api::v1::error::ApiError;
 use crate::api::v1::{MAX_REDIRECTS, MAX_SEARCH_TIMEOUT_SECS};
+use crate::audit::RequestAuditHandle;
 
 /// The default number of redirects to follow when none is requested.
 pub const DEFAULT_REDIRECTS: u32 = MAX_REDIRECTS;
@@ -136,14 +140,27 @@ where
 
 /// Extracts the JSON body of an endpoint into its wire type.
 ///
-/// The body-side counterpart of [`ApiQuery`]: a thin wrapper over [`axum::extract::Json`] whose
+/// The body-side counterpart of [`ApiQuery`]: a thin wrapper over the JSON body contract whose
 /// rejection is [`ApiError`], so a malformed body — a missing or non-parseable field, an
-/// unknown field, or a missing `Content-Type: application/json` header — renders the JSON
-/// error envelope instead of axum's plain-text rejection body. That rejection shape is all it
-/// guarantees: endpoint-specific validation is applied by the handlers on the extracted value,
-/// not here.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct ApiJson<T>(pub(crate) T);
+/// unknown field, an oversized body, or a missing `Content-Type: application/json` header —
+/// renders the JSON error envelope instead of axum's plain-text rejection body. That rejection
+/// shape is all it guarantees: endpoint-specific validation is applied by the handlers on the
+/// extracted value, not here.
+///
+/// The raw body is captured alongside the parsed value, up to the configured content limit
+/// clamped to [`JSON_MAX_BODY_BYTES`], so the audit and content paths can refer to the exact
+/// bytes the client sent without a second extraction.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ApiJson<T> {
+    /// The deserialized request value.
+    pub(crate) value: T,
+    /// The raw request body bytes.
+    ///
+    /// Content storage reads this in a follow-up; until then only the extractor itself and the
+    /// raw-body tests read it.
+    #[allow(dead_code)]
+    pub(crate) raw: CapturedBody,
+}
 
 impl<S, T> FromRequest<S> for ApiJson<T>
 where
@@ -152,21 +169,59 @@ where
 {
     type Rejection = ApiError;
 
-    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        let Json(value) =
-            Json::<T>::from_request(req, state)
-                .await
-                .map_err(|error| match error {
-                    JsonRejection::MissingJsonContentType(_) => ApiError::unsupported_media_type(
-                        "expected the request body to be JSON (Content-Type: application/json)",
-                    ),
-                    rejection => {
-                        ApiError::invalid_param(format!("invalid request body: {rejection}"))
-                    }
-                })?;
+    async fn from_request(req: Request, _state: &S) -> Result<Self, Self::Rejection> {
+        let (parts, body) = req.into_parts();
 
-        Ok(Self(value))
+        if !json_content_type(&parts.headers) {
+            return Err(ApiError::unsupported_media_type(
+                "expected the request body to be JSON (Content-Type: application/json)",
+            ));
+        }
+
+        let limit = parts
+            .extensions
+            .get::<BodyCaptureLimit>()
+            .map_or(JSON_MAX_BODY_BYTES, |limit| {
+                limit.0.min(JSON_MAX_BODY_BYTES)
+            });
+        let raw = capture_body(body, limit)
+            .await
+            .map_err(|error| ApiError::invalid_param(format!("invalid request body: {error}")))?;
+
+        if let Some(handle) = parts.extensions.get::<RequestAuditHandle>() {
+            handle.update(|record| {
+                record.set_request_body_bytes(u64::try_from(raw.len()).unwrap_or(u64::MAX));
+            });
+        }
+
+        if raw.truncated() {
+            return Err(ApiError::invalid_param(format!(
+                "invalid request body: the body exceeds the {limit} byte limit"
+            )));
+        }
+
+        let value = serde_json::from_slice(&raw.bytes)
+            .map_err(|error| ApiError::invalid_param(format!("invalid request body: {error}")))?;
+
+        Ok(Self { value, raw })
     }
+}
+
+/// Whether `headers` declare a JSON request body, matching axum's `Json` extractor.
+fn json_content_type(headers: &HeaderMap) -> bool {
+    let Some(value) = headers.get(CONTENT_TYPE) else {
+        return false;
+    };
+    let Ok(value) = value.to_str() else {
+        return false;
+    };
+    let media_type = value.split(';').next().unwrap_or_default().trim();
+    let Some((kind, subtype)) = media_type.split_once('/') else {
+        return false;
+    };
+
+    kind.eq_ignore_ascii_case("application")
+        && (subtype.eq_ignore_ascii_case("json") || subtype.to_ascii_lowercase().ends_with("+json"))
 }
 
 /// The optional response sections selected by the `include` parameter.
@@ -296,7 +351,9 @@ impl SearchRequest {
 mod tests {
     use std::assert_matches;
 
-    use axum::http::Uri;
+    use axum::Json;
+    use axum::body::Body;
+    use axum::http::{Request, Uri};
     use axum_extra::extract::{Query, QueryRejection};
 
     use super::*;
@@ -493,5 +550,88 @@ mod tests {
             Json::<SearchRequest>::from_bytes(br#"{"query":""}"#).expect("valid body");
 
         assert_matches!(request.validate(), Err(ApiError::InvalidParam(_)));
+    }
+
+    /// Builds a request for the real `ApiJson` extractor.
+    fn json_request(content_type: Option<&str>, body: &'static str) -> Request<Body> {
+        let mut builder = Request::builder().method("POST").uri("/v1/search");
+
+        if let Some(content_type) = content_type {
+            builder = builder.header("content-type", content_type);
+        }
+
+        builder
+            .body(Body::from(body))
+            .expect("the test request is valid")
+    }
+
+    #[tokio::test]
+    async fn captures_the_raw_json_body_through_the_real_extractor() {
+        let body = r#" { "query" : "rust programming", "limit": 10 } "#;
+        let request = json_request(Some("application/json; charset=utf-8"), body);
+
+        let ApiJson { value, raw } = ApiJson::<SearchRequest>::from_request(request, &())
+            .await
+            .expect("valid body");
+
+        assert_eq!(value.query, "rust programming");
+        assert_eq!(value.limit, Some(10));
+        assert_eq!(&raw.bytes[..], body.as_bytes());
+        assert_eq!(raw.len(), body.len());
+        assert!(!raw.truncated());
+    }
+
+    #[tokio::test]
+    async fn accepts_json_suffixed_media_types_through_the_real_extractor() {
+        let request = json_request(Some("application/cloudevents+json"), r#"{"query":"rust"}"#);
+
+        let ApiJson { value, .. } = ApiJson::<SearchRequest>::from_request(request, &())
+            .await
+            .expect("valid body");
+
+        assert_eq!(value.query, "rust");
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_and_non_json_content_types_through_the_real_extractor() {
+        for content_type in [None, Some("text/plain"), Some("text/json")] {
+            let request = json_request(content_type, r#"{"query":"rust"}"#);
+            let error = ApiJson::<SearchRequest>::from_request(request, &())
+                .await
+                .expect_err("the content type is rejected");
+
+            assert_matches!(error, ApiError::UnsupportedMediaType(message)
+                if message == "expected the request body to be JSON (Content-Type: application/json)");
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_malformed_bodies_through_the_real_extractor() {
+        for body in [
+            "not json",
+            r#"{"query":"rust","nope":1}"#,
+            r#"{"limit":10}"#,
+        ] {
+            let request = json_request(Some("application/json"), body);
+            let error = ApiJson::<SearchRequest>::from_request(request, &())
+                .await
+                .expect_err("the body is rejected");
+
+            assert_matches!(error, ApiError::InvalidParam(message)
+                if message.starts_with("invalid request body: "));
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_bodies_above_the_capture_limit() {
+        let mut request = json_request(Some("application/json"), r#"{"query":"rust"}"#);
+        request.extensions_mut().insert(BodyCaptureLimit(8));
+
+        let error = ApiJson::<SearchRequest>::from_request(request, &())
+            .await
+            .expect_err("the body exceeds the limit");
+
+        assert_matches!(error, ApiError::InvalidParam(message)
+            if message.contains("exceeds the 8 byte limit"));
     }
 }
