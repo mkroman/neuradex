@@ -2645,6 +2645,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "neuradex-admin"
+version = "0.1.0"
+dependencies = [
+ "aws-sdk-s3",
+ "clap",
+ "neuradex-content",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "neuradex-audit"
 version = "0.1.0"
 dependencies = [

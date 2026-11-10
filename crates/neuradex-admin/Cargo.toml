@@ -1,0 +1,19 @@
+[package]
+name = "neuradex-admin"
+version.workspace = true
+edition.workspace = true
+description = "Administrative commands for the neuradex content and audit planes."
+license.workspace = true
+publish = false
+
+[dependencies]
+aws-sdk-s3.workspace = true
+clap.workspace = true
+neuradex-content = { path = "../neuradex-content", features = ["s3"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

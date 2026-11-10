@@ -18,7 +18,7 @@ flowchart TB
         T1["Test (default)<br/>cargo test --workspace"]
         T2["Test (no default features)<br/>cargo test -p neuradex --no-default-features"]
         R["Rustdoc<br/>cargo doc --all-features"]
-        S["Shellcheck + lifecycle<br/>hack/*.sh, policy test"]
+        S["Shellcheck<br/>hack/*.sh"]
         OK["ci-success"]
         L --> OK
         T1 --> OK
@@ -43,7 +43,7 @@ flowchart TB
 ```
 
 `ci-success` is the only required check for branch protection. It fails if any of lint, either
-test matrix job, rustdoc, or the shellcheck/lifecycle job fails.
+test matrix job, rustdoc, or shellcheck fails.
 
 ## Jobs
 
@@ -54,7 +54,7 @@ test matrix job, rustdoc, or the shellcheck/lifecycle job fails.
 | `continuous-integration.yaml` | `Test (default)` | PR + main | `cargo test --workspace` | via `ci-success` |
 | `continuous-integration.yaml` | `Test (no default features)` | PR + main | `cargo test -p neuradex --no-default-features` | via `ci-success` |
 | `continuous-integration.yaml` | `Rustdoc` | PR + main | `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --all-features` | via `ci-success` |
-| `continuous-integration.yaml` | `Shellcheck` | PR + main | `shellcheck hack/*.sh` and `hack/test-content-lifecycle.sh` | via `ci-success` |
+| `continuous-integration.yaml` | `Shellcheck` | PR + main | `shellcheck hack/*.sh` | via `ci-success` |
 | `continuous-integration.yaml` | `CI Success` | PR + main | Aggregates the above | **yes** |
 | `deployment-test.yaml` | `Chart Lint` | PR + main | `helm lint`/`helm template` variants | yes (own check) |
 | `deployment-test.yaml` | `Kind Deployment` | PR + main | Build image, kind cluster, chart install, smoke script | yes (own check) |

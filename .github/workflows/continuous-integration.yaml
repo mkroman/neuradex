@@ -71,8 +71,6 @@ jobs:
         run: ./hack/install-tools.sh "$HOME/.local/bin" shellcheck
       - name: Lint scripts
         run: shellcheck hack/*.sh
-      - name: Test lifecycle policy
-        run: ./hack/test-content-lifecycle.sh
 
   # Stable check for branch protection: job names change with the matrix and the
   # reusable-workflow split, this one does not.

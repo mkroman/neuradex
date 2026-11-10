@@ -109,8 +109,8 @@ Read rules:
 
 `CONTENT_RETENTION_DAYS` (default 365) is stored in the content policy and logged at startup, but
 the service does not delete objects or configure a bucket lifecycle. Retention enforcement is an
-external B2/S3 lifecycle concern; [`hack/content-lifecycle.sh`](../../hack/content-lifecycle.sh)
-generates and applies the B2 policy. There is no per-request deletion; packs are immutable.
+external B2/S3 lifecycle concern; `neuradex-admin content-lifecycle` generates and applies the
+B2 policy. There is no per-request deletion; packs are immutable.
 
 ## Failure and degradation
 
