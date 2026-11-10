@@ -287,10 +287,12 @@ pub(crate) async fn queued_search(
         }
     }
 
-    let authentication = if state.kagi_client().privacy_pass().is_some() {
-        "privacy_pass"
-    } else {
-        "session"
+    // The configured mode, adjusted for the client's live state: a degraded Privacy Pass
+    // client serves session-authenticated searches until its degradation window passes.
+    let authentication = match state.kagi_client().privacy_pass() {
+        Some(privacy_pass) if privacy_pass.degraded() => "session_fallback",
+        Some(_) => "privacy_pass",
+        None => "session",
     };
     // Named audit event: one record per search, independent of trace sampling.
     span.in_scope(|| {

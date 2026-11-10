@@ -255,6 +255,7 @@ fn http_benchmarks(c: &mut Criterion) {
         Duration::from_secs(30),
         1,
         false,
+        false,
     )
     .expect("build the application state");
     let router = v1::router(state);

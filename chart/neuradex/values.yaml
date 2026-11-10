@@ -120,6 +120,12 @@ userAgent: ""
 ## session-cookie search authentication; the session token is required for issuance either way.
 privacyPass: true
 
+## @param privacyPassFallback Retry a failed Privacy Pass search with session-cookie
+## authentication. The retried searches are linked to the account, so this trades anonymity for
+## availability: a 429 quota rejection stays degraded until the next month, a 403 subscription
+## rejection until the pod restarts.
+privacyPassFallback: false
+
 ## @param kagiMaxSessions Maximum number of simultaneous searches (1 through 64). Bounds
 ## concurrency in both authentication modes (Privacy Pass and session cookie); additional requests
 ## queue until a slot frees up.

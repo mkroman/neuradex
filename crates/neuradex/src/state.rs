@@ -64,6 +64,7 @@ impl AppState {
         timeout: Duration,
         max_sessions: usize,
         privacy_pass: bool,
+        privacy_pass_fallback: bool,
     ) -> Result<Self, BuildError> {
         Self::try_new_with_audit(
             user_agent,
@@ -71,6 +72,7 @@ impl AppState {
             timeout,
             max_sessions,
             privacy_pass,
+            privacy_pass_fallback,
             None,
             AuditConfig::default(),
         )
@@ -78,6 +80,8 @@ impl AppState {
 
     /// Constructs the application state with an explicit audit configuration.
     ///
+    /// `privacy_pass_fallback` retries a search with session authentication when Privacy Pass
+    /// fails; it links the retried searches to the account, so it is off by default.
     /// `privacy_pass_state` is the optional file used to persist unspent Privacy Pass tokens
     /// across restarts; `None` keeps them in memory only.
     ///
@@ -86,12 +90,17 @@ impl AppState {
     /// # Errors
     ///
     /// Returns an error if the HTTP or Kagi clients fail to build.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the explicit constructor mirrors the configuration fields its callers pass"
+    )]
     pub fn try_new_with_audit(
         user_agent: &str,
         kagi_token: SecretString,
         timeout: Duration,
         max_sessions: usize,
         privacy_pass: bool,
+        privacy_pass_fallback: bool,
         privacy_pass_state: Option<&Path>,
         audit: AuditConfig,
     ) -> Result<Self, BuildError> {
@@ -102,6 +111,7 @@ impl AppState {
                 max_sessions,
                 privacy_pass: privacy_pass.then(|| kagi::PrivacyPassOptions {
                     state_path: privacy_pass_state.map(Path::to_path_buf),
+                    fallback: privacy_pass_fallback,
                     ..kagi::PrivacyPassOptions::default()
                 }),
                 // Keep the Kagi client on the same timeout as the page-fetch client.
@@ -279,6 +289,7 @@ mod tests {
             Duration::from_secs(30),
             2,
             false,
+            false,
         )
         .expect("valid state");
         assert!(session.kagi_client().privacy_pass().is_none());
@@ -289,9 +300,34 @@ mod tests {
             Duration::from_secs(30),
             2,
             true,
+            false,
         )
         .expect("valid state");
-        assert!(privacy_pass.kagi_client().privacy_pass().is_some());
+        let privacy_pass = privacy_pass
+            .kagi_client()
+            .privacy_pass()
+            .expect("privacy pass is enabled");
+        assert!(
+            !privacy_pass.fallback_enabled(),
+            "the fallback is off unless configured"
+        );
+
+        let fallback = AppState::try_new(
+            "test-agent",
+            SecretString::from("test-token"),
+            Duration::from_secs(30),
+            2,
+            true,
+            true,
+        )
+        .expect("valid state");
+        assert!(
+            fallback
+                .kagi_client()
+                .privacy_pass()
+                .expect("privacy pass is enabled")
+                .fallback_enabled()
+        );
     }
 
     #[test]
@@ -319,6 +355,7 @@ mod tests {
             SecretString::from("test-token"),
             Duration::from_secs(30),
             2,
+            false,
             false,
         )
         .expect("valid state");

@@ -25,6 +25,9 @@ const KAGI_PRIVACY_PASS_ENV: &str = "KAGI_PRIVACY_PASS";
 /// The environment variable overriding the persisted Privacy Pass token state file.
 const KAGI_PRIVACY_PASS_STATE_ENV: &str = "KAGI_PRIVACY_PASS_STATE";
 
+/// The environment variable enabling the session-authentication fallback for Privacy Pass.
+const KAGI_PRIVACY_PASS_FALLBACK_ENV: &str = "KAGI_PRIVACY_PASS_FALLBACK";
+
 /// The XDG state directory environment variable.
 const XDG_STATE_HOME_ENV: &str = "XDG_STATE_HOME";
 
@@ -215,6 +218,11 @@ pub struct Config {
     pub privacy_pass: bool,
     /// The optional file holding unspent Privacy Pass tokens across restarts.
     privacy_pass_state: Option<PathBuf>,
+    /// Whether searches fall back to session authentication when Privacy Pass fails.
+    ///
+    /// Only effective with `privacy_pass`; the fallback links the retried searches to the
+    /// account, so it is off by default.
+    pub privacy_pass_fallback: bool,
     /// The JSONL audit log path; `None` writes audit events to stdout.
     audit_log_path: Option<PathBuf>,
     /// The optional HMAC key used to hash identifiers and IP addresses in audit headers.
@@ -294,6 +302,12 @@ impl Config {
 
         let privacy_pass_state = parse_privacy_pass_state(&get);
 
+        let privacy_pass_fallback = match get(KAGI_PRIVACY_PASS_FALLBACK_ENV) {
+            Some(value) => parse_bool(&value)
+                .ok_or_else(|| ConfigError::InvalidPrivacyPassFallback(value.clone()))?,
+            None => false,
+        };
+
         let kagi_token = get(KAGI_TOKEN_ENV)
             .filter(|token| !token.is_empty())
             .map(SecretString::from)
@@ -317,6 +331,7 @@ impl Config {
             max_sessions,
             privacy_pass,
             privacy_pass_state,
+            privacy_pass_fallback,
             audit_log_path,
             audit_hmac_key,
             content,
@@ -540,6 +555,9 @@ pub enum ConfigError {
     /// The Privacy Pass setting is not a boolean.
     #[error("invalid KAGI_PRIVACY_PASS: expected a boolean, got {0:?}")]
     InvalidPrivacyPass(String),
+    /// The Privacy Pass fallback setting is not a boolean.
+    #[error("invalid KAGI_PRIVACY_PASS_FALLBACK: expected a boolean, got {0:?}")]
+    InvalidPrivacyPassFallback(String),
     /// The content store selection is not one of the accepted names.
     #[error("invalid CONTENT_STORE: expected off, local, or s3, got {0:?}")]
     InvalidContentStore(String),
@@ -617,6 +635,7 @@ mod tests {
         assert_eq!(config.user_agent, kagi::USER_AGENT);
         assert_eq!(config.max_sessions, kagi::DEFAULT_MAX_SESSIONS);
         assert!(config.privacy_pass);
+        assert!(!config.privacy_pass_fallback);
         assert_eq!(config.kagi_token().expose_secret(), "token");
         assert_eq!(config.privacy_pass_state(), None);
         assert_eq!(config.audit_log_path(), None);
@@ -652,6 +671,7 @@ mod tests {
             (USER_AGENT_ENV, "custom-agent/1.0"),
             (KAGI_MAX_SESSIONS_ENV, " 4 "),
             (KAGI_PRIVACY_PASS_ENV, "off"),
+            (KAGI_PRIVACY_PASS_FALLBACK_ENV, "on"),
             (KAGI_TOKEN_ENV, "secret"),
             (AUDIT_LOG_PATH_ENV, " /var/log/neuradex/audit.jsonl "),
             (AUDIT_HMAC_KEY_ENV, "hmac-secret"),
@@ -669,6 +689,7 @@ mod tests {
         assert_eq!(config.user_agent, "custom-agent/1.0");
         assert_eq!(config.max_sessions, 4);
         assert!(!config.privacy_pass);
+        assert!(config.privacy_pass_fallback);
         assert_eq!(config.kagi_token().expose_secret(), "secret");
         assert_eq!(
             config.audit_log_path(),
@@ -1018,6 +1039,18 @@ mod tests {
         assert_eq!(
             error.to_string(),
             r#"invalid KAGI_PRIVACY_PASS: expected a boolean, got "maybe""#
+        );
+
+        let error = parse_env(&[
+            (KAGI_PRIVACY_PASS_FALLBACK_ENV, "maybe"),
+            (KAGI_TOKEN_ENV, "token"),
+        ])
+        .expect_err("invalid boolean");
+
+        assert!(matches!(error, ConfigError::InvalidPrivacyPassFallback(_)));
+        assert_eq!(
+            error.to_string(),
+            r#"invalid KAGI_PRIVACY_PASS_FALLBACK: expected a boolean, got "maybe""#
         );
     }
 
