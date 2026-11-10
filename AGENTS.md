@@ -60,8 +60,8 @@ Also in CI: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-fe
 ## Git workflow
 
 - Don't create branches, open PRs, push, or commit unless explicitly told to. Leave changes in the current checkout. Finishing verification is not a signal to ship.
-- Use the GitHub MCP tools for pull-request operations, not the `gh` CLI: `github.create_pull_request` to open a PR, `github.pull_request_read` (`method: "get"`, `"get_status"`, `"get_check_runs"`) to inspect it and its checks, `github.update_pull_request` to change it, and `github.list_pull_requests`/`github.search_pull_requests` to find PRs.
-- To wait for PR checks, re-read them with `github.pull_request_read` (`method: "get_check_runs"` and/or `"get_status"`) after doing other work; do not use `sleep`, polling loops, or `gh ... --wait`.
+- Use the GitHub MCP tools for pull-request operations: `github.create_pull_request` to open a PR, `github.pull_request_read` (`method: "get"`, `"get_status"`, `"get_check_runs"`) to inspect it and its checks, `github.update_pull_request` to change it, and `github.list_pull_requests`/`github.search_pull_requests` to find PRs.
+- To wait for PR checks, use `gh pr checks <number> --watch` (or `gh pr checks <number> --watch --fail-fast`). The GitHub MCP has no blocking wait primitive, and agents should not hand-roll polling loops with `sleep`.
 
 ## OpenCode tooling
 
