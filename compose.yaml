@@ -60,7 +60,12 @@ services:
     restart: "no"
 
   minio:
-    image: quay.io/minio/minio:latest
+    # Chainguard's public image tracks upstream MinIO and avoids the anonymous quay.io 401.
+    # The server image includes `mc`, so the healthcheck does not need curl.
+    image: cgr.dev/chainguard/minio:latest
+    # The Chainguard image runs as nonroot, but Docker creates named volumes root-owned.
+    # This is a local-only stack with public credentials; run MinIO as root for the volume.
+    user: "0"
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: neuradex
@@ -71,34 +76,27 @@ services:
     volumes:
       - minio_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "MC_HOST_local=http://127.0.0.1:9000 mc ready local >/dev/null 2>&1 || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 30
       start_period: 10s
     restart: unless-stopped
 
-  # One-shot bucket creation. `--ignore-existing` makes it idempotent. The dedicated mc image
-  # matches the zeta compose stack; if Quay requires a login for it, authenticate or mirror the
-  # image (see docs/reference/compose-services.md).
+  # One-shot bucket creation. `--ignore-existing` makes it idempotent. The client image is
+  # distroless: use the default `mc` entrypoint and the MC_HOST_* alias instead of a shell.
   minio-init:
-    image: quay.io/minio/mc:latest
+    image: cgr.dev/chainguard/minio-client:latest
     depends_on:
       minio:
         condition: service_healthy
-    entrypoint: ["/bin/sh", "-c"]
     environment:
-      MINIO_ROOT_USER: neuradex
-      MINIO_ROOT_PASSWORD: neuradex-local-secret
+      MC_HOST_local: http://neuradex:neuradex-local-secret@minio:9000
     command:
-      - |
-        set -eu
-        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" >/dev/null 2>&1; do
-          echo "waiting for minio"
-          sleep 1
-        done
-        mc mb --ignore-existing local/neuradex-content
-        mc mb --ignore-existing local/neuradex-quickwit
+      - mb
+      - --ignore-existing
+      - local/neuradex-content
+      - local/neuradex-quickwit
     restart: "no"
 
   clickhouse:

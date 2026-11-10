@@ -79,8 +79,8 @@ Adopt **Option A**.
 | --- | --- | --- | --- | --- |
 | `quickwit` | `quickwit/quickwit:0.8.2` | 7280 REST/UI, 7281 gRPC | Hot index and search | default |
 | `quickwit-init` | `quickwit/quickwit:0.8.2` | none | Create `neuradex-events` idempotently | default |
-| `minio` | `quay.io/minio/minio:latest` | 9000 API, 9001 console | S3-compatible object store | default |
-| `minio-init` | `quay.io/minio/mc:latest` | none | Create buckets | default |
+| `minio` | `cgr.dev/chainguard/minio:latest` | 9000 API, 9001 console | S3-compatible object store | default |
+| `minio-init` | `cgr.dev/chainguard/minio-client:latest` | none | Create buckets | default |
 | `clickhouse` | `clickhouse/clickhouse-server:25.8` | 8123 HTTP, 19000 native | Analytics | default |
 | `jaeger` | `jaegertracing/jaeger:2.22.0@sha256:836b…` | 4317 gRPC, 4318 HTTP, 16686 UI | OTLP traces | default |
 | `vector` | `timberio/vector:0.49.0-debian` | none | Spool → Quickwit/ClickHouse | `ingest` |
@@ -92,9 +92,11 @@ Details:
   `hack/quickwit/neuradex-events.yaml`.
 - `quickwit-init` waits for Quickwit, checks whether the index exists, and creates it only if it
   does not. It is safe to run repeatedly.
-- MinIO uses `quay.io` images (Docker Hub is unreachable from some environments) and creates
-  `neuradex-content` and `neuradex-quickwit` with `mc mb --ignore-existing`. The bucket init
-  uses the dedicated `quay.io/minio/mc:latest` image, as in the zeta compose stack.
+- MinIO uses the public Chainguard images (`cgr.dev/chainguard/minio` and `minio-client`)
+  after anonymous `quay.io` pulls started returning 401. The server image includes `mc` for the
+  healthcheck; the distroless client image creates `neuradex-content` and `neuradex-quickwit`
+  with `mc mb --ignore-existing`. The server runs as root locally because Docker named volumes
+  are root-owned; this stack is local-only.
 - ClickHouse uses `hack/clickhouse/init.sql`, creates database `neuradex` and table `events`
   plus daily materialized views. The native port is published as **19000** to avoid MinIO's
   9000.
@@ -113,7 +115,7 @@ Details:
 | Quickwit | 0.8.2 | Fixed by the storage decision; index config `version: 0.8` is supported by 0.8.2 |
 | ClickHouse | 25.8 | Current LTS line; supports `JSONEachRow`, `SimpleAggregateFunction`, and `ttl_only_drop_parts` |
 | Jaeger | 2.22.0 | Matches the zeta local stack and its tested digest |
-| MinIO / mc | `latest` from quay.io | Matches zeta's local approach; local only, not a production pin. `mc` runs bucket init. |
+| MinIO / mc | `latest` from Chainguard | Public mirror with the server and `mc` client; local only, not a production pin. |
 | Vector | 0.49.0-debian | Current stable line with the `clickhouse` and `http` sinks used here |
 
 ## Design
