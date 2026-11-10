@@ -76,6 +76,32 @@ kagiSessionTokenKey: kagi-session-token
 ## @param kagiSessionToken Token value; only used when `existingSecret` is empty.
 kagiSessionToken: ""
 
+## @section Audit parameters
+##
+## Audit events are JSONL. By default they go to stdout; set `audit.logPath`
+## to append them to a file instead. The container root filesystem is
+## read-only, so a file path needs a writable volume supplied through
+## `extraVolumes`/`extraVolumeMounts`; the file's parent directory must
+## already exist on that volume.
+audit:
+  ## @param audit.logPath JSONL audit log path. Empty (the default) writes audit events to stdout;
+  ## `-` is also treated as stdout by the service. A file path needs a writable volume mounted at
+  ## (or above) its parent directory via `extraVolumes`/`extraVolumeMounts`.
+  logPath: ""
+
+  ## @param audit.hmacKey HMAC key used to hash identifiers and IP addresses in audit headers.
+  ## Dev-only plaintext: when set and `audit.existingSecret` is empty the chart creates a Secret.
+  ## Prefer `audit.existingSecret` in production. The value is never rendered inline in the
+  ## Deployment, NOTES, or logs.
+  hmacKey: ""
+
+  ## @param audit.existingSecret Name of an existing secret holding the audit HMAC key. When set,
+  ## `audit.hmacKey` must be empty and no Secret is created.
+  existingSecret: ""
+
+  ## @param audit.hmacKeyKey Key within the secret holding the HMAC key.
+  hmacKeyKey: audit-hmac-key
+
 ## @section Service parameters
 service:
   ## @param service.type Service type.
@@ -115,6 +141,100 @@ otelExporterOtlpEndpoint: ""
 ## @param otelResourceAttributes OTel resource attributes, for example
 ## `deployment.environment.name=production,service.version=1.2.3`.
 otelResourceAttributes: ""
+
+## @section Content store parameters
+##
+## The content plane captures fetched response bodies into packs. `off` (the
+## default) disables it; `local` writes packs under a directory; `s3` writes
+## them to an S3-compatible bucket.
+content:
+  ## @param content.store Content backend: `off`, `local`, or `s3`.
+  store: "off"
+
+  local:
+    ## @param content.local.path Root directory for the local content store. When `content.store=local`
+    ## this path is mounted from the configured volume; it must be writable because the container
+    ## root filesystem is read-only.
+    path: /var/lib/neuradex/content
+
+    persistence:
+      ## @param content.local.persistence.enabled Create/use a PersistentVolumeClaim for the local
+      ## content store. When false an `emptyDir` is mounted instead: captured content is ephemeral
+      ## and lost whenever the pod restarts or is rescheduled.
+      enabled: false
+
+      ## @param content.local.persistence.existingClaim Use an existing PersistentVolumeClaim instead
+      ## of creating one. Requires `content.local.persistence.enabled=true`.
+      existingClaim: ""
+
+      ## @param content.local.persistence.size Requested size of the chart-managed PersistentVolumeClaim.
+      size: 10Gi
+
+      ## @param content.local.persistence.storageClass StorageClass for the chart-managed
+      ## PersistentVolumeClaim. Empty uses the cluster default StorageClass.
+      storageClass: ""
+
+      ## @param content.local.persistence.accessModes Access modes for the chart-managed
+      ## PersistentVolumeClaim. Only ReadWriteOnce is safe with replicas > 1 unless the backing
+      ## volume supports ReadWriteMany.
+      accessModes:
+        - ReadWriteOnce
+
+  s3:
+    ## @param content.s3.endpoint S3-compatible endpoint URL, for example `https://s3.us-west-004.backblazeb2.com`.
+    endpoint: ""
+
+    ## @param content.s3.region Signing region sent to the S3 endpoint.
+    region: ""
+
+    ## @param content.s3.bucket Bucket holding content packs.
+    bucket: ""
+
+    ## @param content.s3.prefix Optional key prefix inside the bucket. Empty stores objects at the bucket root.
+    prefix: ""
+
+    ## @param content.s3.forcePathStyle Use path-style addressing (`endpoint/bucket/key`) instead of
+    ## virtual-hosted-style addressing. Required by most S3-compatible services.
+    forcePathStyle: true
+
+    ## @param content.s3.existingSecret Name of an existing secret holding the S3 credentials. When
+    ## set, `content.s3.accessKeyId` and `content.s3.secretAccessKey` must be empty and no Secret is
+    ## created.
+    existingSecret: ""
+
+    ## @param content.s3.accessKeyIdKey Key within the secret holding the S3 access key identifier.
+    accessKeyIdKey: access-key-id
+
+    ## @param content.s3.secretAccessKeyKey Key within the secret holding the S3 secret access key.
+    secretAccessKeyKey: secret-access-key
+
+    ## @param content.s3.accessKeyId S3 access key identifier. Dev-only plaintext: when both inline
+    ## credentials are set and `content.s3.existingSecret` is empty the chart creates a Secret.
+    ## Prefer `content.s3.existingSecret` in production. The value is never rendered inline in the
+    ## Deployment, NOTES, or logs.
+    accessKeyId: ""
+
+    ## @param content.s3.secretAccessKey S3 secret access key. Dev-only plaintext: when both inline
+    ## credentials are set and `content.s3.existingSecret` is empty the chart creates a Secret.
+    ## Prefer `content.s3.existingSecret` in production. The value is never rendered inline in the
+    ## Deployment, NOTES, or logs.
+    secretAccessKey: ""
+
+  ## @param content.packTargetBytes Target size of a content pack before it is sealed.
+  packTargetBytes: 134217728
+
+  ## @param content.maxPackAgeSecs Maximum age of an open content pack before it is sealed.
+  maxPackAgeSecs: 600
+
+  ## @param content.maxBodyBytes Maximum response body size captured into content packs.
+  maxBodyBytes: 26214400
+
+  ## @param content.retentionDays Content retention period in days.
+  retentionDays: 365
+
+  ## @param content.compressionLevel Zstd compression level for content packs (1 through 22; higher
+  ## is slower and smaller).
+  compressionLevel: 3
 
 ## @param podAnnotations Extra annotations on the Deployment's pod template.
 ## Example:

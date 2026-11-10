@@ -104,6 +104,34 @@
       "default": "",
       "description": "Token value; only used when existingSecret is empty (the chart then creates the Secret). Prefer existingSecret in production."
     },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Audit event output and the HMAC key used to hash identifiers and IP addresses.",
+      "properties": {
+        "logPath": {
+          "type": "string",
+          "default": "",
+          "description": "JSONL audit log path. Empty writes audit events to stdout (the service also treats `-` as stdout). A file path needs a writable volume via extraVolumes/extraVolumeMounts because the root filesystem is read-only; its parent directory must exist."
+        },
+        "hmacKey": {
+          "type": "string",
+          "default": "",
+          "description": "HMAC key used to hash identifiers and IP addresses in audit headers. Dev-only plaintext: when set and audit.existingSecret is empty the chart creates a Secret. Prefer audit.existingSecret in production."
+        },
+        "existingSecret": {
+          "type": "string",
+          "default": "",
+          "description": "Name of an existing secret holding the audit HMAC key. When set, audit.hmacKey must be empty and no Secret is created."
+        },
+        "hmacKeyKey": {
+          "type": "string",
+          "default": "audit-hmac-key",
+          "minLength": 1,
+          "description": "Key within the secret holding the HMAC key."
+        }
+      }
+    },
     "service": {
       "type": "object",
       "additionalProperties": false,
@@ -160,6 +188,159 @@
       "type": "string",
       "default": "",
       "description": "OTel resource attributes, for example deployment.environment.name=production,service.version=1.2.3."
+    },
+    "content": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Content plane capture store and packing policy.",
+      "properties": {
+        "store": {
+          "type": "string",
+          "default": "off",
+          "enum": ["off", "local", "s3"],
+          "description": "Content backend: off disables capture; local writes packs under a directory; s3 writes them to an S3-compatible bucket."
+        },
+        "local": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Local content store settings (content.store=local).",
+          "properties": {
+            "path": {
+              "type": "string",
+              "default": "/var/lib/neuradex/content",
+              "description": "Root directory for the local content store, mounted from the configured volume. It must be writable because the container root filesystem is read-only."
+            },
+            "persistence": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "PersistentVolumeClaim settings for the local content store. When disabled an emptyDir is used and captured content is ephemeral.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Create/use a PersistentVolumeClaim for the local content store. When false an emptyDir is mounted instead and captured content is lost on pod restart or rescheduling."
+                },
+                "existingClaim": {
+                  "type": "string",
+                  "default": "",
+                  "description": "Use an existing PersistentVolumeClaim instead of creating one. Requires persistence.enabled=true."
+                },
+                "size": {
+                  "type": "string",
+                  "default": "10Gi",
+                  "minLength": 1,
+                  "description": "Requested size of the chart-managed PersistentVolumeClaim."
+                },
+                "storageClass": {
+                  "type": "string",
+                  "default": "",
+                  "description": "StorageClass for the chart-managed PersistentVolumeClaim. Empty uses the cluster default StorageClass."
+                },
+                "accessModes": {
+                  "type": "array",
+                  "default": ["ReadWriteOnce"],
+                  "minItems": 1,
+                  "items": {
+                    "type": "string",
+                    "enum": ["ReadWriteOnce", "ReadOnlyMany", "ReadWriteMany", "ReadWriteOncePod"]
+                  },
+                  "description": "Access modes for the chart-managed PersistentVolumeClaim."
+                }
+              }
+            }
+          }
+        },
+        "s3": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "S3-compatible content store settings (content.store=s3).",
+          "properties": {
+            "endpoint": {
+              "type": "string",
+              "default": "",
+              "description": "S3-compatible endpoint URL, for example https://s3.us-west-004.backblazeb2.com. Required when content.store=s3."
+            },
+            "region": {
+              "type": "string",
+              "default": "",
+              "description": "Signing region sent to the S3 endpoint. Required when content.store=s3."
+            },
+            "bucket": {
+              "type": "string",
+              "default": "",
+              "description": "Bucket holding content packs. Required when content.store=s3."
+            },
+            "prefix": {
+              "type": "string",
+              "default": "",
+              "description": "Optional key prefix inside the bucket. Empty stores objects at the bucket root and CONTENT_S3_PREFIX is not set."
+            },
+            "forcePathStyle": {
+              "type": "boolean",
+              "default": true,
+              "description": "Use path-style addressing (endpoint/bucket/key) instead of virtual-hosted-style addressing. Required by most S3-compatible services."
+            },
+            "existingSecret": {
+              "type": "string",
+              "default": "",
+              "description": "Name of an existing secret holding the S3 credentials. When set, the inline credentials must be empty and no Secret is created."
+            },
+            "accessKeyIdKey": {
+              "type": "string",
+              "default": "access-key-id",
+              "minLength": 1,
+              "description": "Key within the secret holding the S3 access key identifier."
+            },
+            "secretAccessKeyKey": {
+              "type": "string",
+              "default": "secret-access-key",
+              "minLength": 1,
+              "description": "Key within the secret holding the S3 secret access key."
+            },
+            "accessKeyId": {
+              "type": "string",
+              "default": "",
+              "description": "S3 access key identifier. Dev-only plaintext: when both inline credentials are set and existingSecret is empty the chart creates a Secret. Prefer existingSecret in production."
+            },
+            "secretAccessKey": {
+              "type": "string",
+              "default": "",
+              "description": "S3 secret access key. Dev-only plaintext: when both inline credentials are set and existingSecret is empty the chart creates a Secret. Prefer existingSecret in production."
+            }
+          }
+        },
+        "packTargetBytes": {
+          "type": "integer",
+          "default": 134217728,
+          "minimum": 1,
+          "description": "Target size of a content pack before it is sealed."
+        },
+        "maxPackAgeSecs": {
+          "type": "integer",
+          "default": 600,
+          "minimum": 1,
+          "description": "Maximum age in seconds of an open content pack before it is sealed."
+        },
+        "maxBodyBytes": {
+          "type": "integer",
+          "default": 26214400,
+          "minimum": 1,
+          "description": "Maximum response body size captured into content packs."
+        },
+        "retentionDays": {
+          "type": "integer",
+          "default": 365,
+          "minimum": 1,
+          "description": "Content retention period in days."
+        },
+        "compressionLevel": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 22,
+          "description": "Zstd compression level for content packs (1 through 22; higher is slower and smaller)."
+        }
+      }
     },
     "podAnnotations": {
       "type": "object",
