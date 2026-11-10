@@ -11,7 +11,7 @@ the host with `cargo run`; it is not a compose service yet. Every published port
 | `quickwit` | `quickwit/quickwit:0.8.2` | 7280, 7281 | default | — | `GET /health/livez` |
 | `quickwit-init` | `quickwit/quickwit:0.8.2` | none | default | `quickwit` healthy | none (one-shot) |
 | `minio` | `quay.io/minio/minio:latest` | 9000, 9001 | default | — | `GET /minio/health/live` |
-| `minio-init` | `quay.io/minio/minio:latest` (ships `mc`) | none | default | `minio` healthy | none (one-shot) |
+| `minio-init` | `quay.io/minio/mc:latest` | none | default | `minio` healthy | none (one-shot) |
 | `clickhouse` | `clickhouse/clickhouse-server:25.8` | 8123, 19000→9000 | default | — | `clickhouse-client SELECT 1` |
 | `jaeger` | `jaegertracing/jaeger:2.22.0@sha256:836b…` | 4317, 4318, 16686 | default | — | none |
 | `vector` | `timberio/vector:0.49.0-debian` | none | `ingest` | `quickwit-init` completed, `clickhouse` healthy | none |
@@ -73,8 +73,8 @@ read-only and buffers in its own container filesystem.
 - S3-compatible store for the future content plane and Quickwit archive. The service itself
   can point at it with `AWS_ENDPOINT_URL=http://127.0.0.1:9000`.
 - `minio-init` creates `neuradex-content` and `neuradex-quickwit` with `mc mb --ignore-existing`.
-  It uses the MinIO server image because that image ships `mc`; this avoids depending on a
-  separately pullable `quay.io/minio/mc` tag.
+  It uses the dedicated `quay.io/minio/mc:latest` image, as in the zeta compose stack. If Quay
+  requires a login for that image, authenticate or mirror it; see Troubleshooting.
 - The console is on 9001; the API is on 9000. ClickHouse native uses host 19000 to avoid a
   conflict with 9000.
 
@@ -99,8 +99,9 @@ read-only and buffers in its own container filesystem.
 - Profile `ingest`; not started by `docker compose up -d`.
 - Tails `.local/neuradex/events.jsonl` read-only, parses each line, sends NDJSON to Quickwit's
   ingest API and JSONEachRow to ClickHouse.
-- Header objects are encoded to JSON strings for ClickHouse via the `encode_clickhouse` remap
-  transform; Quickwit receives the objects its `json` fields require.
+- The `flatten` remap maps nested `service`/`http`/`operation` fields to ClickHouse columns and
+  encodes the content array/header captures as JSON strings. `shape_quickwit` wraps the two
+  array values as `{"items":[…]}` because Quickwit's `json` field requires an object.
 - Config: `hack/vector/neuradex-events.toml`.
 - Start: `docker compose --profile ingest up -d vector`.
 
@@ -148,7 +149,9 @@ print("ok")
 PY
 ```
 
-Tested with Docker Compose v2.40+ / Docker 29 on Linux. On a clean host, `docker compose up -d`
+Tested with Docker Compose v2.40+ / Docker 29 on Linux: `docker compose config`, `up -d`, the
+Quickwit `/health/livez` endpoint, index creation, ClickHouse init SQL/materialized views, MinIO
+bucket creation, and Jaeger UI/OTLP were exercised. On a clean host, `docker compose up -d`
 pulls the images and starts the default services. The first start can take a minute.
 
 ## Port conflicts
@@ -200,7 +203,7 @@ mutable in place.
 | `clickhouse/clickhouse-server:25.8` | tag | LTS line; supports the DDL |
 | `jaegertracing/jaeger:2.22.0@sha256:836b…` | digest | Copied from the zeta compose stack |
 | `quay.io/minio/minio:latest` | tag | Local only; not a production pin |
-| `timberio/vector:0.49.0-debian` | tag | `http` + `clickhouse` sinks |
+| `timberio/vector:0.49.0-debian` | tag | `http` + `clickhouse` sinks; `shape_quickwit`/`flatten` remaps |
 
 Renovate may bump tags. If MinIO `latest` drifts, pin a release or digest; the local stack is not
 a production artifact.
@@ -216,3 +219,4 @@ a production artifact.
 | Vector no data | Profile off, spool missing, or transform error | Check `docker compose --profile ingest ps vector` and logs |
 | Jaeger no traces | OTLP endpoint unset | Export `OTEL_EXPORTER_OTLP_ENDPOINT` and restart the service |
 | `docker compose config` warns about `$` | A single `$` in a command | Escape as `$$` for Compose interpolation |
+| `quay.io/minio/mc:latest` pull returns 401 | Quay requires authentication for the MinIO repository in some environments | `docker login quay.io`, or mirror the image and retag it; the bucket-init script itself is unchanged |

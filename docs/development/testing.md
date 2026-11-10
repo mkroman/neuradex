@@ -64,14 +64,14 @@ mapping and ClickHouse DDL drift that unit tests cannot.
 | --- | --- |
 | Serialize a minimal event | All required fields present; optional fields empty, not null |
 | Deserialize an old event with a missing optional field | Succeeds with defaults |
-| Unknown event type | Rejected at validation, accepted by storage |
-| Header allow-list | Only allowed names survive |
-| Sensitive header | No value in serialized output; HMAC, length, presence present |
-| Non-UTF-8 header | `<non-utf8>` marker; no panic |
-| Header limits (64 names, 8 KiB value, 32 KiB total) | Truncated flag set; bounded output |
-| URL sanitization | No userinfo, fragment, or query values in `target_url`/`referer`/`location` |
-| Query text disabled | `query_text` empty; `query_hash` populated |
-| Event size cap | Response headers dropped first, then request headers |
+| Unknown operation type | Rejected by serde/validation |
+| Header allow-list | Only allowed values survive; unknown names are redacted, not dropped |
+| Sensitive header | No value in serialized output; name and `value_bytes` retained, `values` empty |
+| Non-UTF-8 header | Base64 value with `encoding=base64`; no panic |
+| Header limits (64 names, 512 B/value, 8 KiB/side) | Truncated/omitted counters set; bounded output |
+| URL sanitization | Only `target_scheme`/`target_host`/`target_port`/`target_path` plus `target_url_sha256`; no full URL |
+| Query text never stored | `query_sha256`, `query_length`, `query_terms` populated; no query text field |
+| Header side budget | Names and values stay within 8 KiB; omitted counts are recorded |
 
 Use a sentinel token in every sensitive field and assert it is absent from the serialized event,
 a `Debug` rendering, and the log capture. This is the highest-value audit test.
@@ -82,17 +82,17 @@ a `Debug` rendering, and the log capture. This is the highest-value audit test.
 | --- | --- |
 | Write/read one frame | Bytes and hashes match |
 | Write/read many frames | Footer sorted by BLAKE3; lookup works |
-| Duplicate content | One frame; two footer/index references |
+| Duplicate content | Writer rejects with `DuplicateHash`; content layer dedupes before append |
 | Empty content | Valid frame; hashes of empty bytes |
-| Compressed and raw codecs | Round-trip both |
-| Truncated frame | Reader returns a typed error, not a panic |
+| zstd frame codec | Round-trip; reject a non-zstd flag |
+| Truncated frame/footer/trailer | Reader returns a typed error, not a panic |
 | Corrupt compressed byte | XXH3 mismatch before decompression |
-| Corrupt footer byte | Trailer SHA-256 mismatch |
+| Corrupt footer byte | Footer checksum mismatch |
 | Corrupt trailer | Reader rejects the pack |
 | Offset/length overflow | Rejected before slicing |
-| Frame count at cap | Writer seals; no footer overflow |
-| Pack at target + one frame | Allowed; hard cap enforced |
-| Hash algorithm ID unknown | Reader rejects with a typed error |
+| Empty pack | Footer + trailer round-trip; pipeline does not upload it |
+| Pack target/age | Content-layer policy; format does not enforce it |
+| Unknown format version/flags | Reader rejects with a typed error |
 
 Use property-style loops over sizes (0, 1, 2, 4 KiB, 1 MiB, 25 MiB) without a proptest
 dependency. Keep the tests sync; this crate must not need a runtime.
@@ -126,12 +126,12 @@ handlers. New tests for this work:
 
 | Case | Expected |
 | --- | --- |
-| A fetch produces one event | `event=fetch`, route/status/duration set |
-| A failed fetch produces one event | `outcome=upstream_error`, no content refs |
-| A 404/405 is audited | Event emitted; `route` empty; status 404/405 |
+| A fetch produces one event | `event=neuradex.request`, `operation.type=fetch`, `http.route/status/duration_ms` set |
+| A failed fetch produces one event | `outcome=server_error`, no content refs |
+| A 404/405 is audited | Event emitted; `http.route` absent; `http.status` 404/405 |
 | `/healthz` is not audited | No event |
-| Content capture failure does not change the response | 200 with body; event marks the error |
-| Search event has query hash, not query text | `query_hash` set; `query_text` empty by default |
+| Content capture failure does not change the response | 200 with body; event has no content reference (capture status is future) |
+| Search event has query hash, not query text | `operation.query_sha256` set; no query text field |
 | Event sink down | Response still 200; spool/alert |
 | Ingress identity spoofing | Unsigned header ignored/rejected |
 

@@ -17,269 +17,250 @@ updated: 2026-11-10
 
 ## Summary
 
-Record one wide, versioned JSON event per inbound request and per audit-relevant operational
-action. Events carry correlation IDs, request metadata, outcome, authenticated principal,
-an optional search query, sanitized headers, and content references. They never carry response
-bodies, search result text, or unredacted secrets. The same event is written to Quickwit (hot
-search), ClickHouse (analytics), and the hourly B2 event archive (cold source of truth).
+Record one typed, nested JSON **`AuditEvent`** per inbound request. The event carries a stable
+envelope, service and HTTP facts, an `operation` tagged union, bounded header captures, and
+content references. It deliberately stores **no query text, no full target URL, no response
+bodies, and no search result text**. The audit crate (`neuradex-audit`) is the schema owner; the
+service will emit one event per request through a synchronous sink wrapped in an async writer.
 
 ## Context and scope
 
 neuradex is an internal Kagi staging service handling real data for named users. We need to
 answer, for any request:
 
-- what was requested, when, by whom, and with what result;
-- which upstream host and URL were involved;
-- whether the body was captured, truncated, or missing, and where its frame lives;
-- which trace to open, and which pack to inspect.
+- what was requested, when, and with what result;
+- which operation (fetch, peek, search, Open WebUI search, infrastructure) ran;
+- which upstream host/path was involved and whether redirects occurred;
+- whether content was captured and which stored object/frame it lives in;
+- which trace to open;
+- aggregate questions: error rate by route, latency, search volume, bytes captured.
 
-We also need aggregate questions: error rate by route, latency by upstream, bytes captured per
-day, search volume, and who read the audit data. The event model must serve both without
-requiring a per-request object store manifest.
+The event must be safe to store for a year and useful without exposing the query or body. It must
+also be testable without the HTTP service.
 
-Out of scope: application performance metrics (use OpenTelemetry metrics when they exist),
-Kagi-internal diagnostics, and billing. Query text is in scope but restricted; see RFD 0009.
+Out of scope: application metrics (OpenTelemetry metrics), Kagi-internal diagnostics, billing,
+and read-audit/auth fields. Read audit is a future event type in RFD 0009; identity fields are
+not in schema 1.0.0.
 
 ## Goals and non-goals
 
 | Goal | How we know it is met |
 | --- | --- |
-| One event per request, carrying all correlation IDs | A request can be traced from HTTP through pack frame without a join on an external system |
-| Stable, documented schema | [reference/event-fields.md](../reference/event-fields.md) matches the serialized example and the sink mappings |
-| No bodies or secrets in events | Review of the header policy and a redaction test suite |
-| Queryable both ways | The event is ingestible as NDJSON into Quickwit and JSONEachRow into ClickHouse without transformation |
-| Safe schema evolution | New fields are additive; old events remain readable; `schema_version` is present |
-| Bounded event size | Serialized event ≤ 64 KiB, header strings ≤ 32 KiB each, values capped |
+| One event per request | The completion guard emits exactly one event, including aborts/panics |
+| Typed operation fields | Search/fetch/peek/infrastructure fields are distinct, not a bag of empty columns |
+| No query text or full URL | Only `query_sha256`/length/terms and `target_*`/`target_url_sha256` are stored |
+| Bounded headers | HeaderCapture has fixed per-side/per-value/per-header limits |
+| Content without embedding it | Content is an array of `{storage, key, blake3, sha256, size, content_type?}` |
+| Stable schema | `SCHEMA_VERSION = "1.0.0"`; optional fields are additive |
+| Testable without the service | `neuradex-audit` has no axum, Kagi, content, or object-storage dependency |
 
 Non-goals:
 
-- Exactly-once delivery. The pipeline is at-least-once and deduplicates by `event_id` when
-  needed.
+- Exactly-once delivery. The service wraps the synchronous sink in an at-least-once queue.
 - A general-purpose logging platform. Application logs stay in the logging pipeline.
-- Storing response bodies or result snippets. Those belong to the content plane or not at all.
+- Storing response bodies or result snippets.
 - Per-field encryption. Access control and retention are the primary controls.
+- A read-audit or auth-subject schema in 1.0.0.
 
 ## Options
 
 | Option | Benefits | Drawbacks | Verdict |
 | --- | --- | --- | --- |
-| A. One wide event per request, flat fields | Simple sink mappings; one row per request; easy to query in both Quickwit and ClickHouse; no joins for the common case | Some fields are empty for some event types; schema is wide | **Chosen** |
-| B. Separate tables/indices per endpoint (`fetch_events`, `search_events`, …) | Tight schemas; no empty fields | Cross-route queries need unions; duplicated correlation and access logic; more mappings to maintain | Rejected |
-| C. Nested `content` / `auth` objects in JSON | Readable document | Quickwit and ClickHouse flattening differs; query syntax varies; harder to keep two sinks identical | Rejected |
-| D. Only structured logs, no dedicated event store | No new pipeline | No retention control, no typed analytics, no read audit, log sampling loses the record | Rejected |
-| E. One event per *phase* (start, upstream, response, pack) | Fine-grained timing | 3–5× rows; correlation joins; partial records on crash; the request is not atomic in the audit | Rejected |
+| A. One flat event per request with all operation fields | Easy single-table mapping | Wide, mostly-empty schemas; operation-specific validation is weak; field-name collisions between search and fetch | Rejected |
+| B. Nested `AuditEvent` with a typed `operation` union | Clear ownership; compile-time operation shapes; smaller JSON; one event still queryable via nested paths | Sinks need nested mappings or a flattening step | **Chosen** |
+| C. Separate event types/tables per operation | Tight schemas | Cross-operation queries need unions; duplicate envelope/correlation logic; more mappings | Rejected |
+| D. Structured logs only | No new pipeline | No retention control, no typed analytics, no content refs, log sampling loses the record | Rejected |
+| E. One event per phase (start, upstream, response, pack) | Fine-grained timing | 3–5× rows; partial records; correlation joins | Rejected |
 
-Option A wins because the dominant questions are per-request and cross-route, and because the
-two sinks must agree byte-for-byte on field names. Empty optional fields are cheaper than joins.
+Option B wins because the operation union is the natural boundary: a search has query digests
+and result counts, a fetch has target/redirect/body facts, and infrastructure has a kind. The
+shared envelope stays identical.
 
 ## Determination
 
-Adopt **Option A**: a single flat event schema, serialized as JSON, with `schema_version: 1`.
+Adopt **Option B**: the `neuradex-audit` `AuditEvent`, serialized with `schema_version: "1.0.0"`
+and `event: "neuradex.request"`.
 
-- The event is the durable record. If content is missing, the event says why.
-- `request_id` is the primary correlation key; `event_id` is unique per event so operational
-  events can share the schema.
-- Search result *text* is never stored. Search events store the query (restricted), query hash,
-  result count, and result URLs/titles only if the privacy review allows titles; currently the
-  event stores only `result_count` and `target_url` is the first result URL, not the full set.
-- Headers are JSON objects in the event, with a documented redaction shape. ClickHouse stores
-  them as JSON-encoded strings; Quickwit stores them as `json` fields. See RFD 0005.
-- The schema is published in [reference/event-fields.md](../reference/event-fields.md). A code
-  change that adds, removes, or changes a field must update that page and this RFD's open
-  questions if the change is not purely additive.
+Specifics:
 
-Reversibility is high for additive fields and low for changing a field's meaning. Adding a
-field is a minor version bump in practice; changing `content_hash_blake3` or `outcome` semantics
-requires a new `schema_version` and a migration note.
+- **One event per inbound request**, including 404/405 fallbacks and aborted requests. A
+  completion guard emits the event on normal completion, abort, and panic. `/healthz` is
+  currently an infrastructure operation; the service may choose not to emit it in production,
+  but the schema can represent it.
+- **Operation union**: `search`, `openwebui_search`, `fetch`, `peek`, `infrastructure`.
+- **Search** stores `query_length`, `query_terms`, `query_sha256`, optional `limit`/`count`,
+  `auth_mode`, queue/upstream timings, upstream/returned result counts, `zero_results`, an
+  optional result-URL digest, and up to 10 result hosts. It never stores the query text or full
+  result URLs.
+- **Fetch/peek** stores target scheme/host/port/path, a SHA-256 of the full target URL,
+  redirects, final host/status, content type/length, bytes read, TTFB/total ms, `truncated`, and
+  `stopped_at_head`. It never stores the full URL or query string.
+- **Infrastructure** stores a kind: `health`, `openapi`, `docs`, `fallback`, `other`.
+- **Content references** are an array of `ContentReference` objects. An empty/absent array means
+  no content; there is no separate `content_captured` boolean in 1.0.0.
+- **Headers** are `HeaderCapture` objects with an allow-list/redact/sanitize/hash policy.
+  Unknown headers keep their name and byte length but not their value.
+- **No auth subject, read audit, or capture-error fields** in 1.0.0. Those are future work; see
+  RFD 0009 and the open questions.
+
+Reversibility: adding optional fields is backward-compatible. Changing a field's meaning or
+removing one requires a new `schema_version` and a dual-write window. The event archive is
+immutable, so old events are read with the old schema.
 
 ## Design
 
-### Event types
+### Envelope
 
-| `event` | Emitted for | HTTP status present | Content refs |
-| --- | --- | --- | --- |
-| `fetch` | `GET /v1/fetch` | yes | yes, when capture succeeds |
-| `peek` | `GET /v1/peek` | yes | yes for the head bytes, when capture succeeds |
-| `search` | `POST /v1/search` | yes | no |
-| `openwebui_search` | `POST /v1/openwebui_search` | yes | no |
-| `audit.read` | A read of events or content | no (0) | no |
-| `content.pack_sealed` | A pack's footer/trailer is complete | no (0) | pack-level |
-| `content.pack_uploaded` | A sealed pack is durable in B2 | no (0) | pack-level |
-| `content.pack_failed` | A pack upload or verification failed | no (0) | pack-level |
-| `content.read` | A content frame was read and verified (success or failure) | no (0) | frame-level |
-Every inbound request except `GET /healthz` produces an event, including 404/405 fallbacks and
-client errors. Health probes are excluded because they are high-volume, unauthenticated, and
-carry no user data.
+```text
+event              "neuradex.request"
+schema_version     "1.0.0"
+event_id           evt-<pid>-<nanos>-<counter>
+timestamp          RFC 3339 UTC
+observed_at        RFC 3339 UTC, optional
+service            {name, version, environment?}
+trace_id           optional
+span_id            optional
+request_id         req-<pid>-<nanos>-<counter>
+http               {method, route?, path, status?, request_body_bytes?, response_body_bytes?, duration_ms}
+outcome            success | client_error | server_error | aborted | panic
+error_type         optional low-cardinality string
+operation          optional tagged union
+content_references optional array
+request_headers    optional HeaderCapture
+response_headers   optional HeaderCapture
+```
 
-### Field groups
+Timestamps are RFC 3339 with sub-second precision; `Timestamp` normalizes to UTC. `event_id` and
+`request_id` are opaque strings with stable prefixes, generated from process ID, Unix
+nanoseconds, and a process-local counter. They are not UUIDs; consumers must not parse them.
 
-The complete table is in [reference/event-fields.md](../reference/event-fields.md). The groups
-are:
+### Operation union
 
-| Group | Fields | Notes |
-| --- | --- | --- |
-| Envelope | `schema_version`, `event`, `event_id`, `timestamp` | `event_id` is unique; `timestamp` is completion time in UTC |
-| Correlation | `request_id`, `trace_id`, `span_id` | `request_id` is required for request events; trace IDs are always available because the service creates spans even when export is off |
-| Request | `route`, `method`, `status`, `duration_ms`, `outcome`, `error_type`, `service_version` | `status` is the HTTP status, or 0 for non-HTTP events |
-| Principal | `auth_subject`, `auth_method`, `user_id` | Populated by the trusted ingress; never from an untrusted client header |
-| Search | `query_text`, `query_hash`, `result_count` | `query_text` is optional and restricted; `query_hash` is always safe to aggregate |
-| Target | `target_url`, `upstream_host`, `redirects_followed` | URL is sanitized: userinfo, fragment, and query values removed |
-| Content | `content_*` | See RFD 0002 and RFD 0003 |
-| Headers | `request_headers`, `response_headers`, `*_headers_truncated` | JSON objects; ClickHouse stores JSON-encoded strings; redaction shape in RFD 0005 |
-| Read audit | `read_action`, `read_target`, `read_reason`, `read_bytes` | Only for `audit.read` and `content.read` |
+```text
+{"type": "search", "query_length": 16, "query_terms": 3, "query_sha256": "…", ...}
+{"type": "fetch", "target_scheme": "https", "target_host": "example.com", ...}
+{"type": "infrastructure", "kind": "openapi"}
+```
 
-### Example
+`operation.type` is the discriminator. Optional fields are omitted, not null. Sinks must use
+nested mappings (Quickwit) or flatten the union (ClickHouse), not assume a fixed flat schema.
+
+### Content references
 
 ```json
 {
-  "schema_version": 1,
-  "event": "fetch",
-  "event_id": "019a7f3c-6a2e-7c31-9b5a-2f4c1d0e8a11",
-  "timestamp": "2026-11-10T12:34:56.789Z",
-  "request_id": "019a7f3c-6a2e-7c31-9b5a-2f4c1d0e8a10",
-  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
-  "span_id": "00f067aa0ba902b7",
-  "route": "/v1/fetch",
-  "method": "GET",
-  "status": 200,
-  "duration_ms": 120,
-  "outcome": "success",
-  "error_type": "",
-  "service_version": "0.1.0",
-  "auth_subject": "user:alice@example.com",
-  "auth_method": "mtls",
-  "user_id": "alice",
-  "query_text": "",
-  "query_hash": "",
-  "result_count": 0,
-  "target_url": "https://example.com/",
-  "upstream_host": "example.com",
-  "redirects_followed": 0,
-  "content_captured": true,
-  "content_kind": "fetch_body",
-  "content_hash_blake3": "9f2c…64 hex chars…",
-  "content_hash_sha256": "3a7d…64 hex chars…",
-  "content_bytes": 5123,
-  "content_type": "text/html",
-  "content_truncated": false,
-  "content_pack_id": "019a7f3c-7b10-7a22-8c33-1d2e3f405162",
-  "content_frame_offset": 4096,
-  "content_frame_length": 1234,
-  "content_capture_error": "",
-  "request_headers": {"accept": ["*/*"], "user-agent": ["neuradex/0.1"]},
-  "response_headers": {"content-type": ["text/html; charset=utf-8"], "content-length": ["5123"]},
-  "request_headers_truncated": false,
-  "response_headers_truncated": false,
-  "read_action": "",
-  "read_target": "",
-  "read_reason": "",
-  "read_bytes": 0
+  "storage": "pack",
+  "key": "packs/v1/date=2026-11-10/hour=12/pack-019a.nrp",
+  "blake3": "<64 hex>",
+  "sha256": "<64 hex>",
+  "size": 5123,
+  "content_type": "text/html"
 }
 ```
 
-### Semantics that must not drift
+`storage` is `pack` or `object`. `key` is opaque to the audit crate; for a pack it is the pack
+object key. The frame offset/length are not in the event; the hourly request index maps
+`request_id` to the frame. A future content-plane integration may add a capture-status field;
+until then, absence means no content.
 
-- `timestamp` is when the event is emitted (request completion), not when the request started.
-  Use `duration_ms` to reconstruct the start. This makes hourly archive assignment stable.
-- `status` is the final status returned to the client. A redirect chain is one event and
-  `redirects_followed` counts the hops; intermediate statuses are not separate events.
-- `outcome` is derived once, from the final status and the failure class:
-  - `success`: 2xx/3xx, or a completed non-HTTP operation.
-  - `client_error`: 4xx.
-  - `upstream_error`: 5xx caused by the upstream or Kagi.
-  - `timeout`: deadline exceeded, including search queue timeout.
-  - `internal_error`: 5xx caused by neuradex.
-  - `canceled`: client disconnected before completion.
-  - `partial`: the response completed but content capture was incomplete.
-  - `failed`: non-HTTP operational event failed.
-- `error_type` is low-cardinality and stable (`invalid_param`, `unsupported_media_type`,
-  `upstream_timeout`, `dns_error`, `tls_error`, `content_spool_full`, …). The human-readable
-  error message stays in logs, never in the event.
-- `target_url` is the requested URL for fetch/peek and the first result URL for search. It is
-  sanitized with the same function as telemetry: no userinfo, no fragment, query values
-  replaced with `REDACTED`.
-- `query_text` is empty unless the `store_query_text` policy is enabled for the principal.
-  `query_hash` is SHA-256 of the exact query string and is always populated for search.
-- `result_count` is the number returned to the client after `limit`/`count` truncation.
-- `content_bytes` is the number of canonical content bytes hashed, not the compressed frame
-  size and not `bytes_read` (which may include bytes beyond a truncation cap).
-- `content_captured: false` plus `content_capture_error` is a valid, expected state. It is not
-  an error response to the client.
+### Header capture
+
+The policy is implemented in `crates/neuradex-audit/src/header_policy.rs`:
+
+- Allow-list of safe headers; values captured verbatim.
+- Sensitive headers (`authorization`, `cookie`, `set-cookie`, API keys, Open WebUI user
+  email/name) redacted; name and byte length remain.
+- IP/user/chat identifiers HMAC-SHA256 hashed when a key is configured, otherwise redacted.
+- `location`/`referer` sanitized by removing query strings and fragments.
+- Unknown headers redacted (name and byte length only), not dropped.
+- Limits: 64 headers, 8 KiB per side, 512 bytes per value, 16 values per header.
+- Non-UTF-8 values are base64-encoded; control characters are stripped.
+
+The serialized shape is documented in [reference/event-fields.md](../reference/event-fields.md).
+It is not a `{name: value}` map.
+
+### Emission and sinks
+
+`RequestRecord` accumulates facts and `finish()` builds the event. `CompletionGuard` ensures one
+event on drop, abort, or panic. `AuditSink` is synchronous; the service wraps it in a bounded
+async queue/background writer so the request path never blocks on a sink.
+
+The same event JSON is written to:
+
+- Quickwit (nested object mapping, 30 days),
+- ClickHouse (flat projection, 365 days),
+- the hourly B2 archive (NDJSON.zst, 365 days).
+
+Quickwit stores arrays as `{"items": [...]}` because its `json` field is object-only; this is a
+hot-index shaping detail, not an event field. ClickHouse derived columns (`content_bytes`, etc.)
+are computed by Vector, not emitted by the crate.
 
 ### Schema evolution
 
-- Additive optional fields are allowed within `schema_version: 1`. Quickwit uses
-  `mode: lenient`, so an unmapped field is ignored rather than rejecting the document; add the
-  mapping and reindex if the field must be searchable. ClickHouse tolerates missing JSON keys
-  through Vector's `skip_unknown_fields` and column defaults; add the column before enabling it.
-- Removing a field or changing its type/meaning requires `schema_version: 2` and a dual-write
-  period. Readers must ignore unknown fields and treat missing optional fields as empty.
-- Enumerations (`event`, `outcome`, `error_type`, `auth_method`, `content_kind`, `read_action`)
-  are open in storage and validated in code. New values do not require a schema version bump,
-  but must be added to [reference/event-fields.md](../reference/event-fields.md).
-- The event archive is immutable. A schema fix is applied to new hours; old hours are read with
-  the old mapping. Do not rewrite archives in place.
+- Optional fields may be added within `1.0.x`; customers omit them when unset.
+- `SCHEMA_VERSION` is a string; a semantic change to an existing field requires a new version.
+- Quickwit uses `mode: lenient`: an unmapped field is ignored, not rejected. Add a mapping and
+  reindex when the field must be searchable.
+- ClickHouse adds columns before enabling a field; Vector's `skip_unknown_fields` would
+  otherwise drop it silently.
+- The archive is immutable; do not rewrite old hours.
 
 ## Economic, capacity, and performance considerations
 
-At 40,000 searches/hour plus 100,000 fetches/hour, the event rate is 140,000/hour or
-3.36 million/day. At an average 1.5 KiB serialized (including headers), that is about
-5.2 GB/day raw and about 1.3 GB/day at 4× zstd compression, or roughly 470 GB/year of archive.
-Quickwit's 30-day hot copy is roughly 40 GB compressed plus index overhead. ClickHouse stores
-the same rows with typed columns; at ~500 B/row raw and 5× compression it is roughly
-340 MB/day, or 120 GB/year at 365 days.
+At 140,000 requests/hour (3.36M/day), an event of ~1.5–2 KiB (with bounded headers) is about
+5–7 GB/day raw, ~1.3–1.8 GB/day at 4× zstd, or ~470–650 GB/year of archive. Quickwit's 30-day
+hot copy is ~40–60 GB compressed plus index. ClickHouse at ~500 B/row and 5× compression is
+~340 MB/day, ~120 GB/year at 365 days.
 
-The per-request cost is dominated by JSON serialization and two network writes, not by hashing
-or compression. The pipeline must be asynchronous and bounded; see RFD 0002. The event is
-serialized once and fanned out, so Quickwit and ClickHouse see identical bytes apart from the
-sink-specific framing.
+The event is serialized once and fanned out. The dominant cost is JSON/header capture and two
+network writes, not hashing. Header capture is bounded; a worst-case 8 KiB per side is still
+small relative to a 25 MiB body.
 
 ## Security considerations
 
-- Events contain URLs, user identity, query hashes, and potentially query text. Treat the event
-  store as **restricted internal data**, not as a public log.
-- Bodies, result snippets, authorization values, cookies, and API keys never enter an event.
-- Query text is the most sensitive free-text field. It is off by default in production and
-  restricted to named audit readers when enabled. Aggregations use `query_hash`.
-- Header values are redacted or HMACed per RFD 0005. The HMAC key is separate from the B2
-  credentials and is rotated on a documented schedule.
-- Read access is itself audited (`audit.read`), and read audit events are retained at least as
-  long as the data they describe. See RFD 0009.
-- There is no per-request deletion. Retention is 365 days; a legal deletion request requires a
-  pack rewrite, which is not supported initially. This is recorded as a limitation, not hidden.
+- **No query text.** Only SHA-256, length, and term count; this removes the largest free-text
+  privacy risk.
+- **No full URL.** Only scheme/host/port/path plus a hash; query values and userinfo are gone.
+- **No bodies or result snippets.** Content is referenced, not embedded.
+- **Headers are the risk surface.** The allow-list, redaction, HMAC, and limits are the control.
+  A sentinel-token test must assert no secret appears in the serialized event or logs.
+- **Events contain hostnames, paths, and header names.** Treat the event store as restricted
+  internal data, not a public log.
+- **No auth subject in 1.0.0.** Named access is enforced at the ingress; the event alone cannot
+  attribute a request to a user until RFD 0009 lands. This is a known gap.
+- **No per-request deletion.** Retention is 365 days; packs are immutable. A legal deletion
+  request is a pack-rewrite problem, not supported initially.
+- **Read audit is future work.** Do not claim read accountability from schema 1.0.0.
 
 ## Operational considerations
 
-- Event emission is at-least-once. A duplicate is identified by `event_id`; a missing event is a
-  page-worthy incident.
-- The local spool absorbs sink outages. If the spool fills, events are dropped only after
-  logging a high-severity counter; content capture is dropped first because events are more
-  important.
-- The event archive is written hourly with a grace window. Events that arrive after the close
-  go into the next hour's object with their original `timestamp`; readers must not assume
-  `timestamp` falls inside the object's hour.
-- The archive object key contains the close time and writer ID, so a retry never overwrites a
-  previous object.
-- Backfill/replay reads the archive, not Quickwit: write a replay job that re-emits NDJSON to
-  the hot index and ClickHouse with idempotent keys.
-- Alerts: event lag > 5 minutes, spool depth > 80%, archive missing for a closed hour, duplicate
-  rate > 1%, ClickHouse insert failures > 0 for 5 minutes.
+- At-least-once delivery; duplicates are possible. `event_id` is unique, but the current schema
+  has no idempotent sink key beyond it.
+- A sink outage spools; if the spool fills, events are dropped only after a high-severity alert.
+  Content is shed before events.
+- Quickwit/ClickHouse are derived; B2 archive is the source of truth. Replay from the archive.
+- The archive object key includes close time and writer, so retries never overwrite.
+- Alerts: event lag > 5 min, spool depth > 80%, archive gap for a closed hour, duplicate rate >
+  1%, ClickHouse insert failures > 0 for 5 min.
+- The audit crate has no async runtime; the service must not block the request path on a sink.
 
 ## Open questions
 
 | Question | Why it is open | Trigger / owner |
 | --- | --- | --- |
-| Is `request_id` UUIDv7, ULID, or a 128-bit random value? | All are opaque and sortable enough; the choice affects log ergonomics and index locality | Decide with the first audit crate implementation; storage treats it as a string |
-| Do we capture peek head bytes as content, or metadata only? | Peek is capped at 2 MiB and may be high-volume; capturing it improves audit completeness but changes capacity | Measure peek volume for one week; default in this design is capture |
-| Do we store the full result URL list for search? | Useful for investigation; increases event size and exposes result targets | Privacy review; currently only the first URL |
-| Do we need a per-event `client_ip`? | Useful for abuse investigation; sensitive and not required for named access | Security review; currently omitted |
-| Should `audit.read` live in the same table/index? | Simpler today; a separate immutable store may be required for read-audit retention | Revisit when read endpoints exist |
+| How do we represent "content capture failed" distinctly from "no content"? | The current schema only has `content_references`; absence is ambiguous | Content-plane integration; add an optional capture-status field or a content event |
+| Do we need auth subject/user ID fields? | Named access needs attribution; 1.0.0 has only search `auth_mode` and header HMACs | RFD 0009 and ingress review |
+| Do we need a read-audit event type? | Current `event` is always `neuradex.request`; `audit.read`/`content.read` are proposed | RFD 0009 implementation |
+| Is `result_digest` enough, or do we need a bounded result list? | Digest supports comparison, not inspection; top hosts give aggregate context | Privacy review |
+| Should `/healthz` be audited in production? | It is high-volume and unauthenticated; schema supports it, policy may exclude it | Operations review |
+| Do we add a `client_ip` or request source? | Useful for abuse investigation; sensitive | Security review |
 
 ## References
 
 - [RFD 0002: Content-addressed storage](0002-content-addressed-storage.md)
+- [RFD 0003: Hashing](0003-hashing.md)
 - [RFD 0005: Header policy](0005-header-policy.md)
 - [RFD 0009: Access and read audit](0009-access-and-read-audit.md)
 - [Event fields reference](../reference/event-fields.md)
-- [Oxide RFD 1](https://rfd.shared.oxide.computer/rfd/0001), [RFD 5](https://rfd.shared.oxide.computer/rfd/0005)
-- Code: `crates/neuradex-audit`, `crates/neuradex/src/api/v1.rs`
+- Code: `crates/neuradex-audit/src/event.rs`, `request_record.rs`, `header_policy.rs`, `guard.rs`
+- Oxide RFD 1 / RFD 5

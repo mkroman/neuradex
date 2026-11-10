@@ -9,18 +9,18 @@ assumes **named access**: there are no anonymous audit or content readers.
 
 ## Status
 
-The audit, packfile, and content crates are scaffolded in this branch; their public behaviour is
-not wired into the HTTP service yet. The local compose stack in this repository *is* runnable.
-Where a document describes an endpoint, setting, or table that does not exist yet, the document
-says so explicitly.
+The audit event crate is implemented (PR #67), and the packfile format crate is implemented
+(PR #68). The content orchestration crate is scaffolded, and none of these are wired into the HTTP
+service yet. The local compose stack in this repository *is* runnable. Where a document describes
+an endpoint, setting, or table that does not exist yet, the document says so explicitly.
 
 | Area | Status | Source of truth |
 | --- | --- | --- |
 | HTTP API (`/v1/fetch`, `/v1/peek`, `/v1/search`, `/v1/openwebui_search`, `/healthz`) | implemented | `crates/neuradex` |
 | Local observability stack (Quickwit, MinIO, ClickHouse, Jaeger, optional Vector) | implemented by this PR | `compose.yaml`, `hack/` |
-| Audit event schema and header policy | specified | [RFD 0001](rfd/0001-audit-event-model.md), [RFD 0005](rfd/0005-header-policy.md) |
-| Content-addressed packfiles and request index | specified; crate scaffolded | [RFD 0002](rfd/0002-content-addressed-storage.md), [reference/packfile-format.md](reference/packfile-format.md) |
-| Hashing rules (BLAKE3 / SHA-256 / XXH3) | specified; crate scaffolded | [RFD 0003](rfd/0003-hashing.md) |
+| Audit event schema and header policy | implemented in `neuradex-audit`; service wiring pending | [RFD 0001](rfd/0001-audit-event-model.md), [RFD 0005](rfd/0005-header-policy.md) |
+| Content-addressed packfiles | packfile implemented (PR #68); content orchestration specified/scaffolded | [RFD 0002](rfd/0002-content-addressed-storage.md), [reference/packfile-format.md](reference/packfile-format.md) |
+| Hashing rules (BLAKE3 / SHA-256 / XXH3) | implemented in the audit/packfile crates | [RFD 0003](rfd/0003-hashing.md) |
 | Quickwit + ClickHouse + B2 storage topology | specified | [RFD 0004](rfd/0004-storage-and-analytics.md) |
 | Capacity, cost, and 365-day retention | under discussion | [RFD 0008](rfd/0008-capacity-cost-and-retention.md) |
 | Named access and read audit | specified | [RFD 0009](rfd/0009-access-and-read-audit.md) |
@@ -67,8 +67,9 @@ The non-negotiable invariants:
    checksum of a compressed frame, never a content identity.
 3. **No per-request object.** Bodies are packed into immutable 128 MiB packfiles with a footer
    index; an hourly request index maps request IDs to pack frames. Event archives are hourly.
-4. **The footer is authoritative.** The request index accelerates lookup; a lost index can be
-   rebuilt from footers and event archives, but a lost pack cannot be rebuilt from an index.
+4. **Frames are self-describing; the footer is a rebuildable index.** The request index
+   accelerates lookup; a lost footer can be rebuilt from frame headers, but a lost pack cannot
+   be rebuilt from an index.
 5. **Audit metadata survives content loss.** Content is best-effort and explicitly marked when
    missing; the event is the durable record.
 6. **Hot search is short, cold truth is long.** Quickwit holds 30 days for search; ClickHouse
@@ -181,7 +182,7 @@ same PR:
 | Change | Update |
 | --- | --- |
 | An event field, enum, or default | [reference/event-fields.md](reference/event-fields.md), [RFD 0001](rfd/0001-audit-event-model.md) |
-| A packfile byte, flag, or algorithm ID | [reference/packfile-format.md](reference/packfile-format.md), [RFD 0002](rfd/0002-content-addressed-storage.md) |
+| A packfile byte, flag, or format rule | [reference/packfile-format.md](reference/packfile-format.md), [RFD 0002](rfd/0002-content-addressed-storage.md) |
 | A hash algorithm or what is hashed | [RFD 0003](rfd/0003-hashing.md) |
 | A compose service, image, port, or volume | [reference/compose-services.md](reference/compose-services.md), `compose.yaml` |
 | A ClickHouse column, view, or TTL | [reference/clickhouse-schema.md](reference/clickhouse-schema.md), `hack/clickhouse/init.sql` |

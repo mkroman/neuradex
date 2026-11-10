@@ -220,8 +220,9 @@ Performance targets:
   - **reader**: get/head on packs and indexes; no list, no put.
   - **analyst**: ClickHouse read-only; no B2.
   - **admin**: lifecycle and bucket configuration; break-glass only.
-- Quickwit and ClickHouse remember query text. The event table's `query_text` column is
-  restricted; dashboards must use `query_hash` and aggregates, not raw text.
+- The event schema stores no query text: only `operation.query_sha256`, length, and term count.
+  Dashboards aggregate by hash; they cannot display the query. If a future schema adds query
+  text, it must be policy-gated and column-restricted.
 - ClickHouse and Quickwit must not be exposed publicly. Bind to localhost in compose; put them
   behind the internal network and auth in production.
 - TLS is required for B2 and for any cross-host Quickwit/ClickHouse traffic.

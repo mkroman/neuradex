@@ -27,23 +27,23 @@ runtime implementation in this branch.
 | **trace_id / span_id** | OpenTelemetry identifiers. They are recorded in the audit event even when trace export is disabled. |
 | **outcome** | A low-cardinality classification of the request: `success`, `client_error`, `upstream_error`, `timeout`, `internal_error`, `canceled`, `partial`, or `failed`. |
 | **named access** | The rule that every audit/content reader is an authenticated, identified principal. There is no anonymous read path. |
-| **read audit** | An audit event emitted when someone reads audit events or content. It records who, what, why, and how many bytes. |
+| **read audit** | **Future work:** an audit event emitted when someone reads audit events or content, recording who, what, why, and how many bytes. Not in schema 1.0.0. |
 
 ## Audit plane
 
 | Term | Meaning |
 | --- | --- |
-| **audit event** | A structured JSON record of one request or operational action. It contains metadata, never bodies or search result text. |
+| **audit event** | A structured, nested JSON `AuditEvent` for one request. It contains metadata, never bodies, query text, or full target URLs. |
 | **event archive** | The hourly, immutable NDJSON (zstd-compressed) object in B2 that contains the full audit events for that hour. It is the cold source of truth. |
 | **hot index** | Quickwit's 30-day searchable copy of events. Losing it loses recent search convenience, not the archival record. |
 | **analytics store** | ClickHouse's 365-day store of typed event columns and daily aggregates. It serves dashboards and capacity queries. |
-| **event schema** | The versioned field set in [reference/event-fields.md](reference/event-fields.md). `schema_version` starts at 1. |
+| **event schema** | The versioned field set in [reference/event-fields.md](reference/event-fields.md). `schema_version` is `"1.0.0"`. |
 | **header policy** | The rules for which upstream request/response headers are captured, redacted, HMACed, or dropped. See RFD 0005. |
 | **sensitive header** | A header whose value must never be stored verbatim, such as `authorization`, `cookie`, `set-cookie`, or `x-api-key`. |
 | **HMAC-SHA256** | The keyed digest used to record that a sensitive header was present without storing its value. It is not a content hash and cannot be reversed. |
 | **event spool** | The bounded local queue/disk buffer that absorbs sink outages. In local development it is `.local/neuradex/events.jsonl`; in production it is a managed local spool. |
 | **at-least-once** | The event delivery guarantee: duplicates are possible and are deduplicated by `request_id`/`event_id`; silent loss is not acceptable. |
-| **dedupe** | Collapsing duplicate event rows or duplicate content frames. Duplicate event rows are tolerated; duplicate content frames are an efficiency loss, not a correctness bug. |
+| **dedupe** | Collapsing duplicate event rows or duplicate content frames. Event duplicates are tolerated; `PackWriter` rejects a duplicate BLAKE3 hash, so the content layer must dedupe before appending. |
 
 ## Content plane
 
@@ -54,18 +54,18 @@ runtime implementation in this branch.
 | **BLAKE3-256** | The primary content identity. BLAKE3 is fast, parallel, and used as the CAS key. |
 | **SHA-256 audit hash** | An independent SHA-256 digest of the same content bytes, stored for audit and interoperability with standard tooling. |
 | **XXH3-64** | A fast non-cryptographic checksum of a *compressed frame*. It detects corruption; it is never an identity and never a key. |
-| **packfile** | An immutable object containing many content frames, a footer index, and a trailer. Target 128 MiB. |
-| **frame** | One content record inside a packfile: a header, the compressed bytes, and its hashes. |
-| **footer index** | The sorted index at the end of a packfile mapping BLAKE3 hashes to frame offsets and lengths. It is authoritative. |
-| **trailer** | The fixed-size tail of a packfile pointing at the footer and carrying a SHA-256 of the footer. |
-| **pack_id** | A 128-bit opaque identifier, unique per pack. It appears in the object key and in every event that references a frame. |
+| **packfile** | An immutable object containing self-describing frames (from offset 0), a sorted footer index, and a 128-byte trailer. Target 128 MiB. |
+| **frame** | One content record: a 96-byte header (magic `NDPF`, lengths, BLAKE3, SHA-256, XXH3) followed by a zstd payload. |
+| **footer index** | The sorted 64-byte-entry index mapping BLAKE3 hashes to frame offsets/lengths, with an optional same-order SHA-256 table. It is a rebuildable index; frames are self-describing. |
+| **trailer** | The fixed 128-byte tail pointing at the footer, carrying pack BLAKE3/SHA-256 and a copy of the footer checksum. |
+| **pack_id** | A 128-bit opaque object-key identifier, unique per pack. It is not encoded in the pack; events reference the pack object key. |
 | **sealed pack** | A pack whose frame set is final and whose footer/trailer have been written. Only sealed packs are uploaded. |
 | **request index** | An hourly, immutable object mapping `request_id` to pack ID, frame offset/length, and content hashes. It is not a per-request manifest. |
 | **manifest** | A per-request object listing content. Deliberately *not* used; the footer plus hourly index replace it. |
 | **large-body threshold** | 30 MiB. A body at or above it is intended to be stored as a standalone CAS object. Because the capture cap is 25 MiB, the threshold is effectively disabled today. |
 | **capture error** | A marker on an event saying why content is absent or partial, e.g. `client_disconnect`, `spool_full`, `upstream_error`. |
 | **truncated** | The captured bytes were cut at the endpoint cap. The hash identifies the captured prefix, not the full upstream body. |
-| **content ref** | The flat event fields (`content_hash_blake3`, `content_pack_id`, `content_frame_offset`, `content_frame_length`, …) that locate a frame. |
+| **content ref** | A `content_references[]` entry (`storage`, `key`, `blake3`, `sha256`, `size`, optional `content_type`) that locates stored content. The frame offset/length are in the hourly request index. |
 | **dedupe window** | The in-memory hash map used by one pack builder to avoid writing the same body twice into the same pack. There is no global content index today. |
 
 ## Storage and analytics
@@ -97,7 +97,7 @@ runtime implementation in this branch.
 | **steady state** | The storage occupied after one full retention period at a constant ingest rate. |
 | **RPO** | Recovery point objective. For events, the spool bound; for content, the last successfully uploaded pack. |
 | **RTO** | Recovery time objective. Target for restoring search/analytics after a component loss. |
-| **read amplification** | Bytes read to serve one lookup. Range GETs keep it to the footer plus one frame, not the whole pack. |
+| **read amplification** | Bytes read to serve one lookup. A future range-read adapter can keep it to the footer plus one frame; the current `PackReader` takes the full pack slice. |
 | **cardinality** | The number of distinct values in a field. `request_id` is high-cardinality; `event`, `route`, and `status_class` are low. |
 | **TTL** | Time to live. ClickHouse drops partitions older than 365 days; Quickwit deletes splits older than 30 days; B2 lifecycle expires objects at 365 days. |
 | **degradation mode** | A documented behaviour under failure, e.g. "events continue, content capture drops and is marked". |

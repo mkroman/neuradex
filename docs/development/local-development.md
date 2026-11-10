@@ -101,7 +101,7 @@ event:
 ```sh
 mkdir -p .local/neuradex
 cat > .local/neuradex/events.jsonl <<'JSON'
-{"schema_version":1,"event":"fetch","event_id":"evt-local-1","timestamp":"2026-11-10T12:36:56.789Z","request_id":"req-local-1","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","span_id":"00f067aa0ba902b7","route":"/v1/fetch","method":"GET","status":200,"duration_ms":42,"outcome":"success","error_type":"","service_version":"0.1.0","auth_subject":"user:local@example.com","auth_method":"mtls","user_id":"local","query_text":"","query_hash":"","result_count":0,"target_url":"https://example.com/","upstream_host":"example.com","redirects_followed":0,"content_captured":true,"content_kind":"fetch_body","content_hash_blake3":"9f2c000000000000000000000000000000000000000000000000000000000000","content_hash_sha256":"3a7d000000000000000000000000000000000000000000000000000000000000","content_bytes":5123,"content_type":"text/html","content_truncated":false,"content_pack_id":"pack-local-1","content_frame_offset":4096,"content_frame_length":1234,"content_capture_error":"","request_headers":{"accept":["*/*"],"user-agent":["neuradex/0.1"]},"response_headers":{"content-type":["text/html; charset=utf-8"]},"request_headers_truncated":false,"response_headers_truncated":false,"read_action":"","read_target":"","read_reason":"","read_bytes":0}
+{"event":"neuradex.request","schema_version":"1.0.0","event_id":"evt-local-1","timestamp":"2026-11-10T12:36:56.789Z","service":{"name":"neuradex","version":"0.1.0"},"trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","span_id":"00f067aa0ba902b7","request_id":"req-local-1","http":{"method":"GET","route":"/v1/fetch","path":"/v1/fetch","status":200,"duration_ms":42},"outcome":"success","operation":{"type":"fetch","target_scheme":"https","target_host":"example.com","target_path":"/","target_url_sha256":"7d5e1f180f774d3f6d57faa2ae34610fdbfb752d0c0e48d840e3f2d633a27f78","redirects":0,"final_host":"example.com","upstream_status":200,"content_type":"text/html","content_length":5123,"bytes_read":5123,"ttfb_ms":10,"total_ms":42,"truncated":false,"stopped_at_head":false},"content_references":[{"storage":"pack","key":"packs/v1/date=2026-11-10/hour=12/pack-local-1.nrp","blake3":"9f2c000000000000000000000000000000000000000000000000000000000000","sha256":"3a7d000000000000000000000000000000000000000000000000000000000000","size":5123,"content_type":"text/html"}]}
 JSON
 ```
 
@@ -122,14 +122,15 @@ curl -sS -XPOST 'http://127.0.0.1:7280/api/v1/neuradex-events/search' \
 
 # ClickHouse: the row and the daily materialized view.
 curl -sS 'http://127.0.0.1:8123/?user=neuradex&password=neuradex-local-secret' \
-  --data-binary "SELECT event, request_id, target_url, request_headers FROM neuradex.events WHERE request_id='req-local-1' FORMAT PrettyCompact"
+  --data-binary "SELECT event, request_id, operation_type, http_route, content_bytes FROM neuradex.events WHERE request_id='req-local-1' FORMAT PrettyCompact"
 
 curl -sS 'http://127.0.0.1:8123/?user=neuradex&password=neuradex-local-secret' \
   --data-binary "SELECT * FROM neuradex.events_daily ORDER BY day DESC LIMIT 5 FORMAT PrettyCompact"
 ```
 
-Quickwit stores headers as JSON objects; ClickHouse stores them as JSON-encoded strings. Both
-come from the same event.
+Quickwit indexes the nested `service`/`http`/`operation` objects and stores arrays as
+`{"items":[…]}` because its `json` field is object-only. ClickHouse gets a flat projection with
+JSON strings for `content_references` and the header captures. Both come from the same event.
 
 ## Inspect the stores
 
@@ -137,17 +138,17 @@ come from the same event.
 
 ```sh
 # List indexes.
-curl -sS 'http://127.0.0.1:7280/api/v1/indexes' | jq '.indexes[] | {index_id, index_uid}'
+curl -sS 'http://127.0.0.1:7280/api/v1/indexes' | jq '.[] | {index_id: .index_config.index_id, index_uid}'
 
 # Search by a raw field (quote values with punctuation).
 curl -sS -XPOST 'http://127.0.0.1:7280/api/v1/neuradex-events/search' \
   -H 'content-type: application/json' \
-  -d '{"query":"event:fetch AND status:200","max_hits":10}' | jq '{num_hits, hits: [.hits[]._source | {request_id, target_url}]}'
+  -d '{"query":"operation.type:fetch AND http.status:200","max_hits":10}' | jq '{num_hits, hits: [.hits[]._source | {request_id, operation: .operation.type, route: .http.route}]}'
 
 # Count errors.
 curl -sS -XPOST 'http://127.0.0.1:7280/api/v1/neuradex-events/search' \
   -H 'content-type: application/json' \
-  -d '{"query":"status:>=500","max_hits":0}' | jq '.num_hits'
+  -d '{"query":"http.status:>=500","max_hits":0}' | jq '.num_hits'
 ```
 
 ### ClickHouse

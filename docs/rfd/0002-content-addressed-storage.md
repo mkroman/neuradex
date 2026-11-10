@@ -15,13 +15,18 @@ updated: 2026-11-10
 
 # RFD 2: Content-addressed storage
 
+> **Status:** the packfile format and reader/writer are implemented in `neuradex-packfile`
+> (PR #68). The content orchestration (capture, pack builder, hourly index, upload) is specified
+> and the crate is scaffolded.
+
 ## Summary
 
 Store captured response bodies in immutable **packfiles** in Backblaze B2. A pack targets
 128 MiB of encoded bytes and is sealed at 10 minutes from its first frame, whichever comes
-first. Each pack ends with a sorted footer index and a trailer. An **hourly request index**
-object maps `request_id` to the pack, frame offset, frame length, and hashes. There are no
-per-request S3 manifests and no per-request objects.
+first. Frames start at offset 0 and are self-describing; each pack ends with a sorted 64-byte
+footer index (plus an optional SHA-256 audit table) and a 128-byte trailer. An **hourly request
+index** object maps `request_id` to the pack, frame offset, frame length, and hashes. There are
+no per-request S3 manifests and no per-request objects.
 
 Content identity is the BLAKE3-256 digest of the captured bytes. SHA-256 is stored for audit.
 XXH3-64 checksums the compressed frame only.
@@ -73,7 +78,7 @@ Non-goals:
 | --- | --- | --- | --- |
 | A. One object per request + per-request manifest | Simple mental model; independent retention; easy delete | 2.4M+ objects/day; PUT cost and rate limits; listing and lifecycle pain; manifest is another object to lose; no dedupe | Rejected |
 | B. One object per request, metadata in the event only | No manifest; event is enough | Still 2.4M objects/day; no packing/dedupe; large object count; multipart overhead for small bodies | Rejected |
-| C. Packfiles with footer index + hourly request index | One PUT per 128 MiB; content-addressable frames; footer is self-contained; range GETs; dedupe within pack | More complex format; pack loss loses many requests; index must be written after upload; pack rewrite needed for deletion | **Chosen** |
+| C. Packfiles with footer index + hourly request index | One PUT per 128 MiB; content-addressable frames; footer is a rebuildable index; range-friendly; duplicate rejection at the writer | More complex format; pack loss loses many requests; index must be written after upload; pack rewrite needed for deletion | **Chosen** |
 | D. Database BLOB (Postgres/ClickHouse) | Transactional; easy query | Wrong tool for 9 TiB/day; expensive; bloats the analytics store; backup/restore pain | Rejected |
 | E. Object store + external catalog DB | Flexible queries | Catalog becomes a second source of truth; consistency and failure handling; still needs objects | Rejected |
 
@@ -100,16 +105,29 @@ body at or above the 30 MiB threshold.
 
 Specifics:
 
-- Pack target: **128 MiB** of encoded bytes (compressed frames + footer + trailer).
-- Pack max age: **10 minutes** from the first frame.
-- Hard pack cap: **160 MiB** (target + one maximum 25 MiB frame + footer slack). The builder
-  seals before appending a frame that would cross the target; a single frame may take the pack
-  over the target but never over the hard cap.
+- **No pack header.** Frames start at offset 0. The format has no pack ID or creation time;
+  those are object-key/builder metadata.
+- Frame header: **96 bytes**, magic `NDPF`, version, flags (bit 0 = zstd), `plaintext_len` u64,
+  `compressed_len` u32, reserved u32, BLAKE3[32], SHA-256[32], XXH3-64 u64, then the zstd
+  payload. There is no content type or truncation flag in the frame.
+- Footer: **32-byte header** (magic `NDPX`, version, flags, entry count, reserved, XXH3-64
+  checksum, reserved), then **64-byte entries** (BLAKE3[32], frame offset u64, compressed length
+  u32, plaintext length u32, XXH3 u64, flags u16, reserved u16, reserved[4]), then an optional
+  **32-byte SHA-256 audit table** in entry order. Entries are strictly sorted by BLAKE3.
+- Trailer: **128 bytes**, magic `NDPKTRLR`, version, flags, reserved, footer offset u64, footer
+  length u64, pack BLAKE3[32], pack SHA-256[32], footer checksum copy u64, and 24 reserved bytes
+  for a future keyed-BLAKE3 extension. The pack hashes cover every byte before the trailer.
+- The writer always zstd-compresses; there is no raw codec in v1. It rejects a duplicate BLAKE3
+  hash in the same pack (`PackError::DuplicateHash`); the content layer must dedupe before
+  calling `append`.
+- The format does **not** enforce the pipeline's 128 MiB target, 10-minute age, or 25 MiB body
+  cap. Those are content-layer policies. Format limits are the u32 length fields.
 - Maximum captured body: **25 MiB** (the existing fetch cap). Peek head capture is capped at
   **2 MiB**.
 - Large-body threshold: **30 MiB**. Because 30 MiB > 25 MiB, no body can reach it today. The
   code path and event fields exist so a future cap increase does not require a schema change.
-- A pack is uploaded only after its footer and trailer are complete and locally fsynced.
+- A pack is uploaded only after its footer and trailer are complete and locally fsynced. An
+  empty pack is valid to the format but is not uploaded.
 - The request index is written **after** the pack upload completes. An orphan pack is safe;
   an index pointing at a missing pack is not.
 - Objects are immutable and keyed by date/hour and a unique pack ID. A retry uses a new key, so
@@ -131,7 +149,8 @@ s3://neuradex-content/
   cas/v1/blake3/<first2>/<blake3-hex>          # future large-body path
 ```
 
-- `pack_id` is a 128-bit opaque identifier (UUIDv7 is the provisional encoding).
+- `pack_id` is a 128-bit opaque object-key identifier (UUIDv7 is the provisional encoding).
+  It is not encoded in the pack; the packfile format has no pack header or ID field.
 - `closed_at` is the UTC close time, `writer` is a short instance identifier. Together they make
   the key unique across retries and multiple writers.
 - `date`/`hour` are derived from the **close** time, not from each event's timestamp. A late
@@ -154,7 +173,7 @@ stateDiagram-v2
     Retry --> Failed: retry budget exhausted
     Uploaded --> Indexed: hourly index object written
     Indexed --> [*]
-    Failed --> [*]: event content_capture_error=pack_upload_failed
+    Failed --> [*]: no durable content reference
 ```
 
 Notes:
@@ -163,7 +182,8 @@ Notes:
   is written.
 - The builder keeps a local temp file (spool). It does not hold the whole 128 MiB in memory.
 - On upload failure, the local file is retained for the retry budget; after that, the pack is
-  failed and every event referencing it is marked with `content_capture_error`.
+  failed and events referencing it have no durable content; the content plane reports the
+  failure (capture-status fields are future schema work).
 - An upload that succeeds but whose index write fails leaves an orphan pack. It is harmless and
   can be discovered by a reconciliation job; it must not be deleted blindly because a later
   index might reference it.
@@ -173,13 +193,16 @@ Notes:
 The byte-level format is in [reference/packfile-format.md](../reference/packfile-format.md).
 The parts that matter here:
 
-- Each frame has a header with the BLAKE3 hash, SHA-256, XXH3-64 of the compressed payload,
-  uncompressed and compressed lengths, content type, and flags.
-- The footer contains one entry per distinct content hash, sorted by BLAKE3, with the absolute
-  frame offset and lengths.
-- The trailer points at the footer and has a SHA-256 of the footer bytes.
-- The footer is authoritative for lookup within a pack. The request index is authoritative for
-  mapping a request to a pack.
+- Frames start at offset 0 and are self-describing: a 96-byte header carries BLAKE3, SHA-256,
+  XXH3-64 of the compressed payload, plaintext/compressed lengths, and flags, followed by the
+  zstd payload. There is no pack header, content type, or truncation flag in the frame.
+- The footer is a sorted index: a 32-byte header, 64-byte entries keyed by BLAKE3, and an
+  optional same-order SHA-256 audit table. It can be rebuilt by scanning frame headers.
+- The trailer is 128 bytes, points at the footer, copies the footer checksum, and carries
+  BLAKE3/SHA-256 over all bytes before the trailer.
+- Frames are the source of truth. The footer is a rebuildable index; the request index is the
+  request→frame lookup. If the request index and footer disagree, verify the frame header and
+  rebuild the footer rather than trusting either blindly.
 
 ### Request index
 
@@ -187,7 +210,7 @@ The request index is an hourly, zstd-compressed NDJSON object. One line per requ
 captured content:
 
 ```json
-{"request_id":"019a7f3c-...","event_id":"019a7f3c-...","pack_id":"019a7f3c-...","frame_offset":4096,"frame_length":1234,"hash_blake3":"...","hash_sha256":"...","content_bytes":5123,"content_type":"text/html","truncated":false}
+{"request_id":"req-...","event_id":"evt-...","pack_key":"packs/v1/date=2026-11-10/hour=12/pack-019a.nrp","frame_offset":4096,"frame_length":1234,"blake3":"...","sha256":"...","size":5123,"content_type":"text/html","truncated":false}
 ```
 
 Properties:
@@ -205,11 +228,11 @@ replay anomaly and is resolved by `event_id` at read time.
 
 ### Dedupe
 
-- Within an open pack, the builder keeps a `BLAKE3 → frame` map. If the same content arrives
-  again before seal, the second request points at the existing frame.
+- `PackWriter::append` rejects a duplicate BLAKE3 hash in the same pack
+  (`PackError::DuplicateHash`). The content layer must check its in-memory `BLAKE3 → frame` map
+  first and point the second request at the existing frame, or treat the rejection as a bug.
 - Across packs, there is no global content index. The same page fetched tomorrow is written
-  again. This is deliberate: a global index is another consistency problem, and the pack
-  footer already gives local dedupe.
+  again. This is deliberate: a global index is another consistency problem.
 - A future content index could map BLAKE3 → (pack, frame) and skip duplicate frames across
   packs. It would be an optimization, not a correctness requirement.
 
@@ -223,22 +246,21 @@ sequenceDiagram
     participant P as Pack (B2)
     R->>S: request_id
     S->>I: GET index object for the request's hour
-    I-->>S: pack_id, frame_offset, frame_length, hashes
-    S->>P: range GET trailer (suffix 64 B)
-    P-->>S: footer offset, footer length
-    S->>P: range GET footer
-    P-->>S: sorted entries
-    S->>S: binary search BLAKE3 / verify entry matches index
-    S->>P: range GET frame bytes
-    P-->>S: compressed frame
+    I-->>S: pack key, frame offset, frame length, hashes
+    S->>P: GET pack (or range GET trailer/footer/frame in a future adapter)
+    P-->>S: pack bytes
+    S->>S: PackReader::new validates trailer, footer, pack hashes
+    S->>S: lookup BLAKE3 -> footer entry
+    S->>S: decode frame header, verify entry match
     S->>S: verify XXH3, decompress, verify BLAKE3 + SHA-256
     S-->>R: bytes + content metadata
 ```
 
-- Range GETs mean a read costs the footer plus one frame, not the whole pack.
-- The footer may be cached in memory by pack ID; it is immutable.
-- If the footer entry and the request index disagree, **the footer wins**; the reader records a
-  `content.read` event with `read_action=verify_mismatch` and returns an integrity error.
+- The current `PackReader` takes a complete pack byte slice. The format is range-friendly (128-byte
+  trailer, fixed-size footer entries), but a range-GET reader is future work.
+- The footer may be cached in memory by pack key; it is immutable.
+- Frames are self-describing. If the request index and footer disagree, verify the frame header;
+  a footer mismatch means the index or footer must be rebuilt, not that the bytes changed.
 - If the pack is missing (lifecycle expiry, B2 loss), the reader returns a typed "content
   expired or unavailable" result; the audit event still exists.
 
@@ -246,12 +268,12 @@ sequenceDiagram
 
 | Failure | Behaviour | What the event records |
 | --- | --- | --- |
-| Capture channel full | Drop content for this request; never block the response | `content_captured=false`, `content_capture_error=spool_full` |
-| Local spool disk full | Same as above, plus a high-severity log | `spool_full` |
-| Client disconnects mid-body | Do not store a partial frame as canonical content | `content_captured=false`, `content_capture_error=client_disconnect` |
-| Upstream error before body | No content | `content_captured=false`, `content_capture_error=upstream_error` |
-| Pack upload fails after retries | Sealed pack retained locally for inspection; events marked | `content_capture_error=pack_upload_failed` |
-| Index write fails after upload | Orphan pack; readers cannot find it; reconciliation can rebuild | `content_capture_error=index_write_failed` |
+| Capture channel full | Drop content for this request; never block the response | No `content_references`; capture status is future |
+| Local spool disk full | Same as above, plus a high-severity log | No reference; capture status is future |
+| Client disconnects mid-body | Do not store a partial frame as canonical content | No reference; `outcome=aborted` |
+| Upstream error before body | No content | No reference |
+| Pack upload fails after retries | Sealed pack retained locally for inspection; no durable ref | No reference; content plane reports failure |
+| Index write fails after upload | Orphan pack; readers cannot find it; reconciliation can rebuild | Reference is unresolvable until reconciled |
 | Hash mismatch on read | Do not return bytes; record verification failure | `content.read` with `failed` |
 | Clock skew across builders | Pack age may seal early/late; object key still unique | No event; metric |
 
@@ -320,7 +342,7 @@ measurement gate.
 | Question | Why it is open | Trigger / owner |
 | --- | --- | --- |
 | Should peek head bytes be captured? | Adds ≤2 MiB per peek; improves completeness; not modelled in capacity | Measure peek volume; default here is yes |
-| Is a single PUT enough for 128–160 MiB, or should we use multipart? | B2/S3 single PUT supports it, but retry and timeouts differ | Load-test in staging; if p99 PUT > 60 s, switch to multipart |
+| Is a single PUT enough for a 128 MiB target plus one 25 MiB frame, or should we use multipart? | B2/S3 single PUT supports it, but retry and timeouts differ | Load-test in staging; if p99 PUT > 60 s, switch to multipart |
 | Do we need a global content index for dedupe? | Could cut storage if pages repeat; adds a consistency problem | Measure duplicate BLAKE3 rate over 30 days |
 | What is the pack loss blast radius we accept? | A lost pack loses up to 128 MiB of bodies; events remain | Decide with B2 durability/versioning review |
 | How do we perform a legal per-request deletion? | Packs are immutable; rewrite is expensive | Legal/security review; document as unsupported until then |

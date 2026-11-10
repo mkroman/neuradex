@@ -66,13 +66,13 @@ request metadata.
 | SLO | Target | Measurement |
 | --- | --- | --- |
 | API availability | 99.9% monthly | Non-5xx / total requests |
-| Fetch latency p95 | < 2 s (excluding upstream) | `duration_ms` by route |
+| Fetch latency p95 | < 2 s (excluding upstream) | `http_duration_ms` by route |
 | Search queue wait p95 | < 1 s | `queue_ms` |
 | Audit event completeness | ≥ 99.99% of requests | Events vs request count |
 | Event searchability | < 30 s p95 | Request timestamp vs Quickwit `_timestamp`/ingest lag |
-| Content capture rate | ≥ 99.9% of successful fetches | `content_captured=true` / fetch events |
+| Content capture rate | ≥ 99.9% of successful fetches | fetch events with `content_reference_count > 0` / fetch events |
 | Content read availability | 99.9% | Read API success |
-| Read audit completeness | 100% of reads | Read audit count vs read requests |
+| Read audit completeness | 100% of reads (future) | Read audit count vs read requests; not in schema 1.0.0 |
 
 The content capture SLO excludes `client_disconnect`, `upstream_error`, and policy-shed cases;
 report those separately. An SLO that hides shedding is not useful.
@@ -84,15 +84,15 @@ report those separately. An SLO that hides shedding is not useful.
 ```sql
 SELECT
     toStartOfFiveMinute(timestamp) AS t,
-    route,
+    http_route,
     count() AS requests,
-    countIf(status >= 500) AS errors,
-    quantile(0.95)(duration_ms) AS p95_ms,
-    quantile(0.99)(duration_ms) AS p99_ms
+    countIf(http_status >= 500) AS errors,
+    quantile(0.95)(http_duration_ms) AS p95_ms,
+    quantile(0.99)(http_duration_ms) AS p99_ms
 FROM neuradex.events
-WHERE event IN ('fetch', 'peek', 'search', 'openwebui_search')
+WHERE operation_type IN ('fetch', 'peek', 'search', 'openwebui_search')
   AND timestamp >= now() - INTERVAL 6 HOUR
-GROUP BY t, route
+GROUP BY t, http_route
 ORDER BY t;
 ```
 
@@ -117,13 +117,13 @@ ORDER BY hour;
 ```sql
 SELECT
     toStartOfHour(timestamp) AS hour,
-    countIf(content_captured) AS captured,
-    countIf(NOT content_captured) AS missing,
+    countIf(content_reference_count > 0) AS captured,
+    countIf(content_reference_count = 0) AS missing,
     sum(content_bytes) AS bytes,
-    countIf(content_truncated) AS truncated,
+    countIf(truncated) AS truncated,
     quantile(0.95)(content_bytes) AS p95_bytes
 FROM neuradex.events
-WHERE event = 'fetch' AND timestamp >= now() - INTERVAL 24 HOUR
+WHERE operation_type = 'fetch' AND timestamp >= now() - INTERVAL 24 HOUR
 GROUP BY hour
 ORDER BY hour;
 ```
@@ -131,31 +131,27 @@ ORDER BY hour;
 ### Capture errors
 
 ```sql
+-- Capture reasons are not in schema 1.0.0. Until a capture-status field exists, compare
+-- fetch requests with and without a content reference, then inspect logs for the reason.
 SELECT
-    content_capture_error,
-    count() AS n
+    countIf(content_reference_count = 0) AS fetch_without_content,
+    countIf(content_reference_count > 0) AS fetch_with_content
 FROM neuradex.events
-WHERE event = 'fetch'
-  AND NOT content_captured
-  AND timestamp >= now() - INTERVAL 24 HOUR
-GROUP BY content_capture_error
-ORDER BY n DESC;
+WHERE operation_type = 'fetch'
+  AND timestamp >= now() - INTERVAL 24 HOUR;
 ```
 
 ### Read audit
 
 ```sql
-SELECT
-    toStartOfHour(timestamp) AS hour,
-    auth_subject,
-    read_action,
-    count() AS reads,
-    sum(read_bytes) AS bytes
-FROM neuradex.events
-WHERE event IN ('audit.read', 'content.read')
-  AND timestamp >= now() - INTERVAL 7 DAY
-GROUP BY hour, auth_subject, read_action
-ORDER BY bytes DESC;
+-- Read audit is future work (RFD 0009). The current schema has no auth_subject/read_action
+-- fields. When it lands, use a query like this:
+--
+-- SELECT hour, auth_subject, read_action, count() AS reads, sum(read_bytes) AS bytes
+-- FROM neuradex.events
+-- WHERE event IN ('audit.read', 'content.read')
+-- GROUP BY hour, auth_subject, read_action
+-- ORDER BY bytes DESC;
 ```
 
 ## Alerts
@@ -168,7 +164,7 @@ ORDER BY bytes DESC;
 | Event spool depth | > 80% for 5 min | page | Disk, sink health |
 | Event drop counter | any increase | page | Audit-loss incident |
 | Content spool depth | > 80% for 5 min | ticket | Uploader/B2 |
-| Content capture rate | < 99% of successful fetches for 15 min | ticket | Capture errors |
+| Content capture rate | < 99% of successful fetches for 15 min | ticket | Capture errors (logs; no status field yet) |
 | Pack upload failures | > 1% for 15 min | ticket | B2/credentials |
 | Pack count anomaly | > 50% above model for 3 days | ticket | Body sizes/seal bug |
 | Hash mismatch | any non-transient | page | Integrity incident |
@@ -176,7 +172,7 @@ ORDER BY bytes DESC;
 | Request index missing | > 1 per hour | page | Index writer |
 | ClickHouse insert failures | > 0 for 5 min | ticket | ClickHouse |
 | Quickwit search errors | > 1% for 5 min | ticket | Quickwit |
-| Read audit failure | any | page | Access path |
+| Read audit failure | any (future) | page | Access path |
 | Break-glass issuance | any | notify security | Review within 1 day |
 | Retention deletion spike | objects deleted > 10% above model | ticket | Lifecycle |
 
@@ -191,7 +187,7 @@ The service uses stable HTTP semantic conventions:
 | --- | --- | --- |
 | Server | `<method> <route>` | `http.route`, `http.response.status_code`, `error.type`, duration |
 | Client | `<method>` | `url.full` (sanitized), `server.address`, `server.port`, `http.response.status_code`, `network.protocol.version` |
-| Search | `search` | `neuradex.search.query.length`, `timeout_s`, `queue_ms`, `result_count` |
+| Search | `search` | `neuradex.search.query.length`, `timeout_s`, `queue_ms`, `result_count` (existing service span) |
 
 `url.full` redacts userinfo, fragment, and query values; query keys remain. Do not add raw
 headers or bodies to spans. A trace can be sampled; the audit event cannot.

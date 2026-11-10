@@ -51,8 +51,7 @@ in the implementation PR.
 | `NEURADEX_AUDIT_ENABLED` | `true` | Emit audit events |
 | `NEURADEX_AUDIT_EVENT_LOG` | unset | Local NDJSON spool path (e.g. `.local/neuradex/events.jsonl`) |
 | `NEURADEX_AUDIT_SPOOL_DIR` | `.local/neuradex/audit-spool` | Bounded event spool |
-| `NEURADEX_AUDIT_STORE_QUERY_TEXT` | `false` | Capture `query_text`; restricted to audit readers |
-| `NEURADEX_AUDIT_HMAC_KEY` | — | Base64 32+ byte key for sensitive header HMACs |
+| `NEURADEX_AUDIT_HMAC_KEY` | — | Key for the hashed-header HMAC-SHA256; without it, hashed headers are redacted |
 | `NEURADEX_AUDIT_QUICKWIT_URL` | unset | Quickwit ingest endpoint |
 | `NEURADEX_AUDIT_CLICKHOUSE_URL` | unset | ClickHouse HTTP endpoint |
 | `NEURADEX_AUDIT_CLICKHOUSE_DATABASE` | `neuradex` | ClickHouse database |

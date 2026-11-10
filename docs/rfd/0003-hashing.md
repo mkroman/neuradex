@@ -15,6 +15,9 @@ updated: 2026-11-10
 
 # RFD 3: Hashing
 
+> **Status:** the BLAKE3/SHA-256/XXH3 rules are implemented in `neuradex-packfile` and
+> `neuradex-audit`. The content orchestration that applies them to live requests is not wired.
+
 ## Summary
 
 Use **BLAKE3-256** as the content identity and CAS key. Store an independent **SHA-256** digest
@@ -42,10 +45,10 @@ may be added later as separate layers.
 | Goal | How we know it is met |
 | --- | --- |
 | One unambiguous content identity | Every event and footer entry uses the same BLAKE3-256 over the same canonical bytes |
-| Independent audit verification | `sha256sum` on the stored bytes matches `content_hash_sha256` |
+| Independent audit verification | `sha256sum` on the stored bytes matches `ContentReference.sha256` |
 | Cheap frame corruption detection | XXH3-64 is verified before decompression |
 | No secret leakage through hashes | Sensitive headers use HMAC, not a bare hash of a low-entropy value |
-| Algorithm agility | Algorithm IDs exist in the pack frame and event schema |
+| Versioned algorithms | Pack format v1 pins BLAKE3/SHA-256/XXH3; a new algorithm needs a new version |
 
 Non-goals:
 
@@ -94,13 +97,13 @@ The hashes are computed over the **decompressed response bytes that neuradex act
 processed**, before UTF-8 replacement and before JSON encoding:
 
 - `fetch`: the full decompressed body, capped at 25 MiB. If the cap is hit, the hash is of the
-  captured prefix and `content_truncated=true`.
+  captured prefix and `operation.truncated=true`.
 - `peek`: the decompressed bytes read up to the end of the document head, capped at 2 MiB. If
   the parser stops early, the hash covers the bytes actually captured, not the full upstream
   response.
-- `search`: no content bytes; no content hash.
-- Empty body: the hashes of the empty byte string are valid and are stored when capture is
-  marked successful. `content_captured=false` is different from an empty body.
+- `search`: no content bytes; no content reference.
+- Empty body: the hashes of the empty byte string are valid and can be stored as a reference of
+  size 0. An absent `content_references` array means no capture, not an empty body.
 
 Do **not** hash:
 
@@ -117,43 +120,28 @@ encoding choices.
 
 | Hash | Input | Encoding | Stored in | Used for |
 | --- | --- | --- | --- | --- |
-| BLAKE3-256 | Canonical content bytes | 64 lowercase hex chars | Event `content_hash_blake3`; frame header; footer entry; CAS object key | Content identity, footer search key, dedupe within a pack |
-| SHA-256 | Canonical content bytes | 64 lowercase hex chars | Event `content_hash_sha256`; frame header; footer entry | Independent audit verification |
-| XXH3-64 | Compressed frame payload | 16 lowercase hex chars (or u64 in binary) | Frame header; footer entry | Corruption detection before decompression |
-| HMAC-SHA256 | Sensitive header canonical string | base64url, no padding | Header JSON object | Prove a sensitive header was present without storing its value |
-| SHA-256 | Search query text | 64 lowercase hex chars | Event `query_hash` | Aggregate search analytics without query text |
+| BLAKE3-256 | Canonical content bytes | 64 lowercase hex chars in events; raw 32 bytes in packfiles | `ContentReference.blake3`; frame header; footer entry | Content identity, footer search key, duplicate rejection within a pack |
+| SHA-256 | Canonical content bytes | 64 lowercase hex chars in events; raw 32 bytes in packfiles | `ContentReference.sha256`; frame header; optional footer audit table | Independent audit verification |
+| XXH3-64 | Compressed frame payload | u64 in the frame/footer | Frame header; footer entry | Corruption detection before decompression |
+| HMAC-SHA256 | Hashed-header value (IP/user/chat IDs) | 64 lowercase hex chars | HeaderCapture `values[].value` | Correlate identifiers without storing them |
+| SHA-256 | Search query text | 64 lowercase hex chars | `operation.query_sha256` | Aggregate search analytics without query text |
 
-`content_hash_blake3` is the key. `content_hash_sha256` is not used for lookup. `xxh3` is never
-used for lookup, dedupe, or equality across frames.
+`ContentReference.blake3` is the key. `ContentReference.sha256` is not used for lookup. The
+frame/footer `xxh3` is never used for lookup, dedupe, or equality across frames.
 
 ### Sensitive header HMAC
 
-For headers that must be dropped (see RFD 0005), record:
-
-```json
-{
-  "authorization": {
-    "redacted": true,
-    "present": true,
-    "length": 42,
-    "hmac_sha256": "base64url…"
-  }
-}
-```
-
-The HMAC input is a domain-separated canonical string:
-
-```text
-neuradex-header-v1\0<lowercase-name>\0<value-as-received>
-```
+For the hashed-header list in `header_policy.rs` (IP/user/chat identifiers), the HMAC is over
+the raw header value bytes and is rendered as 64 lowercase hex characters. Credentials such as
+`authorization` and cookies are redacted, not HMACed (RFD 0005).
 
 - The key is a dedicated audit HMAC key, not a B2 key, not the Kagi token, and not the TLS key.
-- The key is at least 32 random bytes, stored in the secret manager, and rotated annually or on
-  suspicion. Rotation changes future HMACs; old events keep the old key version. Include a
-  `key_id` field if rotation is implemented.
-- HMAC-SHA256 is used instead of plain SHA-256 because a low-entropy value (e.g. a short API
-  key or a cookie with a predictable prefix) could otherwise be confirmed by brute force.
-- The HMAC is not a content hash and must never be compared with `content_hash_sha256`.
+- The key is at least 32 random bytes, stored in the secret manager, and rotated on a documented
+  schedule. Rotation changes every future digest; old events keep the old key. A key ID is
+  future work.
+- HMAC-SHA256 is used instead of plain SHA-256 because a low-entropy identifier (an IP address,
+  a user ID) could otherwise be confirmed by brute force.
+- The HMAC is not a content hash and must never be compared with `ContentReference.sha256`.
 
 ### Verification rules
 
@@ -163,30 +151,32 @@ On write:
 2. Compute BLAKE3 and SHA-256 in one pass where the implementation allows it.
 3. Compress.
 4. Compute XXH3-64 over the compressed payload.
-5. Write the frame header, then the payload.
-6. Add the footer entry with the same hashes and absolute offsets.
+5. Write the 96-byte frame header, then the zstd payload.
+6. Add the footer entry (BLAKE3, frame offset, compressed/plaintext lengths, XXH3, flags) and
+   the same-index SHA-256 in the optional audit table.
 
-On read:
+On read (the current reader takes a complete pack slice; a range adapter is future work):
 
-1. Range-GET the frame header and payload.
-2. Verify XXH3-64 over the compressed payload.
-3. Decompress.
-4. Verify BLAKE3-256 of the decompressed bytes against the frame header and the request index.
-5. Verify SHA-256 against the frame header.
-6. Return bytes only if all checks pass.
+1. Read the trailer, footer, and the selected frame.
+2. Verify the footer checksum and pack BLAKE3/SHA-256 over the pre-trailer bytes.
+3. Binary-search the footer by BLAKE3 and verify the frame header matches the entry.
+4. Verify XXH3-64 over the compressed payload.
+5. Decompress with the header's plaintext length as the bound.
+6. Verify BLAKE3-256 and SHA-256 of the decoded bytes against the frame header.
+7. Return bytes only if all checks pass.
 
 If BLAKE3 matches but SHA-256 does not, treat it as corruption or an implementation bug; do not
-return bytes. If the request index and footer disagree, the footer wins (RFD 0002).
+return bytes. If the request index and footer disagree, verify the frame header and rebuild
+the footer/index rather than trusting either blindly (RFD 0002).
 
 ### Algorithm agility
 
-- The frame header has one-byte algorithm IDs for content hash and audit hash, plus one byte for
-  the checksum. `1` = BLAKE3-256, `2` = SHA-256 (audit), `1` = XXH3-64 (checksum).
-- The event schema has `content_hash_alg: "blake3-256"` and `audit_hash_alg: "sha256"` as
-  optional fields for future readers. They may be omitted when the defaults apply; the
-  reference page documents the defaults.
+- Pack format version 1 pins BLAKE3-256 for content identity, SHA-256 for the audit hash, and
+  XXH3-64 for the compressed-frame checksum. The frame header has no algorithm-ID bytes.
 - A new content hash algorithm requires a new pack format version and a migration plan. Do not
   silently mix algorithms in one footer.
+- The trailer reserves 24 bytes for a future keyed-BLAKE3 MAC; that is a separate extension,
+  not an algorithm selector, and it is not implemented in v1.
 
 ## Economic, capacity, and performance considerations
 

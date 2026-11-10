@@ -59,7 +59,9 @@ hold multiple roles; the read audit records the role used.
 4. Ingress adds a signed principal (short-lived JWT or a mTLS-derived header with a signature).
 5. neuradex verifies the signature, issuer, audience, and expiry. It rejects unsigned or expired
    principals with the JSON error envelope.
-6. neuradex records `auth_subject`, `auth_method`, `user_id`. It never records the token.
+6. Once the auth fields land, neuradex will record `auth_subject`, `auth_method`, `user_id`.
+   They are **not in AuditEvent 1.0.0**; today the event has only search `auth_mode` and
+   header HMACs. It never records the token.
 
 A failed authentication is audited with `outcome=client_error`, `error_type=unauthorized`,
 `auth_method=none`, and no principal. It does not reveal whether the target exists.
@@ -76,20 +78,24 @@ A failed authentication is audited with `outcome=client_error`, `error_type=unau
 
 ## Read audit
 
-Every read of events or content produces an `audit.read` or `content.read` event:
+When read audit lands, every read of events or content will produce an `audit.read` or
+`content.read` event. The current schema has no such fields:
 
-| Field | Example |
-| --- | --- |
-| `read_action` | `get_content` |
-| `read_target` | `req_019a7f3c...` or `pack_019a...` |
-| `read_reason` | `INC-1234` (required for content/exports) |
-| `read_bytes` | 5123 |
-| `auth_subject` | `user:alice@example.com` |
-| `outcome` | `success` |
+| Field | Example | Status |
+| --- | --- | --- |
+| `read_action` | `get_content` | future |
+| `read_target` | `req_019a7f3c...` or `pack_019a...` | future |
+| `read_reason` | `INC-1234` (required for content/exports) | future |
+| `read_bytes` | 5123 | future |
+| `auth_subject` | `user:alice@example.com` | future |
+| `outcome` | `success` | current |
 
-Read audit events are stored in the same archive/Quickwit/ClickHouse pipeline today. They are
-immutable from the application's perspective; only B2 lifecycle deletes them. A separate
-immutable store is a future hardening step. See
+These fields are proposed in RFD 0009. The current `AuditEvent` schema has no read-audit or
+auth-subject fields; do not query them until the audit crate emits them.
+
+Read audit is future work. When it lands, read events should use the same archive/Quickwit/
+ClickHouse pipeline and be immutable from the application's perspective; only B2 lifecycle
+deletes them. A separate immutable store is a future hardening step. See
 [RFD 0009](../rfd/0009-access-and-read-audit.md#read-audit-event).
 
 ## Break-glass

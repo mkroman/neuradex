@@ -107,12 +107,12 @@ flowchart TD
 Rules:
 
 - Arrows point in the allowed dependency direction. `audit` and `pack` are leaves; they never
-  depend on each other. The service composes them because an event carries content refs as
-  plain strings, not as `neuradex-content` types.
+  depend on each other. The service composes them: `AuditEvent.content_references` is an
+  audit-side `ContentReference`, and the service maps it from the content crate's frame metadata.
 - `neuradex-content` is allowed to depend on `neuradex-packfile`, never the reverse.
 - `neuradex-audit` does not depend on `neuradex-content`; if a shared type is needed, define it
-  in `neuradex-audit` (e.g. a `ContentRef` struct of strings/numbers) or duplicate the small
-  shape. Do not create a bidirectional dependency.
+  in `neuradex-audit` as `ContentReference` (storage, key, hashes, size, optional content type)
+  and have the service map it. Do not create a bidirectional dependency.
 - `test-support` may depend on the crates under test only under `[dev-dependencies]`. Never use
   it from `src/#[cfg(test)]` of a crate it depends on; the dev-dependency cycle can otherwise
   link two copies of that crate.
@@ -167,7 +167,7 @@ impl HeaderPolicy {
 // neuradex-packfile
 pub struct PackWriter<W: Write + Seek> { /* ... */ }
 pub struct PackReader<R: Read + Seek> { /* ... */ }
-pub struct FrameMeta { /* hashes, lengths, content type, flags */ }
+pub struct FrameMeta { /* hashes, lengths, flags */ }
 
 // neuradex-content
 pub trait ObjectStore { /* put, get_range, head, list */ }
@@ -217,7 +217,7 @@ profile and scale them independently.
 
 | Question | Why it is open | Trigger / owner |
 | --- | --- | --- |
-| Should `ContentRef` live in `neuradex-audit` or a tiny shared crate? | It is a plain data shape; a shared crate may be overkill | Decide when the event struct is implemented |
+| Should the content crate reuse `ContentReference` directly? | The current audit type is a plain shape; a direct dependency would point content → audit, against the direction | Keep the small mapping in the service |
 | Should the pack builder be a task in the service or a separate process? | A separate process isolates CPU/disk and survives restarts; a task is simpler | Load-test both; start in-process |
 | Does the event archive writer belong in `content` or `audit`? | It writes events but uses object storage | Current: `content`, because it owns object-store writes; revisit if audit grows an archive sink |
 | Do we need a CLI crate for inspection? | Useful for runbooks; not needed for the service | Add after the read path exists |

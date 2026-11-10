@@ -56,8 +56,8 @@ sequenceDiagram
 | 5 | Validate text content type | yes | 415/400; audit |
 | 6 | Stream body; tee to content spool; parse head | yes for stream, no for spool | If spool is full, drop content and continue |
 | 7 | Serialize response | yes | 500 internal; audit with `error_type=serialization_failed` |
-| 8 | Return response to client | — | Client may disconnect; mark `canceled` |
-| 9 | Finish hashing/compression; append frame | no | Mark event `content_capture_error` |
+| 8 | Return response to client | — | Client may disconnect; mark `outcome=aborted` |
+| 9 | Finish hashing/compression; append frame | no | Omit the content reference; capture failure is future schema work |
 | 10 | Seal/upload pack; write hourly index | no | Retry; then mark events |
 | 11 | Emit event to Quickwit/ClickHouse/archive | no | Spool; alert on lag/depth |
 
@@ -69,12 +69,9 @@ the upstream read if the content spool is full; the capture path drops and marks
 The response body and metrics are complete before the pack is sealed. This is deliberate: a
 128 MiB pack may take seconds to fill and upload, and the client should not wait. The event's
 content refs are filled when the pack is indexed. If the event is emitted before the refs are
-known, it carries `content_captured=true`, `content_pack_id=""`, and a `content_pending` marker;
-a later `content.pack_uploaded` event supplies the refs keyed by `request_id`.
-
-> Open question: whether to buffer the request event until the refs are known, or emit early
-> with a pending state. RFD 0004 records the trade-off. Either way, a reader must handle a
-> pending ref.
+known, the current schema has two choices: emit the event without a reference and let a later
+content event supply it, or buffer until the reference is known. The open question is recorded
+in RFD 0002/0004; there is no `content_pending` field in `AuditEvent` 1.0.0.
 
 ## Peek (`GET /v1/peek`)
 
@@ -125,18 +122,20 @@ sequenceDiagram
     K-->>S: results
     S->>S: truncate to limit/count
     S-->>C: 200 results
-    S->>A: event with query_hash, result_count, target_url
+    S->>A: event with query_sha256, returned_result_count, top_hosts
 ```
 
 - Search is queued: at most `KAGI_MAX_SESSIONS` run at once (default 2, max 64). The queue wait
-  is reported in `metrics.queue_ms`.
+  is reported in `operation.queue_ms`.
 - `timeout` covers queue wait, session wait, and the search itself. Without it, the request waits
   until the client disconnects.
-- Open WebUI search has no timeout field and returns a bare array; its event is
-  `openwebui_search`.
-- `query_text` is optional and restricted. `query_hash` is always computed. `target_url` is the
-  first result URL, sanitized; the full result list is not stored.
-- Search does not capture content bytes.
+- Open WebUI search has no timeout field and returns a bare array; its event has
+  `operation.type = "openwebui_search"`.
+- The query text is never stored. `operation.query_sha256` is always computed, with
+  `query_length` and `query_terms`.
+- `operation.returned_result_count`, `upstream_result_count`, `zero_results`, `result_digest`, and
+  `top_hosts` describe the result set without storing full URLs.
+- Search does not capture content bytes; there is no `content_references` array.
 
 ## Error and fallback paths
 
@@ -146,12 +145,12 @@ sequenceDiagram
 | Missing JSON content type | 415 `unsupported_media_type` | yes | no | `ApiJson` rejection |
 | Unknown route | 404 `not_found` | yes | no | Router fallback; `http.route` stays empty |
 | Wrong method | 405 `method_not_allowed` | yes | no | Router fallback |
-| Upstream DNS/TLS/connect | 502 `upstream` | yes | no | `error_type` low-cardinality |
-| Upstream timeout | 502/504 | yes | no | `outcome=upstream_error`/`timeout` |
+| Upstream DNS/TLS/connect | 502 `upstream` | yes | no | `outcome=server_error`, `error_type` low-cardinality |
+| Upstream timeout | 502/504 | yes | no | `outcome=server_error`, `error_type=upstream_timeout` |
 | Binary content type | 400/415 | yes | no | Fetch rejects binary |
 | Response serialization | 500 `internal` | yes | maybe | Details only in logs |
 | Health probe | 204 | **no** | no | Excluded on purpose |
-| Client disconnect | — | yes | no partial canonical body | `outcome=canceled` |
+| Client disconnect | — | yes | no partial canonical body | `outcome=aborted` |
 
 All error bodies use `{"error": {"type", "message"}}`. 5xx messages are generic; the source
 chain is logged, never rendered. The audit event records `error_type`, not the message.
@@ -160,29 +159,29 @@ chain is logged, never rendered. The audit event records `error_type`, not the m
 
 - If the client disconnects while the body is streaming, the service stops reading. The bytes
   already captured are not stored as a canonical frame, because they are a prefix that does not
-  correspond to a complete upstream response. The event records `content_captured=false`,
-  `content_capture_error=client_disconnect`.
+  correspond to a complete upstream response. The event has no `content_references` entry; a
+  future capture-status field would record `client_disconnect`.
 - If the body reaches `FETCH_MAX_BYTES` (25 MiB), the captured prefix *is* canonical content:
-  `content_truncated=true`, and the hash identifies the prefix. The event records
-  `content_bytes` of the prefix, not the announced `content_length`.
-- If the content spool is full, the body is still returned to the client; the event records
-  `content_capture_error=spool_full`.
-- A pack upload failure after retries marks every event referencing that pack with
-  `content_capture_error=pack_upload_failed`. The events themselves are not lost.
+  `operation.truncated=true`, and the reference's hashes identify the prefix. The reference
+  `size` is the prefix length, not the announced `operation.content_length`.
+- If the content spool is full, the body is still returned to the client; the event has no
+  content reference. A future capture-status field would record `spool_full`.
+- A pack upload failure after retries means the events referencing that pack have no durable
+  content. The events themselves are not lost; the content plane must report the failure.
 
 ## Timing fields
 
 | Field | Start | End | Used for |
 | --- | --- | --- | --- |
-| `duration_ms` | request received | response serialized | SLOs, route latency |
+| `http.duration_ms` | request received | response serialized | SLOs, route latency |
 | `metrics.ttfb_ms` | request received | final response headers | Upstream latency |
 | `metrics.total_ms` | request received | body read complete | Fetch latency |
-| `metrics.queue_ms` | search enqueued | permit acquired | Kagi contention |
+| `operation.queue_ms` | search enqueued | permit acquired | Kagi contention |
 | `audit lag` | event created | event searchable | Pipeline health |
 | `archive lag` | hour closed | archive object exists | Cold durability |
 
-`timestamp` is the event emission time (completion), not the request start. Reconstruct the
-start as `timestamp - duration_ms`.
+`timestamp` is the event creation time, not necessarily the request start. Reconstruct an
+approximate start as `timestamp - http.duration_ms`.
 
 ## Why the order matters
 

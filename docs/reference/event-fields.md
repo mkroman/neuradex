@@ -1,251 +1,363 @@
 # Event fields
 
-This is the complete `schema_version: 1` event schema. The same field names are used in the
-event JSON, the Quickwit mapping (`hack/quickwit/neuradex-events.yaml`), and the ClickHouse table
-(`hack/clickhouse/init.sql`). Do not rename per sink.
+This is the schema emitted by `neuradex-audit` (`SCHEMA_VERSION = "1.0.0"`). It is **not** flat:
+`service`, `http`, `operation`, `content_references`, and the header captures are nested. The
+source of truth is `crates/neuradex-audit/src/event.rs`; this page mirrors its serde output.
 
-**Status:** specified. The Rust types are not implemented beyond the crate scaffold.
+**Status:** the audit crate is implemented (PR #67). The service does not emit events yet; the
+read-audit and auth fields in [RFD 0009](../rfd/0009-access-and-read-audit.md) are future work
+and are not part of this schema.
 
-## Envelope and correlation
+## Top level
 
-| Field | Event JSON | Quickwit | ClickHouse | Required | Description |
-| --- | --- | --- | --- | --- | --- |
-| `schema_version` | number | `u64` | `UInt16` | yes | Schema version; currently `1` |
-| `event` | string | `text` raw, fast | `LowCardinality(String)` | yes | Event type (see below) |
-| `event_id` | string | `text` raw | `String` | yes | Unique event ID; stable across retries |
-| `timestamp` | RFC 3339 string | `datetime` | `DateTime64(3,'UTC')` | yes | Completion time, UTC, millisecond precision |
-| `request_id` | string | `text` raw | `String` | request events | Opaque request ID; primary correlation key |
-| `trace_id` | string (32 hex) | `text` raw | `String` | no | W3C trace ID; empty if unavailable |
-| `span_id` | string (16 hex) | `text` raw | `String` | no | Span ID; empty if unavailable |
+| Field | JSON type | Required | Description |
+| --- | --- | --- | --- |
+| `event` | string | yes | Always `neuradex.request` |
+| `schema_version` | string | yes | `"1.0.0"` |
+| `event_id` | string | yes | `evt-<pid>-<nanos>-<counter>`, unique per event |
+| `timestamp` | string (RFC 3339 UTC) | yes | Event creation time |
+| `observed_at` | string (RFC 3339 UTC) | no | Upstream observation time, when distinct |
+| `service` | object | yes | `{name, version, environment?}` |
+| `trace_id` | string | no | W3C trace ID, when traced |
+| `span_id` | string | no | Span ID, when traced |
+| `request_id` | string | yes | `req-<pid>-<nanos>-<counter>`, shared by one request's events |
+| `http` | object | yes | HTTP facts (see below) |
+| `outcome` | string | yes | `success`, `client_error`, `server_error`, `aborted`, `panic` |
+| `error_type` | string | no | Machine-readable failure class |
+| `operation` | object | no | Tagged union; `type` selects the fields |
+| `content_references` | array | no | Stored content references (omitted when empty) |
+| `request_headers` | object | no | Header capture for the upstream request |
+| `response_headers` | object | no | Header capture for the upstream response |
 
-`event_id` is unique per event. `request_id` is unique per request but appears in multiple
-events (`fetch`, `content.pack_uploaded`, `audit.read`). Do not use `request_id` as the sole
-unique key for event rows.
+Optional fields are **omitted** when unset; they are not `null`. Consumers must treat a missing
+field as absent.
 
-## Request metadata
+## `service`
 
-| Field | Event JSON | Quickwit | ClickHouse | Required | Description |
-| --- | --- | --- | --- | --- | --- |
-| `route` | string | `text` raw, fast | `LowCardinality(String)` | no | Matched route template (`/v1/fetch`); empty for 404/405 and non-HTTP events |
-| `method` | string | `text` raw, fast | `LowCardinality(String)` | no | HTTP method; empty for non-HTTP events |
-| `status` | number | `u64`, fast | `UInt16` | no | Final HTTP status; `0` for non-HTTP events |
-| `duration_ms` | number | `u64`, fast | `UInt32` | no | Request/operation duration in ms |
-| `outcome` | string | `text` raw, fast | `LowCardinality(String)` | yes | Low-cardinality result (see below) |
-| `error_type` | string | `text` raw, fast | `LowCardinality(String)` | no | Low-cardinality failure class; empty on success |
-| `service_version` | string | `text` raw | `String` | no | Service package version |
+| Field | JSON type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes | Service name, default `neuradex` |
+| `version` | string | yes | Cargo package version |
+| `environment` | string | no | Deployment environment, when configured |
 
-`error_type` values are stable identifiers, not messages: `invalid_param`,
-`unsupported_media_type`, `not_found`, `method_not_allowed`, `unauthorized`, `forbidden`,
-`upstream_timeout`, `upstream_error`, `dns_error`, `tls_error`, `connection_error`,
-`connection_reset`, `body_error`, `decode_error`, `redirect_error`, `content_spool_full`,
-`content_pack_failed`, `content_index_failed`, `serialization_failed`, `internal_error`.
+## `http`
 
-## Principal
+| Field | JSON type | Required | Description |
+| --- | --- | --- | --- |
+| `method` | string | yes | HTTP method |
+| `route` | string | no | Matched route template; omitted for a fallback |
+| `path` | string | yes | Request path (no query string) |
+| `status` | number | no | Final HTTP status; omitted if no response was produced |
+| `request_body_bytes` | number | no | Request body size, when known |
+| `response_body_bytes` | number | no | Response body size, when known |
+| `duration_ms` | number | yes | Request duration in whole milliseconds |
 
-| Field | Event JSON | Quickwit | ClickHouse | Required | Description |
-| --- | --- | --- | --- | --- | --- |
-| `auth_subject` | string | `text` raw, fast | `String` | no | Verified principal, e.g. `user:alice@example.com` or `service:agent` |
-| `auth_method` | string | `text` raw, fast | `LowCardinality(String)` | no | `mtls`, `oidc`, `none`, `local` |
-| `user_id` | string | `text` raw, fast | `String` | no | Stable user identifier, if known |
+The path is the raw request path. A fallback request has `http.path` but no `http.route`.
 
-Never store the raw token, certificate, or cookie. `auth_subject` is the verified `sub` from the
-trusted ingress.
+## `operation`
 
-## Search
+`operation.type` is one of `search`, `openwebui_search`, `fetch`, `peek`, `infrastructure`.
+The fields below are union fields: only the applicable ones are present.
 
-| Field | Event JSON | Quickwit | ClickHouse | Required | Description |
-| --- | --- | --- | --- | --- | --- |
-| `query_text` | string | `text` default | `String` | no | Search query; empty unless policy enables capture |
-| `query_hash` | string (64 hex) | `text` raw | `String` | search events | SHA-256 of the exact query string |
-| `result_count` | number | `u64`, fast | `UInt32` | no | Results returned after `limit`/`count` truncation |
+### Search (`search`, `openwebui_search`)
 
-`query_text` is restricted. The default is off; aggregate with `query_hash`. A search event with
-`query_text` empty is normal.
+| Field | JSON type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | string | yes | `search` or `openwebui_search` |
+| `query_length` | number | yes | Query length in Unicode scalar values |
+| `query_terms` | number | yes | Whitespace-separated term count |
+| `query_sha256` | string | yes | SHA-256 hex of the query |
+| `limit` | number | no | `/v1/search` requested limit |
+| `count` | number | no | `/v1/openwebui_search` requested count |
+| `auth_mode` | string | no | `privacy_pass` or `session` |
+| `queue_ms` | number | no | Time waiting for a search slot |
+| `upstream_ms` | number | no | Time in the upstream search |
+| `upstream_result_count` | number | no | Results returned by Kagi |
+| `returned_result_count` | number | no | Results returned to the client |
+| `zero_results` | boolean | yes | Whether the returned set was empty |
+| `result_digest` | string | no | SHA-256 hex of the returned result URLs, newline-separated |
+| `top_hosts` | array | no | `[{host, count}]`, at most 10, ordered by count then host |
 
-## Target
+The query text is never stored. `query_sha256` supports aggregate analysis without exposing the
+query. `top_hosts` exposes only result hostnames, not full URLs.
 
-| Field | Event JSON | Quickwit | ClickHouse | Required | Description |
-| --- | --- | --- | --- | --- | --- |
-| `target_url` | string | `text` default | `String` | no | Requested URL (fetch/peek) or first result URL (search), sanitized |
-| `upstream_host` | string | `text` raw, fast | `String` | no | Host of the final upstream response |
-| `redirects_followed` | number | `u64` | `UInt16` | no | Number of redirect hops followed |
+### Fetch / peek (`fetch`, `peek`)
 
-Sanitization removes userinfo, fragment, and query **values**; query keys remain (replaced with
-`REDACTED`), matching the telemetry `url.full` policy. Treat URLs as sensitive; path segments can
-contain tokens.
+| Field | JSON type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | string | yes | `fetch` or `peek` |
+| `target_scheme` | string | no | `http` or `https` |
+| `target_host` | string | no | Target host |
+| `target_port` | number | no | Explicit target port |
+| `target_path` | string | yes | Target path |
+| `target_url_sha256` | string | yes | SHA-256 hex of the full target URL |
+| `redirects` | number | yes | Redirects followed |
+| `final_host` | string | no | Final response host |
+| `upstream_status` | number | no | Final upstream status |
+| `content_type` | string | no | Final response media type |
+| `content_length` | number | no | Announced content length |
+| `bytes_read` | number | no | Decompressed bytes read |
+| `ttfb_ms` | number | no | Time to first byte |
+| `total_ms` | number | no | Total fetch/peek time |
+| `truncated` | boolean | yes | The returned body hit a size limit |
+| `stopped_at_head` | boolean | yes | The read stopped at the end of the document head |
 
-## Content
+The full URL is hashed, not stored. Userinfo, query string, and fragment never reach the event;
+only scheme, host, port, and path are visible plus the hash. A peek always has
+`stopped_at_head=true` in practice; it is a field so an implementation change is observable.
 
-| Field | Event JSON | Quickwit | ClickHouse | Required | Description |
-| --- | --- | --- | --- | --- | --- |
-| `content_captured` | boolean | `bool`, fast | `Bool` | yes | Whether canonical content bytes were captured |
-| `content_kind` | string | `text` raw | `LowCardinality(String)` | no | `fetch_body`, `peek_head`, or empty |
-| `content_hash_blake3` | string (64 hex) | `text` raw | `String` | when captured | BLAKE3-256 content identity |
-| `content_hash_sha256` | string (64 hex) | `text` raw | `String` | when captured | SHA-256 audit hash |
-| `content_bytes` | number | `u64`, fast | `UInt64` | when captured | Canonical captured bytes (not compressed) |
-| `content_type` | string | `text` raw | `LowCardinality(String)` | when captured | Media type without parameters |
-| `content_truncated` | boolean | `bool` | `Bool` | yes | Captured prefix hit the endpoint cap |
-| `content_pack_id` | string | `text` raw | `String` | when indexed | Pack identifier |
-| `content_frame_offset` | number | `u64` | `UInt64` | when indexed | Absolute frame header offset in the pack |
-| `content_frame_length` | number | `u64` | `UInt32` | when indexed | Header + compressed payload length |
-| `content_capture_error` | string | `text` raw | `LowCardinality(String)` | no | Why content is absent/partial |
+### Infrastructure (`infrastructure`)
 
-`content_captured=false` is a normal state. The marker is one of `spool_full`,
-`client_disconnect`, `upstream_error`, `pack_upload_failed`, `index_write_failed`,
-`hash_mismatch`, or `internal_error`. For events that never capture content (`search`,
-`audit.read`), `content_captured=false` and `content_capture_error` is empty.
+| Field | JSON type | Required | Description |
+| --- | --- | --- | --- |
+| `type` | string | yes | `infrastructure` |
+| `kind` | string | yes | `health`, `openapi`, `docs`, `fallback`, or `other` |
 
-`content_hash_blake3` and `content_hash_sha256` identify the **captured** bytes. If
-`content_truncated=true`, they identify the prefix, not the full upstream body. `content_bytes`
-is the prefix length.
+## `content_references`
 
-## Headers
+An array of stored content references. The current audit crate emits none until the content
+plane is wired in. Each entry:
 
-| Field | Event JSON | Quickwit | ClickHouse | Required | Description |
-| --- | --- | --- | --- | --- | --- |
-| `request_headers` | object | `json`, indexed false, stored true | `String` (JSON) | yes | Headers neuradex sent upstream |
-| `response_headers` | object | `json`, indexed false, stored true | `String` (JSON) | yes | Headers returned by upstream |
-| `request_headers_truncated` | boolean | `bool` | `Bool` | yes | A capture limit was hit |
-| `response_headers_truncated` | boolean | `bool` | `Bool` | yes | A capture limit was hit |
+| Field | JSON type | Required | Description |
+| --- | --- | --- | --- |
+| `storage` | string | yes | `pack` or `object` |
+| `key` | string | yes | Opaque storage key; for a pack, the pack object key |
+| `blake3` | string | yes | BLAKE3-256 hex of the decoded content |
+| `sha256` | string | yes | SHA-256 hex of the decoded content |
+| `size` | number | yes | Content size in bytes |
+| `content_type` | string | no | Media type, when known |
 
-The event carries objects so Quickwit's `json` field can parse them. ClickHouse stores the
-compact JSON text in a `String`; Vector's `encode_clickhouse` transform does the encoding.
-Never send a JSON string to Quickwit's `json` field — the document is rejected.
+There is no frame offset/length in the event. The hourly request index maps `request_id` to the
+pack frame (RFD 0002). A `pack` reference without a request-index entry is not resolvable; an
+`object` reference is directly addressable by `key`.
 
-Shape:
+Absence of `content_references` means no content was captured or the request does not produce
+content (search, infrastructure). The schema has no `content_captured` or
+`content_capture_error` field; a future content-plane integration may add one (see Future work).
+
+## Header captures
+
+`request_headers` and `response_headers` are `HeaderCapture` objects, not maps of header names
+to strings. Values are bounded and policy-tagged. See
+[RFD 0005](../rfd/0005-header-policy.md).
 
 ```json
 {
-  "accept": ["*/*"],
-  "authorization": {
-    "redacted": true,
-    "present": true,
-    "length": 42,
-    "hmac_sha256": "base64url…"
-  },
-  "_truncated": false
+  "headers": [
+    {
+      "name": "content-type",
+      "action": "allow",
+      "redacted": false,
+      "value_bytes": 24,
+      "values": [
+        {
+          "value": "text/html; charset=utf-8",
+          "encoding": "utf8",
+          "length": 24,
+          "truncated": false
+        }
+      ],
+      "omitted_values": 0
+    }
+  ],
+  "omitted_headers": 0,
+  "redacted_values": 0,
+  "truncated_values": 0
 }
 ```
 
-Regular values are arrays of strings, lowercase names, in received order. Sensitive values are
-objects with `redacted`, `present`, `length`, and `hmac_sha256`. See
-[RFD 0005](../rfd/0005-header-policy.md) for the allow-list.
+| Field | Meaning |
+| --- | --- |
+| `headers[].name` | Lowercase header name |
+| `headers[].action` | `allow`, `redact`, `sanitize`, or `hash` |
+| `headers[].redacted` | Values withheld |
+| `headers[].value_bytes` | Original total byte length of all values |
+| `headers[].values[].value` | Captured value, or the HMAC hex for a hashed header |
+| `headers[].values[].encoding` | `utf8` or `base64` |
+| `headers[].values[].length` | Original value length in bytes |
+| `headers[].values[].truncated` | Value was cut by a limit |
+| `headers[].omitted_values` | Values omitted by the per-header cap/budget |
+| `omitted_headers` | Header names omitted by the per-side cap/budget |
+| `redacted_values` | Values withheld by policy |
+| `truncated_values` | Values truncated by a limit/budget |
 
-## Read audit
-
-| Field | Event JSON | Quickwit | ClickHouse | Required | Description |
-| --- | --- | --- | --- | --- | --- |
-| `read_action` | string | `text` raw, fast | `LowCardinality(String)` | read events | `list_events`, `get_event`, `get_content`, `export_events`, `verify_pack` |
-| `read_target` | string | `text` raw | `String` | read events | Request ID, pack ID, query hash, or export range |
-| `read_reason` | string | `text` raw | `String` | content/exports | Ticket or incident ID |
-| `read_bytes` | number | `u64` | `UInt64` | read events | Bytes returned |
-
-Read audit events are `event=audit.read` or `event=content.read`. They never contain the body or
-the query text. See [RFD 0009](../rfd/0009-access-and-read-audit.md).
+A redacted header keeps its name and `value_bytes` but has an empty `values` array. A hashed
+header (IP/user/chat identifiers) has an HMAC-SHA256 hex value when the policy has a key; without
+a key it is redacted. Unknown headers are classified as `redact`, not dropped.
 
 ## Enumerations
 
-### `event`
-
-`fetch`, `peek`, `search`, `openwebui_search`, `audit.read`, `content.read`,
-`content.pack_sealed`, `content.pack_uploaded`, `content.pack_failed`.
-
-### `outcome`
-
-| Value | Meaning |
+| Enum | Values |
 | --- | --- |
-| `success` | 2xx/3xx or a completed non-HTTP operation |
-| `client_error` | 4xx |
-| `upstream_error` | 5xx caused by upstream/Kagi |
-| `timeout` | Deadline exceeded, including search queue timeout |
-| `internal_error` | 5xx caused by neuradex |
-| `canceled` | Client disconnected before completion |
-| `partial` | Response completed but content capture was incomplete |
-| `failed` | Non-HTTP operational event failed |
+| `outcome` | `success`, `client_error`, `server_error`, `aborted`, `panic` |
+| `operation.type` | `search`, `openwebui_search`, `fetch`, `peek`, `infrastructure` |
+| `operation.auth_mode` | `privacy_pass`, `session` |
+| `operation.kind` (infrastructure) | `health`, `openapi`, `docs`, `fallback`, `other` |
+| `content_references[].storage` | `pack`, `object` |
+| `headers[].action` | `allow`, `redact`, `sanitize`, `hash` |
+| `headers[].values[].encoding` | `utf8`, `base64` |
 
-### `auth_method`
+`error_type` is a free string in the crate. Recommended low-cardinality values:
+`invalid_param`, `unsupported_media_type`, `not_found`, `method_not_allowed`, `unauthorized`,
+`forbidden`, `upstream_timeout`, `upstream_error`, `dns_error`, `tls_error`, `connection_error`,
+`connection_reset`, `body_error`, `decode_error`, `redirect_error`, `internal_error`.
 
-`mtls`, `oidc`, `none`, `local`.
+## Example (fetch)
 
-### `content_kind`
-
-`fetch_body`, `peek_head`, empty for events that do not capture content.
-
-### `read_action`
-
-`list_events`, `get_event`, `get_content`, `export_events`, `verify_pack`.
-
-## Example
+This is the exact serialization from the audit crate (timestamps and IDs shortened only where
+noted). The `authorization` header is redacted; the content reference is a pack.
 
 ```json
 {
-  "schema_version": 1,
-  "event": "fetch",
-  "event_id": "019a7f3c-6a2e-7c31-9b5a-2f4c1d0e8a11",
+  "event": "neuradex.request",
+  "schema_version": "1.0.0",
+  "event_id": "evt-1",
   "timestamp": "2026-11-10T12:34:56.789Z",
-  "request_id": "019a7f3c-6a2e-7c31-9b5a-2f4c1d0e8a10",
+  "service": {"name": "neuradex", "version": "0.1.0"},
   "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
   "span_id": "00f067aa0ba902b7",
-  "route": "/v1/fetch",
-  "method": "GET",
-  "status": 200,
-  "duration_ms": 120,
+  "request_id": "req-1",
+  "http": {
+    "method": "GET",
+    "route": "/v1/fetch",
+    "path": "/v1/fetch",
+    "status": 200,
+    "duration_ms": 120
+  },
   "outcome": "success",
-  "error_type": "",
-  "service_version": "0.1.0",
-  "auth_subject": "user:alice@example.com",
-  "auth_method": "mtls",
-  "user_id": "alice",
-  "query_text": "",
-  "query_hash": "",
-  "result_count": 0,
-  "target_url": "https://example.com/",
-  "upstream_host": "example.com",
-  "redirects_followed": 0,
-  "content_captured": true,
-  "content_kind": "fetch_body",
-  "content_hash_blake3": "<64 lowercase hex>",
-  "content_hash_sha256": "<64 lowercase hex>",
-  "content_bytes": 5123,
-  "content_type": "text/html",
-  "content_truncated": false,
-  "content_pack_id": "019a7f3c-7b10-7a22-8c33-1d2e3f405162",
-  "content_frame_offset": 4096,
-  "content_frame_length": 1234,
-  "content_capture_error": "",
-  "request_headers": {"accept": ["*/*"], "user-agent": ["neuradex/0.1"]},
-  "response_headers": {"content-type": ["text/html; charset=utf-8"]},
-  "request_headers_truncated": false,
-  "response_headers_truncated": false,
-  "read_action": "",
-  "read_target": "",
-  "read_reason": "",
-  "read_bytes": 0
+  "operation": {
+    "type": "fetch",
+    "target_scheme": "https",
+    "target_host": "example.com",
+    "target_port": 8443,
+    "target_path": "/a/path",
+    "target_url_sha256": "7d5e1f180f774d3f6d57faa2ae34610fdbfb752d0c0e48d840e3f2d633a27f78",
+    "redirects": 0,
+    "final_host": "example.com",
+    "upstream_status": 200,
+    "content_type": "text/html",
+    "content_length": 5123,
+    "bytes_read": 5123,
+    "ttfb_ms": 87,
+    "total_ms": 120,
+    "truncated": false,
+    "stopped_at_head": false
+  },
+  "content_references": [
+    {
+      "storage": "pack",
+      "key": "packs/v1/date=2026-11-10/hour=12/pack-019a.nrp",
+      "blake3": "9f2c000000000000000000000000000000000000000000000000000000000000",
+      "sha256": "3a7d000000000000000000000000000000000000000000000000000000000000",
+      "size": 5123,
+      "content_type": "text/html"
+    }
+  ],
+  "request_headers": {
+    "headers": [
+      {
+        "name": "accept",
+        "action": "allow",
+        "redacted": false,
+        "value_bytes": 3,
+        "values": [
+          {"value": "*/*", "encoding": "utf8", "length": 3, "truncated": false}
+        ],
+        "omitted_values": 0
+      },
+      {
+        "name": "authorization",
+        "action": "redact",
+        "redacted": true,
+        "value_bytes": 13,
+        "values": [],
+        "omitted_values": 0
+      }
+    ],
+    "omitted_headers": 0,
+    "redacted_values": 1,
+    "truncated_values": 0
+  },
+  "response_headers": {
+    "headers": [
+      {
+        "name": "content-type",
+        "action": "allow",
+        "redacted": false,
+        "value_bytes": 24,
+        "values": [
+          {"value": "text/html; charset=utf-8", "encoding": "utf8", "length": 24, "truncated": false}
+        ],
+        "omitted_values": 0
+      }
+    ],
+    "omitted_headers": 0,
+    "redacted_values": 0,
+    "truncated_values": 0
+  }
 }
 ```
 
-## Validation rules
+A search event has `operation.type = "search"` and the search fields (query length/terms/hash,
+auth mode, queue/upstream ms, result counts, `zero_results`, `result_digest`, `top_hosts`); it
+has no `content_references` and no `target_*` fields.
 
-1. `schema_version` is `1`.
-2. `event_id` is non-empty for every event.
-3. `request_id` is non-empty for request and read events.
-4. `timestamp` is RFC 3339 UTC with milliseconds.
-5. `status` is 0 or a valid HTTP status; `duration_ms` is non-negative.
-6. `outcome` is one of the values above.
-7. `error_type` is empty for `success`; non-empty for failures where a class is known.
-8. `content_captured=true` implies both hashes, `content_bytes`, `content_kind`, and a
-   non-empty `content_type`.
-9. `content_truncated=true` implies `content_captured=true`.
-10. `query_hash` is non-empty for search events; `query_text` may be empty.
-11. Header fields are objects (not strings) before sink encoding.
-12. No body, result snippet, token, or cookie appears in any field.
+## Sink projections
 
-## Compatibility
+### Quickwit
 
-- Additive optional fields are allowed within v1. Add them to this page, the Quickwit mapping
-  (if searchable), and the ClickHouse column (if queried).
-- Removing/renaming/changing a type requires `schema_version: 2` and a dual-write window.
-- Quickwit uses `mode: lenient`: unknown fields are ignored, not rejected. A new field is not
-  searchable until the mapping is updated and the index is recreated/reindexed.
-- ClickHouse ignores missing keys via column defaults; unknown keys are skipped by Vector's
-  `skip_unknown_fields` only when enabled. Add the column before enabling the field.
+The index mapping in `hack/quickwit/neuradex-events.yaml` follows the nested shape:
+
+- `service.name`, `service.version`, `service.environment`
+- `http.method`, `http.route`, `http.path`, `http.status`, `http.duration_ms`, body byte fields
+- `operation.type` and the union fields (`query_sha256`, `target_host`, …)
+- `content_references` and the header captures as stored JSON
+
+Quickwit's `json` field accepts an object, not a top-level array. The Vector `shape_quickwit`
+transform wraps `content_references` and `operation.top_hosts` as `{"items": [...]}` before
+ingest. This wrapping is a hot-index detail; the archive and ClickHouse keep the original
+arrays. Query the wrapper with JSON accessors, or use ClickHouse for array analytics.
+
+### ClickHouse
+
+ClickHouse receives a flat projection produced by the Vector `flatten` transform. It keeps the
+same names with prefixes: `service_name`, `http_method`, `http_route`, `http_status`,
+`operation_type`, `query_sha256`, `target_host`, etc. `content_references` and the header
+captures are JSON strings.
+
+The following columns are **derived by Vector**, not fields of `AuditEvent`:
+
+| Column | Derivation |
+| --- | --- |
+| `content_reference_count` | `length(content_references)` |
+| `content_bytes` | Sum of `content_references[].size` |
+| `content_storage` | First reference's `storage` |
+| `content_key` | First reference's `key` |
+| `content_blake3` | First reference's `blake3` |
+| `content_sha256` | First reference's `sha256` |
+
+They exist so capacity and integrity queries do not parse JSON on every scan. If an event has
+multiple references, only the first is summarized in the scalar columns; the full array remains
+in `content_references`.
+
+## Future work (not in schema 1.0.0)
+
+These were assumed by earlier drafts and are **not emitted** today. Do not add them to the
+Quickwit mapping or ClickHouse DDL until the audit crate emits them:
+
+- `auth_subject`, `auth_method`, `user_id` — named-access identity; currently only search
+  `auth_mode` and header HMACs exist. See RFD 0009.
+- `read_action`, `read_target`, `read_reason`, `read_bytes` — read audit. The current event is
+  only `neuradex.request`; `audit.read`/`content.read` event names are proposed in RFD 0009.
+- `content_captured`, `content_capture_error`, `content_kind`, `content_truncated` — the event
+  carries `content_references` and fetch/peek `truncated`; a future capture-status field may be
+  added.
+- Top-level `content_hash_blake3`, `content_hash_sha256`, `content_bytes`, `content_pack_id`,
+  `content_frame_offset`, `content_frame_length` — use `content_references` and the hourly
+  request index instead.
+- `query_text`, `target_url`, `result_count`, `redirects_followed` — the actual names are
+  `query_sha256`/length/terms, `target_*`/`target_url_sha256`, `returned_result_count`, and
+  `operation.redirects`.
+
+A future schema change should follow additive evolution: optional fields within `1.0.x`, a new
+`schema_version` for a semantic change, and matching Quickwit/ClickHouse updates.

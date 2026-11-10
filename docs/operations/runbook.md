@@ -20,7 +20,7 @@ flowchart TD
     I -->|no| K["Spool drop or emit bug<br/>→ event loss incident"]
     D -->|no| L{"Is content missing?"}
     L -->|yes| M{"Does the event have a content ref?"}
-    M -->|no| N["Capture shed/failed<br/>→ check content_capture_error"]
+    M -->|no| N["Capture shed/failed<br/>→ check content_references + logs"]
     M -->|yes| O{"Does the pack exist?"}
     O -->|no| P["Expired or deleted<br/>→ lifecycle/retention"]
     O -->|yes| Q{"Do hashes verify?"}
@@ -54,7 +54,7 @@ curl -sS -XPOST "$QW/api/v1/neuradex-events/search" \
 # Recent errors by route.
 curl -sS -XPOST "$QW/api/v1/neuradex-events/search" \
   -H 'content-type: application/json' \
-  -d '{"query":"status:>=500","max_hits":10}' | jq '.hits[]._source | {timestamp, route, error_type}'
+  -d '{"query":"http.status:>=500","max_hits":10}' | jq '.hits[]._source | {timestamp, http, operation, error_type}'
 ```
 
 If the event is absent, wait at least `commit_timeout_secs` (10 s locally) plus processing. If it
@@ -66,7 +66,8 @@ lost from the hot index.
 
 ```sh
 curl -sS "$CH/?$CH_AUTH" --data-binary \
-  "SELECT event, request_id, status, outcome, content_capture_error
+  "SELECT event, request_id, operation_type, http_status, http_route, outcome,
+          content_reference_count, content_bytes, content_references
    FROM neuradex.events WHERE request_id = '<request-id>' FORMAT Vertical"
 ```
 
@@ -101,25 +102,24 @@ If the event is in none of the three stores:
 
 ## Content is missing
 
-1. Read the event's content fields: `content_captured`, `content_capture_error`,
-   `content_hash_blake3`, `content_pack_id`, `content_frame_offset`, `content_frame_length`.
-2. If `content_captured=false`, the body was not stored. The marker tells you why:
-   - `spool_full`: capture shed under pressure. Check spool depth and uploader health.
-   - `client_disconnect`: the client left mid-body; a partial body is not canonical.
-   - `upstream_error`: there was no body to capture.
-   - `pack_upload_failed`: the pack was sealed but not durable.
-   - `index_write_failed`: the pack may exist but is unreachable; reconcile.
-3. If `content_captured=true` and the pack is missing:
+1. Read the event's `content_references` array. Each entry has `storage`, `key`, `blake3`,
+   `sha256`, `size`, and optional `content_type`. There is no `content_captured` boolean or
+   `content_capture_error` field in schema 1.0.0.
+2. If the array is absent/empty, the body was not stored. The reason is in the content-plane
+   logs (spool full, client disconnect, upstream error, upload failure, index failure), not in
+   the event. A future capture-status field is an open question.
+3. If a reference exists and the pack is missing:
    - Check lifecycle: has the object aged past 365 days?
-   - Check B2 for the exact key:
-     `aws --endpoint-url "$B2_ENDPOINT" s3 ls "s3://$B2_BUCKET/packs/v1/date=.../hour=.../pack-<id>.nrp"`.
+   - Check B2 for the reference's `key`:
+     `aws --endpoint-url "$B2_ENDPOINT" s3 ls "s3://$B2_BUCKET/<key>"`.
    - If it was deleted early, open a retention/lifecycle incident. Do not attempt to recreate
      the body from the event; it is not there.
 4. If the pack exists but the read fails verification, see [Hash mismatch](#hash-mismatch).
+5. The frame offset/length are in the hourly request index, not in the event.
 
 ## Pack upload failures
 
-Symptoms: `content.pack_failed` events, upload error rate, growing content spool.
+Symptoms: upload error rate, growing content spool, content-plane logs. A future content event may make this explicit.
 
 1. Check B2 status and credentials. A 403 usually means a scoped key was rotated or lacks
    `PutObject`; a 5xx is B2-side.
@@ -194,7 +194,7 @@ Symptoms: a request event has content refs but the index object for its hour is 
 1. List the hour's index prefix.
 2. If a retry object exists, use it.
 3. If not, rebuild from the event archive: group events by pack ID, read each pack footer, and
-   emit index records. The footer is authoritative for frame offsets.
+   emit index records. Frame headers are self-describing; the footer/index can be rebuilt if they disagree.
 4. If the archive is also missing, content lookup for that hour is unrecoverable; record the
    gap.
 
@@ -219,9 +219,11 @@ Symptoms: a request event has content refs but the index object for its hour is 
 
 ## Access and read audit
 
-1. A 403 is a policy decision, not a bug. Check the principal's roles and the reason field.
+1. A 403 is a policy decision, not a bug. Check the principal's roles. Read audit is future
+   work; schema 1.0.0 has no read fields.
 2. A content read requires a reason; an empty reason is rejected.
-3. If a read is not in the read audit, page: the read path may have bypassed the audit.
+3. Once read audit exists, a read that is not in it is a page: the read path may have bypassed
+   the audit.
 4. Break-glass: ticket + second approver + time-bound credential + security notification +
    review within one business day.
 5. Do not grant direct B2 access to an analyst to work around a missing read API; fix the API.

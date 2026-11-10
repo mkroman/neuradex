@@ -280,9 +280,9 @@ SELECT
     quantile(0.5)(content_bytes) AS p50,
     quantile(0.9)(content_bytes) AS p90,
     quantile(0.99)(content_bytes) AS p99,
-    countIf(content_truncated) AS truncated
+    countIf(truncated) AS truncated
 FROM neuradex.events
-WHERE event = 'fetch' AND content_captured
+WHERE operation_type = 'fetch' AND content_reference_count > 0
 GROUP BY day
 ORDER BY day;
 
@@ -293,10 +293,10 @@ SELECT
     sum(hits) AS total_frames,
     sum(hits) - count() AS duplicate_frames
 FROM (
-    SELECT toDate(timestamp) AS day, content_hash_blake3, count() AS hits
+    SELECT toDate(timestamp) AS day, content_blake3, count() AS hits
     FROM neuradex.events
-    WHERE event = 'fetch' AND content_captured
-    GROUP BY day, content_hash_blake3
+    WHERE operation_type = 'fetch' AND content_reference_count > 0
+    GROUP BY day, content_blake3
 )
 GROUP BY day
 ORDER BY day;

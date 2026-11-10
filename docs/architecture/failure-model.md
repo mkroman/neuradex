@@ -7,7 +7,7 @@ specified and must be implemented with the pipeline.
 
 1. **The response wins.** A sink failure never turns a successful fetch into a 5xx.
 2. **Events outrank content.** If resources are scarce, shed content and mark it; keep the event.
-3. **Fail visibly.** A missing body is marked with `content_capture_error`, not silently omitted.
+3. **Fail visibly.** A missing body is visible as an absent `content_references` entry; a future capture-status field will make the reason explicit.
 4. **Derived stores are disposable.** Quickwit and ClickHouse can be rebuilt from B2.
 5. **B2 loss is data loss.** Treat it as an incident, not a cache miss.
 6. **At-least-once.** Duplicates are acceptable; silent loss is not.
@@ -17,7 +17,7 @@ specified and must be implemented with the pipeline.
 | # | Failure | Detection | Client impact | Audit/content impact | Mitigation | Data loss? |
 | --- | --- | --- | --- | --- | --- | --- |
 | F1 | B2 PUT 5xx/timeout | Upload error rate | none (async) | pack delayed; spool grows | retry/backoff; alert; capacity | no, if spool survives |
-| F2 | B2 unavailable > spool | Spool depth/lag | none | content shed; events maybe shed | shed content first; page | content only |
+| F2 | B2 unavailable > spool | Spool depth/lag | none | content shed; events maybe shed; no references | shed content first; page | content only |
 | F3 | B2 read 5xx | Read API error rate | 5xx on read | investigation blocked | retry; status page | no |
 | F4 | Pack upload succeeds, index write fails | Reconciliation mismatch | none | orphan pack; request unresolvable | rebuild index from archive/footers | no (recoverable) |
 | F5 | Pack corrupt on read | XXH3/BLAKE3 mismatch | 502 | bytes withheld | re-read; check another copy; incident | possible for that frame |
@@ -28,7 +28,7 @@ specified and must be implemented with the pipeline.
 | F10 | ClickHouse disk full | Insert errors; disk metric | none | analytics stops | TTL/drop partitions; expand | no (if archive) |
 | F11 | ClickHouse schema drift | Insert errors `unknown field` | none | rows dropped | add column; migrate; replay | maybe (rows) |
 | F12 | Event spool full | Spool depth 100%; drop counter | none | events dropped | page; expand; shed content | yes, events |
-| F13 | Content spool full | Drop counter | none | content dropped | page; expand; mark | content only |
+| F13 | Content spool full | Drop counter | none | content dropped; no reference | page; expand; mark | content only |
 | F14 | Service crash mid-request | Restart; client error | request fails | event may be missing; content may be partial | idempotent retry; partial packs discarded | possibly one request |
 | F15 | Client disconnect | Canceled metric | connection closed | partial content not canonical | mark `client_disconnect` | no |
 | F16 | Upstream DNS/TLS/timeout | `error_type` spike | 502/504 | event records failure | retry? no automatic; investigate | no |
@@ -56,7 +56,7 @@ stateDiagram-v2
 ```
 
 - **Normal:** all sinks healthy; content captured; events delivered.
-- **ContentShed:** events still delivered; content dropped and marked. The API is unaffected.
+- **ContentShed:** events still delivered; content dropped (no reference). The API is unaffected.
 - **EventShed:** events are dropped only after a high-severity alert; this is an audit incident.
 - **RequestFailure:** the service cannot serve; this is a user-visible outage, not a sink issue.
 
@@ -104,13 +104,13 @@ These are targets, not guarantees. Measure them in staging.
 
 Before production, test:
 
-- Stop B2 (block egress) for 15 minutes: responses stay 200; events spool; content sheds and is
-  marked; recovery drains the spool.
+- Stop B2 (block egress) for 15 minutes: responses stay 200; events spool; content sheds (no
+  reference); recovery drains the spool.
 - Stop Quickwit: events spool; search UI fails; restart; replay/commit catches up.
 - Stop ClickHouse: inserts fail; events still archive; restart; replay.
 - Fill the content spool: content sheds; events continue.
 - Fill the event spool: events drop after alert; API still serves (the last resort).
-- Corrupt a frame byte: read returns 502; `content.read` failure event; no bad bytes.
+- Corrupt a frame byte: read returns 502; a future `content.read` failure event; no bad bytes.
 - Kill the pack builder mid-pack: partial pack is not uploaded; restart discards it.
 - Clock skew ±5 minutes: keys remain unique; pack age may seal early/late; no data loss.
 - Spoof `X-Forwarded-User`: ingress strips it; service does not trust it.

@@ -1,7 +1,8 @@
 # Quickwit index
 
 **Status:** the local index is created by `quickwit-init` from
-`hack/quickwit/neuradex-events.yaml`. Production topology is not specified.
+`hack/quickwit/neuradex-events.yaml`. The mapping follows the serialized `AuditEvent` (schema
+`1.0.0`), including its nested `service`, `http`, and `operation` objects.
 
 ## Index identity
 
@@ -21,80 +22,88 @@
 Quickwit is the **hot** store. It is not the 365-day source of truth; the B2 archive is. A
 missing index is a search incident, not data loss.
 
-## Field mapping
+## Mapping
 
-All event fields are mapped. Types:
+The event is nested. Quickwit maps the `service`, `http`, and `operation` objects with `object`
+fields; the header captures and content-reference array are stored as JSON.
 
-- `datetime` with `rfc3339` input/output, `fast: true`, `fast_precision: milliseconds`.
-- `u64` for counters/status/durations.
-- `bool` for flags.
-- `text` with `tokenizer: raw` for identifiers/enums; `fast: true` for low-cardinality fields.
-- `text` with `tokenizer: default` for `query_text` and `target_url` (searchable prose/URLs).
-- `json` for headers, `indexed: false`, `stored: true`.
+| Path | Type | Fast | Notes |
+| --- | --- | --- | --- |
+| `event` | text raw | yes | Always `neuradex.request` |
+| `schema_version` | text raw | no | `1.0.0` |
+| `event_id` | text raw | no | Unique |
+| `timestamp` | datetime | yes | RFC 3339, milliseconds |
+| `observed_at` | datetime | yes | Optional |
+| `service.name` | text raw | yes | `neuradex` |
+| `service.version` | text raw | no | Package version |
+| `service.environment` | text raw | yes | Optional |
+| `trace_id` | text raw | no | Optional |
+| `span_id` | text raw | no | Optional |
+| `request_id` | text raw | no | Request correlation |
+| `http.method` | text raw | yes | HTTP method |
+| `http.route` | text raw | yes | Matched route; absent for fallback |
+| `http.path` | text default | no | Request path |
+| `http.status` | u64 | yes | Optional |
+| `http.request_body_bytes` | u64 | no | Optional |
+| `http.response_body_bytes` | u64 | no | Optional |
+| `http.duration_ms` | u64 | yes | Duration |
+| `outcome` | text raw | yes | success/client_error/server_error/aborted/panic |
+| `error_type` | text raw | yes | Optional |
+| `operation.type` | text raw | yes | search/openwebui_search/fetch/peek/infrastructure |
+| `operation.query_length` | u64 | no | Search |
+| `operation.query_terms` | u64 | no | Search |
+| `operation.query_sha256` | text raw | no | Search; no query text |
+| `operation.limit` | u64 | no | `/v1/search` |
+| `operation.count` | u64 | no | Open WebUI |
+| `operation.auth_mode` | text raw | yes | privacy_pass/session |
+| `operation.queue_ms` | u64 | yes | Search queue |
+| `operation.upstream_ms` | u64 | yes | Upstream search |
+| `operation.upstream_result_count` | u64 | no | Kagi result count |
+| `operation.returned_result_count` | u64 | no | Client result count |
+| `operation.zero_results` | bool | yes | Empty result set |
+| `operation.result_digest` | text raw | no | SHA-256 of result URLs |
+| `operation.top_hosts` | json | no | Wrapped as `{"items":[…]}` for Quickwit |
+| `operation.target_scheme` | text raw | no | Fetch/peek |
+| `operation.target_host` | text raw | yes | Fetch/peek |
+| `operation.target_port` | u64 | no | Fetch/peek |
+| `operation.target_path` | text default | no | Fetch/peek; default search field |
+| `operation.target_url_sha256` | text raw | no | Full-URL hash |
+| `operation.redirects` | u64 | no | Redirect count |
+| `operation.final_host` | text raw | yes | Fetch/peek |
+| `operation.upstream_status` | u64 | yes | Fetch/peek |
+| `operation.content_type` | text raw | yes | Fetch/peek |
+| `operation.content_length` | u64 | no | Fetch/peek |
+| `operation.bytes_read` | u64 | no | Fetch/peek |
+| `operation.ttfb_ms` | u64 | yes | Fetch/peek |
+| `operation.total_ms` | u64 | yes | Fetch/peek |
+| `operation.truncated` | bool | yes | Body cap hit |
+| `operation.stopped_at_head` | bool | yes | Peek stopped at head |
+| `operation.kind` | text raw | yes | Infrastructure kind |
+| `content_references` | json | no | Wrapped as `{"items":[…]}` for Quickwit |
+| `request_headers` | json | no | HeaderCapture object |
+| `response_headers` | json | no | HeaderCapture object |
 
-| Field | Type | Fast | Stored | Notes |
-| --- | --- | --- | --- | --- |
-| `timestamp` | datetime | yes | yes | RFC 3339, ms precision |
-| `schema_version` | u64 | yes | yes | 1 |
-| `event` | text raw | yes | yes | Event type |
-| `event_id` | text raw | no | yes | Unique |
-| `request_id` | text raw | no | yes | Primary lookup |
-| `trace_id` | text raw | no | yes | 32 hex |
-| `span_id` | text raw | no | yes | 16 hex |
-| `route` | text raw | yes | yes | Route template |
-| `method` | text raw | yes | yes | HTTP method |
-| `status` | u64 | yes | yes | HTTP status or 0 |
-| `duration_ms` | u64 | yes | yes | ms |
-| `outcome` | text raw | yes | yes | Low cardinality |
-| `error_type` | text raw | yes | yes | Low cardinality |
-| `service_version` | text raw | no | yes | Version |
-| `auth_subject` | text raw | yes | yes | Principal |
-| `auth_method` | text raw | yes | yes | mtls/oidc/none/local |
-| `user_id` | text raw | yes | yes | Stable user ID |
-| `query_text` | text default | no | yes | Restricted |
-| `query_hash` | text raw | no | yes | SHA-256 hex |
-| `result_count` | u64 | yes | yes | Results |
-| `target_url` | text default | no | yes | Sanitized URL |
-| `upstream_host` | text raw | yes | yes | Host |
-| `redirects_followed` | u64 | no | yes | Hops |
-| `content_captured` | bool | yes | yes | Capture flag |
-| `content_kind` | text raw | no | yes | fetch_body/peek_head |
-| `content_hash_blake3` | text raw | no | yes | Identity |
-| `content_hash_sha256` | text raw | no | yes | Audit hash |
-| `content_bytes` | u64 | yes | yes | Canonical bytes |
-| `content_type` | text raw | no | yes | Media type |
-| `content_truncated` | bool | no | yes | Cap hit |
-| `content_pack_id` | text raw | no | yes | Pack ID |
-| `content_frame_offset` | u64 | no | yes | Frame offset |
-| `content_frame_length` | u64 | no | yes | Frame length |
-| `content_capture_error` | text raw | no | yes | Why missing |
-| `request_headers` | json | no | yes | Object, not string |
-| `response_headers` | json | no | yes | Object, not string |
-| `request_headers_truncated` | bool | no | yes | Limit hit |
-| `response_headers_truncated` | bool | no | yes | Limit hit |
-| `read_action` | text raw | yes | yes | Read audit |
-| `read_target` | text raw | no | yes | Target |
-| `read_reason` | text raw | no | yes | Ticket |
-| `read_bytes` | u64 | no | yes | Bytes |
+### Array shaping
 
-### Header objects are mandatory
+Quickwit's `json` field accepts a JSON object, not a top-level array. The event has two array
+values: `content_references` and `operation.top_hosts`. Vector's `shape_quickwit` transform
+wraps them as:
 
-Quickwit's `json` field expects a JSON **object**. If an event sends
-`"request_headers": "{\"accept\":[\"*/*\"]}"` (a string), the document is rejected with
-`doc mapper parse error: expected object`. The canonical event carries objects; ClickHouse
-receives JSON text via Vector's `encode_clickhouse` transform. This was verified against
-Quickwit 0.8.2.
+```json
+{"items": [{"storage": "pack", "key": "packs/…", "blake3": "…", "sha256": "…", "size": 5123}]}
+```
 
-### Why lenient mode
+The archive and ClickHouse keep the original arrays. Query the wrapper with JSON accessors or use
+ClickHouse for array analytics. Do not send an unwrapped array to Quickwit's `json` field; the
+document is rejected with `expected object`.
+
+### Lenient mode
 
 `mode: lenient` ignores unmapped fields instead of rejecting the document. This lets a service
-deploy add a field before the index mapping is updated. The trade-off: the new field is not
-searchable until the mapping changes and the index is recreated/reindexed. Use this for
-forward-compatible fields; do not rely on it for fields that must be queryable immediately.
+deploy add a field before the mapping is updated. The trade-off: the new field is not searchable
+until the mapping changes and the index is recreated/reindexed.
 
 ## Ingest
-
-Quickwit's ingest API accepts NDJSON:
 
 ```sh
 curl -sS -XPOST 'http://127.0.0.1:7280/api/v1/neuradex-events/ingest?commit=auto' \
@@ -102,30 +111,32 @@ curl -sS -XPOST 'http://127.0.0.1:7280/api/v1/neuradex-events/ingest?commit=auto
   --data-binary @event.ndjson
 ```
 
+- Vector sends the output of `shape_quickwit` as NDJSON.
 - `commit=auto` commits according to `commit_timeout_secs` (10 s) or the split policy.
 - A document with a wrong field type is rejected; check the Quickwit log.
-- Vector's HTTP sink sends NDJSON with `framing.method = "newline_delimited"`.
-- Batch size: keep below the ingest content-length limit (10.5 MB locally); Vector's
-  `batch.max_events = 1000` is a safe default for ~2 KiB events.
+- Keep batches below the ingest content-length limit (10.5 MB locally). Vector uses
+  `batch.max_events = 1000`.
 
 ## Search
 
 ```sh
 curl -sS -XPOST 'http://127.0.0.1:7280/api/v1/neuradex-events/search' \
   -H 'content-type: application/json' \
-  -d '{"query":"event:fetch AND status:200","max_hits":10}' | jq .
+  -d '{"query":"http.route:/v1/fetch AND http.status:>=500","max_hits":10}' | jq .
 ```
 
 Query tips:
 
-- Raw fields (`request_id`, `trace_id`, `content_pack_id`) are not tokenized; quote values that
-  contain punctuation: `request_id:"req-2"`.
-- `status:>=500` works with the numeric fast field.
-- `query_text` is tokenized; use it only for restricted searches.
-- `target_url` is tokenized; exact URL search may need quotes.
-- The default search fields are `query_text`, `target_url`, `upstream_host`.
+- Nested fields use dot paths: `http.route`, `operation.type`, `operation.target_host`.
+- Raw fields (`request_id`, `operation.query_sha256`, `content_references`) are not tokenized;
+  quote values with punctuation: `request_id:"req-2"`.
+- `http.status:>=500` works with the numeric fast field.
+- There is no query text in the event; search `operation.query_sha256` for an exact query hash or
+  `operation.target_path` for a fetch path.
 - `max_hits: 0` returns counts without documents.
-- Time filtering uses the `timestamp` field or the API's start/end timestamps.
+- Time filtering uses `timestamp` or the API's start/end timestamps.
+- `content_references`/`request_headers`/`response_headers` are stored but not indexed; retrieve
+  them from `_source`, not a search query.
 
 ## Retention
 
@@ -136,38 +147,29 @@ retention:
 ```
 
 The janitor deletes splits older than 30 days on the daily schedule. This is independent of the
-B2 365-day retention and ClickHouse's 365-day TTL. Do not use Quickwit to answer a question about
-a request older than 30 days; use the archive or ClickHouse.
+B2 365-day retention and ClickHouse's 365-day TTL. Do not use Quickwit for a request older than
+30 days; use the archive or ClickHouse.
 
 ## Local operation
 
 ```sh
-# List indexes.
 docker compose exec -T quickwit quickwit index list
-
-# Describe the mapping.
-curl -sS 'http://127.0.0.1:7280/api/v1/indexes/neuradex-events' | jq '.index_config.doc_mapping'
-
-# Delete and recreate after a mapping change (destroys hot data).
+curl -sS 'http://127.0.0.1:7280/api/v1/indexes' | jq '.[0].index_config.doc_mapping'
 docker compose exec -T quickwit quickwit index delete --index neuradex-events --yes
 docker compose up -d --force-recreate quickwit-init
 ```
 
-The `quickwit-init` service checks `quickwit index list` and creates the index only if it is
-missing. It is idempotent. If the mapping changed, the init script will *not* update the existing
-index; delete it first.
+`quickwit-init` checks `quickwit index list` and creates the index only if it is missing. It is
+idempotent. If the mapping changed, delete the index first; Quickwit mappings are not mutable in
+place.
 
 ### Reindex / replay
 
-Quickwit mappings are not mutable in place. To change a mapping:
-
-1. Create a new index with a new ID (e.g. `neuradex-events-v2`) and the new config.
-2. Replay the B2 event archive into the new index.
-3. Verify counts and spot-check queries.
+1. Create a new index with a new ID and the new config.
+2. Replay the B2 event archive into it (apply `shape_quickwit` if arrays are present).
+3. Verify counts and spot-check nested queries.
 4. Point the read path at the new index.
-5. Delete the old index after the retention window or when satisfied.
-
-Do not delete the old index before the new one is verified.
+5. Delete the old index after verification.
 
 ## Local vs production
 
@@ -184,8 +186,9 @@ Do not delete the old index before the new one is verified.
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `unknown variant millis` | `fast_precision` typo | Use `milliseconds` |
-| `expected object, got "..."` | Header sent as a string | Send an object in the event |
+| `expected object, got "..."` | Header sent as a string, or array not wrapped | Send an object; use `shape_quickwit` for arrays |
+| `array of values but a single value expected` | `content_references`/`top_hosts` not wrapped | Apply `shape_quickwit` |
 | 0 hits after ingest | Commit not finished | Wait ≥ 10 s; check logs |
 | `index already exists` | Init race/manual create | Let init skip; delete only if mapping changed |
-| Search slow | Large time range/high cardinality | Narrow the time range; use fast fields |
+| Search slow | Large time range/high cardinality | Narrow the range; use fast fields |
 | Index missing | Volume reset | `docker compose up -d --force-recreate quickwit-init` |

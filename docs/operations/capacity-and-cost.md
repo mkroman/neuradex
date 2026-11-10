@@ -7,7 +7,8 @@ measure, what to alarm on, and how to change retention without losing data.
 ## Model at a glance
 
 Assumptions: 100,000 fetches/hour, 40,000 searches/hour, 4 MiB average captured body, 365-day
-retention, B2 at $6/TiB-month.
+retention, B2 at $6/TiB-month. The ClickHouse `content_bytes` and `content_blake3` columns are
+derived by Vector from `content_references`, not fields of `AuditEvent`.
 
 | Quantity | Value |
 | --- | --- |
@@ -46,15 +47,15 @@ Run for 7 days in staging, then compute:
 SELECT
     toDate(timestamp) AS day,
     count() AS fetches,
-    countIf(content_captured) AS captured,
-    countIf(content_truncated) AS truncated,
+    countIf(content_reference_count > 0) AS captured,
+    countIf(truncated) AS truncated,
     sum(content_bytes) AS bytes,
     quantile(0.5)(content_bytes) AS p50,
     quantile(0.9)(content_bytes) AS p90,
     quantile(0.99)(content_bytes) AS p99,
     max(content_bytes) AS max
 FROM neuradex.events
-WHERE event = 'fetch'
+WHERE operation_type = 'fetch'
 GROUP BY day
 ORDER BY day;
 ```
@@ -67,10 +68,10 @@ SELECT
     sum(hits) AS total_frames,
     sum(hits) - count() AS duplicate_frames
 FROM (
-    SELECT toDate(timestamp) AS day, content_hash_blake3, count() AS hits
+    SELECT toDate(timestamp) AS day, content_blake3, count() AS hits
     FROM neuradex.events
-    WHERE event = 'fetch' AND content_captured
-    GROUP BY day, content_hash_blake3
+    WHERE operation_type = 'fetch' AND content_reference_count > 0
+    GROUP BY day, content_blake3
 )
 GROUP BY day
 ORDER BY day;

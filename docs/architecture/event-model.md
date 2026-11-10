@@ -1,62 +1,142 @@
 # Event model
 
-**Status:** target design. The schema is specified in
-[reference/event-fields.md](../reference/event-fields.md); the Rust types are not implemented
-beyond the crate scaffold.
+**Status:** the `neuradex-audit` crate implements the event schema; the service does not emit
+events yet. Read-audit and auth-subject fields are future work (RFD 0009).
 
 ## One event, one request
 
-Every inbound request produces exactly one *request event*, except `/healthz`. Operational
-actions (pack upload, content read, audit read) produce their own events. An event is a flat
-JSON object; headers are JSON objects, and content is referenced by hashes and frame locations,
-never embedded.
+Every inbound request produces exactly one `AuditEvent`, emitted by a completion guard. The
+event is nested: `service`, `http`, `operation`, `content_references`, and the header captures
+are objects/arrays, not a flat row. The event is serialized once and fanned out to Quickwit
+(nested mapping), ClickHouse (flat projection), and the B2 archive (original JSON).
 
 ```mermaid
 flowchart LR
-    R["HTTP request"] --> B["Event builder"]
-    B --> E["Event v1<br/>flat JSON"]
-    E --> S["Spool"]
-    S --> Q["Quickwit<br/>30 days"]
-    S --> C["ClickHouse<br/>365 days"]
-    S --> A["B2 archive<br/>365 days"]
+    R["HTTP request"] --> B["RequestRecord"]
+    B --> G["CompletionGuard"]
+    G --> E["AuditEvent 1.0.0"]
+    E --> S["AuditSink (sync)"]
+    S --> Q["Quickwit (nested)"]
+    S --> C["ClickHouse (flattened)"]
+    S --> A["B2 archive (NDJSON)"]
     E --> T["trace_id / span_id"]
     T --> J["OTLP traces"]
 ```
 
-## Event types
+## Envelope
 
-| Type | Trigger | HTTP status | Typical `outcome` |
-| --- | --- | --- | --- |
-| `fetch` | `/v1/fetch` completes or fails | final status | success, client_error, upstream_error, timeout, canceled |
-| `peek` | `/v1/peek` completes or fails | final status | same |
-| `search` | `/v1/search` completes or fails | final status | success, client_error, upstream_error, timeout |
-| `openwebui_search` | `/v1/openwebui_search` completes or fails | final status | same |
-| `audit.read` | A principal reads events/exports | 0 | success, client_error, failed |
-| `content.read` | A principal reads a content frame | 0 | success, failed |
-| `content.pack_sealed` | Pack footer/trailer written | 0 | success |
-| `content.pack_uploaded` | Pack PUT confirmed | 0 | success |
-| `content.pack_failed` | Upload/verification failed | 0 | failed |
-| `content.read` (verify) | Frame hash verification | 0 | success, failed |
+| Field | Type | Notes |
+| --- | --- | --- |
+| `event` | string | Always `neuradex.request` |
+| `schema_version` | string | `1.0.0` |
+| `event_id` | string | `evt-…`, unique per event |
+| `timestamp` | RFC 3339 UTC | Event creation time |
+| `observed_at` | RFC 3339 UTC | Optional; upstream observation time |
+| `service` | object | `{name, version, environment?}` |
+| `trace_id` / `span_id` | string | Optional; present when traced |
+| `request_id` | string | `req-…`, shared by one request's events |
+| `http` | object | Method, optional route, path, optional status, optional body sizes, duration |
+| `outcome` | enum | `success`, `client_error`, `server_error`, `aborted`, `panic` |
+| `error_type` | string | Optional low-cardinality failure class |
+| `operation` | object | Tagged union; `type` selects fields |
+| `content_references` | array | Optional stored-content references |
+| `request_headers` / `response_headers` | object | Optional `HeaderCapture` |
 
-The request events are the only ones that carry `duration_ms` and the full target fields.
-Operational events use the same envelope so a single index/table can hold them.
+Optional fields are omitted, not null. Consumers must treat missing fields as absent.
 
-## Field groups
+## Operation union
 
-| Group | Fields | Sensitivity | Notes |
-| --- | --- | --- | --- |
-| Envelope | `schema_version`, `event`, `event_id`, `timestamp` | public to readers | `event_id` unique |
-| Correlation | `request_id`, `trace_id`, `span_id` | internal | `request_id` primary key for lookup |
-| Request | `route`, `method`, `status`, `duration_ms`, `outcome`, `error_type`, `service_version` | internal | `error_type` low-cardinality |
-| Principal | `auth_subject`, `auth_method`, `user_id` | restricted | Signed by ingress |
-| Search | `query_text`, `query_hash`, `result_count` | `query_text` restricted | Hash always present |
-| Target | `target_url`, `upstream_host`, `redirects_followed` | restricted | URL sanitized |
-| Content | `content_*` | restricted (ref only) | See content plane |
-| Headers | `request_headers`, `response_headers`, `*_truncated` | restricted | Redaction/HMAC per RFD 0005 |
-| Read | `read_action`, `read_target`, `read_reason`, `read_bytes` | restricted | Only for reads |
+```mermaid
+classDiagram
+    class Operation {
+      type
+    }
+    class Search {
+      query_length
+      query_terms
+      query_sha256
+      auth_mode
+      queue_ms
+      upstream_ms
+      upstream_result_count
+      returned_result_count
+      zero_results
+      result_digest
+      top_hosts
+    }
+    class Fetch {
+      target_scheme
+      target_host
+      target_port
+      target_path
+      target_url_sha256
+      redirects
+      final_host
+      upstream_status
+      content_type
+      content_length
+      bytes_read
+      ttfb_ms
+      total_ms
+      truncated
+      stopped_at_head
+    }
+    class Infrastructure {
+      kind
+    }
+    Operation <|-- Search
+    Operation <|-- Fetch
+    Operation <|-- Infrastructure
+```
 
-The full type table is [reference/event-fields.md](../reference/event-fields.md). The same field
-names are used in Quickwit and ClickHouse; do not rename per sink.
+`search` and `openwebui_search` share `Search`; `fetch` and `peek` share `Fetch`. The audit crate
+never stores query text: only `query_sha256`, length, and term count. It never stores the full
+target URL: only scheme/host/port/path plus `target_url_sha256`.
+
+## Content references
+
+```json
+{
+  "storage": "pack",
+  "key": "packs/v1/date=2026-11-10/hour=12/pack-019a.nrp",
+  "blake3": "<64 hex>",
+  "sha256": "<64 hex>",
+  "size": 5123,
+  "content_type": "text/html"
+}
+```
+
+`storage` is `pack` or `object`. The event has no frame offset/length; the hourly request index
+maps `request_id` to the frame. Absence of `content_references` means no captured content, not
+an empty body (an empty body can be a reference of size 0).
+
+## Header captures
+
+`request_headers`/`response_headers` are `HeaderCapture` objects:
+
+```json
+{
+  "headers": [
+    {
+      "name": "content-type",
+      "action": "allow",
+      "redacted": false,
+      "value_bytes": 24,
+      "values": [
+        {"value": "text/html; charset=utf-8", "encoding": "utf8", "length": 24, "truncated": false}
+      ],
+      "omitted_values": 0
+    }
+  ],
+  "omitted_headers": 0,
+  "redacted_values": 0,
+  "truncated_values": 0
+}
+```
+
+Unknown headers are redacted (name and byte length kept); credentials are redacted; IP/user/chat
+identifiers are HMAC-SHA256 hashed when keyed; `location`/`referer` lose query/fragment. See
+[RFD 0005](../rfd/0005-header-policy.md).
 
 ## Event lifecycle
 
@@ -64,8 +144,8 @@ names are used in Quickwit and ClickHouse; do not rename per sink.
 stateDiagram-v2
     [*] --> Building: request starts
     Building --> Building: fields recorded
-    Building --> Serialized: response complete
-    Serialized --> Spooled: write local spool
+    Building --> Finished: response/abort/panic
+    Finished --> Spooled: AuditSink
     Spooled --> Hot: Quickwit ingest
     Spooled --> Analytics: ClickHouse insert
     Spooled --> Archived: hour closes
@@ -75,159 +155,127 @@ stateDiagram-v2
     Searchable --> [*]
     Queryable --> [*]
     Durable --> [*]
-    Spooled --> Dropped: spool full + priority shed
+    Finished --> Dropped: spool full + alert
     Dropped --> [*]
 ```
 
-A request event is not visible in Quickwit until the indexer commits (`commit_timeout_secs: 10`
-in the local index). ClickHouse visibility depends on the insert batch. The archive is written
-after the hour closes plus a grace window. These are independent timelines; the event's
-`timestamp` does not imply ordering across sinks.
+Quickwit visibility depends on the 10-second commit; ClickHouse on the insert batch; the archive
+on the hour close + grace. These are independent timelines; `timestamp` does not imply ordering
+across sinks.
 
 ## Deduplication
 
-- `event_id` is unique per event. A retry of the same event keeps the same `event_id`.
-- A duplicate row in Quickwit/ClickHouse is tolerated. Queries that require exact counts should
-  use `uniqExact(event_id)` or group by `event_id` before aggregating.
-- The event archive may contain a duplicate if a writer retries an hour with a new object key.
-  Readers should dedupe by `event_id` when replaying.
-- `request_id` is unique per request but can appear in multiple events (`fetch`,
-  `content.pack_uploaded`, `audit.read`). Do not use it as the sole unique key for event rows.
+- `event_id` is unique per event. A retry keeps the same ID.
+- Duplicate rows in Quickwit/ClickHouse are tolerated. Use `uniqExact(event_id)` when exact
+  counts matter.
+- `request_id` appears in multiple events (request + content/pack events), so it is not a unique
+  event key.
+- The archive may contain a duplicate if a writer retries an hour with a new object key; readers
+  dedupe by `event_id`.
 
 ## Schema evolution
 
-| Change | Allowed within v1? | Required action |
+| Change | Allowed within 1.0.x? | Required action |
 | --- | --- | --- |
-| Add an optional field | yes | Add to event struct, reference page, Quickwit mapping if searchable, ClickHouse column if queried |
-| Add an enum value | yes | Add to reference page and validation; storage accepts it |
-| Rename a field | no | New field + dual-write + deprecation; bump `schema_version` |
-| Change a type | no | New field; bump `schema_version` |
-| Change `outcome` meaning | no | New `schema_version` and a migration note |
-| Remove a field | no | Dual-read for one retention window; bump `schema_version` |
+| Add an optional field | yes | Add to event, reference page, Quickwit mapping if searchable, ClickHouse column if queried |
+| Add an enum value | yes | Add to reference page and validation |
+| Rename a field | no | New field + dual-write + `schema_version` bump |
+| Change a type | no | New field + `schema_version` bump |
+| Change an outcome/operation meaning | no | New `schema_version` and migration note |
+| Remove a field | no | Dual-read for one retention window + bump |
 
-Quickwit uses `mode: lenient`, so an unmapped field is ignored rather than rejecting the
-document. That prevents a deploy from breaking ingestion, but it also means a new field is not
-searchable until the mapping is updated and the index is recreated/reindexed.
-
-ClickHouse tolerates missing JSON keys (column defaults) and unknown keys only when the ingester
-skips them. Add the column before enabling the field; otherwise Vector's `skip_unknown_fields`
-will drop it silently.
+Quickwit uses `mode: lenient`, so an unmapped field is ignored rather than rejecting the event.
+ClickHouse tolerates missing keys via column defaults; unknown keys are dropped by Vector's
+`skip_unknown_fields`. Add the column before enabling the field.
 
 ## Sink mappings
 
 | Event part | Quickwit | ClickHouse |
 | --- | --- | --- |
-| Scalars | typed field, `fast` for low-cardinality | typed column |
-| `request_headers`/`response_headers` | `json`, `indexed:false`, `stored:true` | `String` containing JSON |
-| Content refs | scalar fields | scalar columns |
-| Read audit | scalar fields | scalar columns |
-| Archive | n/a | n/a |
+| `service`, `http`, `operation` | nested `object` fields | `service_*`, `http_*`, `operation_type` + union columns |
+| `content_references` | `json`, stored; wrapped as `{"items":[…]}` | `String` JSON array + derived `content_*` scalars |
+| `request_headers`/`response_headers` | `json`, stored | `String` JSON objects |
+| Scalars (`event`, `outcome`, …) | typed fields | typed columns |
 
-Quickwit is for text search and recent inspection; it stores the source document so the full
-event is returned. ClickHouse is for aggregates and typed filters; it does not store bodies or
-result text. B2 archive stores the original NDJSON for replay.
+Quickwit's `json` field is object-only, hence the `{"items":[…]}` wrapper for arrays. The archive
+and ClickHouse keep the original array shape.
 
 ## Event size
 
 | Part | Typical | Cap |
 | --- | --- | --- |
 | Envelope + correlation | ~300 B | — |
-| Principal + target | ~300 B | — |
-| Content refs | ~300 B | — |
-| Headers | ~1 KiB | 32 KiB per direction |
-| Total | ~1.5–2 KiB | 64 KiB |
+| Service + HTTP + operation | ~500 B | — |
+| Content references | ~200 B each | — |
+| Headers | ~1 KiB | 8 KiB per side (512 B/value, 64 headers) |
+| Total | ~1.5–2 KiB | ~16 KiB headline worst case |
 
-The 64 KiB cap is enforced before serialization. If it is exceeded, response headers are dropped
-first, then request headers; the event still records the request. A 64 KiB event is a bug or an
-attack, not a normal page.
+The header capture is bounded; an event cannot grow without limit through headers. Bodies are
+never embedded.
 
-## Worked example
-
-A successful fetch:
+## Example
 
 ```json
 {
-  "schema_version": 1,
-  "event": "fetch",
-  "event_id": "019a7f3c-6a2e-7c31-9b5a-2f4c1d0e8a11",
+  "event": "neuradex.request",
+  "schema_version": "1.0.0",
+  "event_id": "evt-1",
   "timestamp": "2026-11-10T12:34:56.789Z",
-  "request_id": "019a7f3c-6a2e-7c31-9b5a-2f4c1d0e8a10",
+  "service": {"name": "neuradex", "version": "0.1.0"},
   "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
   "span_id": "00f067aa0ba902b7",
-  "route": "/v1/fetch",
-  "method": "GET",
-  "status": 200,
-  "duration_ms": 120,
+  "request_id": "req-1",
+  "http": {
+    "method": "GET",
+    "route": "/v1/fetch",
+    "path": "/v1/fetch",
+    "status": 200,
+    "duration_ms": 120
+  },
   "outcome": "success",
-  "error_type": "",
-  "service_version": "0.1.0",
-  "auth_subject": "user:alice@example.com",
-  "auth_method": "mtls",
-  "user_id": "alice",
-  "query_text": "",
-  "query_hash": "",
-  "result_count": 0,
-  "target_url": "https://example.com/",
-  "upstream_host": "example.com",
-  "redirects_followed": 0,
-  "content_captured": true,
-  "content_kind": "fetch_body",
-  "content_hash_blake3": "<64 hex>",
-  "content_hash_sha256": "<64 hex>",
-  "content_bytes": 5123,
-  "content_type": "text/html",
-  "content_truncated": false,
-  "content_pack_id": "<uuid>",
-  "content_frame_offset": 4096,
-  "content_frame_length": 1234,
-  "content_capture_error": "",
-  "request_headers": {"accept": ["*/*"], "user-agent": ["neuradex/0.1"]},
-  "response_headers": {"content-type": ["text/html; charset=utf-8"]},
-  "request_headers_truncated": false,
-  "response_headers_truncated": false,
-  "read_action": "",
-  "read_target": "",
-  "read_reason": "",
-  "read_bytes": 0
+  "operation": {
+    "type": "fetch",
+    "target_scheme": "https",
+    "target_host": "example.com",
+    "target_path": "/a/path",
+    "target_url_sha256": "7d5e1f180f774d3f6d57faa2ae34610fdbfb752d0c0e48d840e3f2d633a27f78",
+    "redirects": 0,
+    "final_host": "example.com",
+    "upstream_status": 200,
+    "content_type": "text/html",
+    "content_length": 5123,
+    "bytes_read": 5123,
+    "ttfb_ms": 87,
+    "total_ms": 120,
+    "truncated": false,
+    "stopped_at_head": false
+  },
+  "content_references": [
+    {
+      "storage": "pack",
+      "key": "packs/v1/date=2026-11-10/hour=12/pack-019a.nrp",
+      "blake3": "9f2c000000000000000000000000000000000000000000000000000000000000",
+      "sha256": "3a7d000000000000000000000000000000000000000000000000000000000000",
+      "size": 5123,
+      "content_type": "text/html"
+    }
+  ]
 }
 ```
-
-A failed fetch:
-
-```json
-{
-  "schema_version": 1,
-  "event": "fetch",
-  "event_id": "019a7f3c-...",
-  "timestamp": "2026-11-10T12:35:01.000Z",
-  "request_id": "019a7f3c-...",
-  "route": "/v1/fetch",
-  "method": "GET",
-  "status": 502,
-  "duration_ms": 30000,
-  "outcome": "upstream_error",
-  "error_type": "upstream_timeout",
-  "target_url": "https://slow.example.com/",
-  "upstream_host": "slow.example.com",
-  "content_captured": false,
-  "content_capture_error": "upstream_error",
-  "request_headers": {},
-  "response_headers": {}
-}
-```
-
-The failed event has no pack refs. That is not data loss; it is the correct record that there
-was no body to capture.
 
 ## Invariants
 
-1. `event_id` is unique; `request_id` is stable for one request.
-2. `timestamp` is completion time UTC; `duration_ms` is monotonic and non-negative.
-3. `status` is the final client status; 0 for non-HTTP events.
-4. `outcome` and `error_type` are low-cardinality and never contain free text.
-5. `content_captured=false` always has a non-empty `content_capture_error` (except for events
-   that never capture content, where `content_captured=false` is expected and
-   `content_capture_error` may be empty).
-6. `content_hash_blake3` is lowercase hex, 64 chars, when captured.
-7. Headers are JSON objects in the event; ClickHouse stores them as JSON-encoded strings.
-8. Bodies, result snippets, tokens, and cookies never appear.
+1. `event` is `neuradex.request`; the operation type is `operation.type`, not `event`.
+2. `schema_version` is a string (`1.0.0`).
+3. `event_id` is unique; `request_id` is stable for one request.
+4. `timestamp` is RFC 3339 UTC; `http.duration_ms` is non-negative.
+5. `operation` is optional; when present, `operation.type` is one of the five values.
+6. No query text, full target URL, body, or result snippet appears.
+7. Header captures are bounded and redacted/HMACed per policy.
+8. `content_references` is an array; absence means no captured content.
+
+## Future fields
+
+`auth_subject`, `auth_method`, `user_id`, `read_action`, `read_target`, `read_reason`,
+`read_bytes`, `content_captured`, and `content_capture_error` are not in 1.0.0. Do not index or
+store them until the audit crate emits them. See RFD 0009 for the proposed read-audit shape.

@@ -1,7 +1,7 @@
 # Architecture overview
 
-**Status:** target design. The HTTP service is implemented; the audit/content pipeline is
-specified and its crates are scaffolded. See [docs/README.md](../README.md#status).
+**Status:** target design. The HTTP service and `neuradex-audit` are implemented; the packfile
+format is implemented (PR #68); the content orchestration and service wiring are pending. See [docs/README.md](../README.md#status).
 
 ## System context
 
@@ -60,9 +60,9 @@ The stores are derived views except B2, which is the source of truth.
 | Component | Responsibility | Failure impact | Source |
 | --- | --- | --- | --- |
 | `neuradex` HTTP API | Request parsing, validation, upstream calls, response | User-visible | `crates/neuradex` |
-| Audit event builder | Build one flat event per request; redact headers; assign IDs | Audit completeness | `crates/neuradex-audit` |
-| Content capture | Tee decompressed bytes; hash; spool; mark truncation/errors | Content completeness | `crates/neuradex-content` |
-| Pack builder | Seal 128 MiB/10 min packs; footer/trailer; upload | Content availability | `crates/neuradex-content` |
+| Audit event builder | Build one nested `AuditEvent` per request; redact headers; assign IDs | Audit completeness | `crates/neuradex-audit` |
+| Content capture | Tee decompressed bytes; hash; spool; mark truncation | Content completeness | `crates/neuradex-content` |
+| Pack builder | Seal 128 MiB/10 min packs; 96-byte frame headers, footer, 128-byte trailer; upload | Content availability | `crates/neuradex-content` + `crates/neuradex-packfile` |
 | Request index writer | Hourly `request_id → frame` object | Content lookup | `crates/neuradex-content` |
 | Event archive writer | Hourly NDJSON.zst object | Cold audit truth | `crates/neuradex-content` |
 | Quickwit | Full-text search over the last 30 days | Hot search unavailable | Quickwit 0.8.2 |
@@ -127,7 +127,7 @@ Local differences that must not leak into production assumptions:
 2. **Event is the durable record.** Content may be missing; the event says why.
 3. **BLAKE3 is identity.** SHA-256 is audit. XXH3 is a frame checksum only.
 4. **Packs are immutable.** No per-request objects, no per-request manifests, no in-place edits.
-5. **The footer is authoritative.** The hourly index accelerates; it does not replace the pack.
+5. **Frames are self-describing; the footer is a rebuildable index.** The hourly index accelerates lookup; it does not replace the pack.
 6. **Hot is short, cold is long.** Quickwit 30 days, ClickHouse/B2 365 days.
 7. **Named access only.** Reads are authenticated, authorized, and audited.
 8. **At-least-once, not exactly-once.** Duplicates are tolerated; silent loss is not.

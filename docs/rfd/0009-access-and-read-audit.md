@@ -27,6 +27,11 @@ describe.
 
 ## Context and scope
 
+> **Schema status:** the `AuditEvent` 1.0.0 does not emit `auth_subject`, `auth_method`,
+> `user_id`, `read_action`, `read_target`, `read_reason`, or `read_bytes`. This RFD specifies the
+> target access model and the read-audit fields to add; they are future work, not current
+> columns.
+
 The service handles real data for named users. A body may contain personal data, a query may
 reveal intent, and a header HMAC may confirm a credential. An audit system that anyone can read
 without a record is not an audit system; it is a surveillance dataset with no accountability.
@@ -95,8 +100,8 @@ Adopt B/B/A:
 - Authentication at the trusted ingress (mTLS for services, OIDC for humans). The ingress strips
   any client-supplied identity headers and adds a signed principal (e.g. a short-lived JWT or a
   mTLS-derived header) on the internal hop.
-- Authorization in neuradex, using the roles below. The service records the principal in
-  `auth_subject`, `auth_method`, and `user_id`.
+- Authorization in neuradex, using the roles below. Once the auth fields land, the service will
+  record the principal in `auth_subject`, `auth_method`, and `user_id` (not in schema 1.0.0).
 - Content reads go through the audited read API; direct B2 credentials are limited to the
   service and break-glass admins.
 - Read audit events use the same event schema (`event=audit.read` or `event=content.read`) and
@@ -144,10 +149,11 @@ The service accepts identity only from the trusted ingress. The contract:
   parse roles from an unsigned header.
 - If verification fails, the request is rejected with the standard JSON error envelope. It is
   still audited as `client_error` with `auth_method=none` and no principal.
-- The service records the verified `sub` as `auth_subject` and the role used as `auth_method`
-  (or the authentication method: `mtls`, `oidc`). Never record the raw token.
+- The service will record the verified `sub` as `auth_subject` and the role used as
+  `auth_method` (or the authentication method: `mtls`, `oidc`). Never record the raw token.
+  These fields are future schema work.
 
-For local development, the service may run with auth disabled and `auth_subject=local`. This is
+For local development, the service may run with auth disabled and a local principal. This is
 explicitly insecure and must be impossible to enable in production (a build-time or
 environment-gated flag that the Helm chart never sets).
 
@@ -261,7 +267,7 @@ immutable footers by pack ID.
 | Do read audit events need a separate immutable store? | Same-table storage is simpler but a privileged reader can see reads | Security review after the read API exists |
 | Should content reads fail closed if read audit is down? | Fail-closed protects accountability; fail-open preserves incident response | Decide with the first read API implementation |
 | What is the exact ingress principal format? | Depends on the ingress/JWT library | Deployment review |
-| Do analysts need row-level filters (e.g. no query text)? | ClickHouse column-level grants can hide `query_text` | Add a restricted view if needed |
+| Do analysts need row-level filters? | A future schema may add query text or auth fields; column grants can hide them | Add a restricted view if needed |
 | Is a customer-managed encryption key required? | B2 SSE may be enough; legal may require more | Security/legal review |
 | How is a legal per-request deletion handled? | Packs are immutable; rewrite is expensive | Legal/security review; unsupported today |
 | What is the break-glass SLA? | Depends on on-call and security coverage | Operations review |

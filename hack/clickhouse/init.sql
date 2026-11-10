@@ -1,73 +1,102 @@
 -- ClickHouse DDL for the local neuradex analytics stack.
 --
--- The official image runs this file only when /var/lib/clickhouse is empty. After changing the
--- DDL, either reset the clickhouse_data volume or apply the change manually. All statements are
--- IF NOT EXISTS so a fresh start is idempotent.
+-- The columns mirror the serialized `neuradex-audit` AuditEvent (schema_version 1.0.0) after
+-- Vector flattens the nested `service`, `http`, and `operation` objects. The event itself is
+-- nested; see docs/reference/event-fields.md. Derived columns are marked below.
 --
--- No response bodies or search result text are stored here. `query_text` is optional and
--- restricted; dashboards must aggregate with `query_hash` instead.
+-- No bodies, query text, auth subject, or read-audit fields are present: the audit crate does
+-- not emit them. The content_references column is the JSON array from the event; the
+-- content_* summary columns are derived by Vector for capacity queries, not fields of the
+-- AuditEvent.
+--
+-- The official image runs this file only when /var/lib/clickhouse is empty. After changing the
+-- DDL, either reset the clickhouse_data volume or apply the change manually.
 
 CREATE DATABASE IF NOT EXISTS neuradex;
 
 CREATE TABLE IF NOT EXISTS neuradex.events
 (
     -- Envelope and correlation.
-    schema_version          UInt16,
-    event                   LowCardinality(String),
-    event_id                String,
-    timestamp               DateTime64(3, 'UTC'),
-    request_id              String,
-    trace_id                String,
-    span_id                 String,
+    event                       LowCardinality(String),
+    schema_version              LowCardinality(String),
+    event_id                    String,
+    timestamp                   DateTime64(3, 'UTC'),
+    observed_at                 Nullable(DateTime64(3, 'UTC')),
+    trace_id                    String,
+    span_id                     String,
+    request_id                  String,
 
-    -- Request metadata.
-    route                   LowCardinality(String),
-    method                  LowCardinality(String),
-    status                  UInt16,
-    duration_ms             UInt32,
-    outcome                 LowCardinality(String),
-    error_type              LowCardinality(String),
-    service_version         String,
+    -- service { name, version, environment? }
+    service_name                LowCardinality(String),
+    service_version             String,
+    service_environment         LowCardinality(String),
 
-    -- Authenticated principal.
-    auth_subject            String,
-    auth_method             LowCardinality(String),
-    user_id                 String,
+    -- http { method, route?, path, status?, request_body_bytes?, response_body_bytes?,
+    --        duration_ms }
+    http_method                 LowCardinality(String),
+    http_route                  LowCardinality(String),
+    http_path                   String,
+    http_status                 UInt16,
+    http_request_body_bytes     UInt64,
+    http_response_body_bytes    UInt64,
+    http_duration_ms            UInt64,
 
-    -- Search metadata. query_text is policy-gated; query_hash is always safe to aggregate.
-    query_text              String,
-    query_hash              String,
-    result_count            UInt32,
+    outcome                     LowCardinality(String),
+    error_type                  LowCardinality(String),
 
-    -- Target metadata. target_url is sanitized (no userinfo, fragment, or query values).
-    target_url              String,
-    upstream_host           String,
-    redirects_followed      UInt16,
+    -- operation { type, ...union fields }
+    operation_type              LowCardinality(String),
 
-    -- Content references. Bodies live in B2 packfiles, never here.
-    content_captured        Bool,
-    content_kind            LowCardinality(String),
-    content_hash_blake3     String,
-    content_hash_sha256     String,
-    content_bytes           UInt64,
-    content_type            LowCardinality(String),
-    content_truncated       Bool,
-    content_pack_id         String,
-    content_frame_offset    UInt64,
-    content_frame_length    UInt32,
-    content_capture_error   LowCardinality(String),
+    -- search / openwebui_search
+    query_length                UInt64,
+    query_terms                 UInt64,
+    query_sha256                String,
+    query_limit                 UInt64,
+    query_count                 UInt64,
+    auth_mode                   LowCardinality(String),
+    queue_ms                    UInt64,
+    upstream_ms                 UInt64,
+    upstream_result_count       UInt64,
+    returned_result_count       UInt64,
+    zero_results                Bool,
+    result_digest               String,
+    top_hosts                   String,
 
-    -- Header JSON strings. Values are redacted/HMACed by the audit crate.
-    request_headers         String,
-    response_headers        String,
-    request_headers_truncated  Bool,
-    response_headers_truncated Bool,
+    -- fetch / peek
+    target_scheme               LowCardinality(String),
+    target_host                 String,
+    target_port                 UInt16,
+    target_path                 String,
+    target_url_sha256           String,
+    redirects                   UInt32,
+    final_host                  String,
+    upstream_status             UInt16,
+    content_type                LowCardinality(String),
+    content_length              UInt64,
+    bytes_read                  UInt64,
+    ttfb_ms                     UInt64,
+    total_ms                    UInt64,
+    truncated                   Bool,
+    stopped_at_head             Bool,
 
-    -- Read audit. Empty for normal request events.
-    read_action             LowCardinality(String),
-    read_target             String,
-    read_reason             String,
-    read_bytes              UInt64
+    -- infrastructure
+    infrastructure_kind         LowCardinality(String),
+
+    -- content_references [ { storage, key, blake3, sha256, size, content_type? } ]
+    content_references          String,
+
+    -- Derived from content_references by Vector, not part of AuditEvent. Useful for capacity
+    -- queries without parsing the JSON array on every scan.
+    content_reference_count     UInt32,
+    content_bytes               UInt64,
+    content_storage             LowCardinality(String),
+    content_key                 String,
+    content_blake3              String,
+    content_sha256              String,
+
+    -- HeaderCapture objects, encoded as JSON text.
+    request_headers             String,
+    response_headers            String
 )
 ENGINE = MergeTree
 PARTITION BY toDate(timestamp)
@@ -83,9 +112,9 @@ SETTINGS
 CREATE TABLE IF NOT EXISTS neuradex.events_daily
 (
     day                 Date,
-    event               LowCardinality(String),
-    route               LowCardinality(String),
-    method              LowCardinality(String),
+    operation_type      LowCardinality(String),
+    http_route          LowCardinality(String),
+    http_method         LowCardinality(String),
     status_class        LowCardinality(String),
     outcome             LowCardinality(String),
     requests            SimpleAggregateFunction(sum, UInt64),
@@ -95,7 +124,7 @@ CREATE TABLE IF NOT EXISTS neuradex.events_daily
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(day)
-ORDER BY (day, event, route, method, status_class, outcome)
+ORDER BY (day, operation_type, http_route, http_method, status_class, outcome)
 TTL day + INTERVAL 365 DAY
 SETTINGS ttl_only_drop_parts = 1;
 
@@ -104,24 +133,25 @@ TO neuradex.events_daily
 AS
 SELECT
     toDate(timestamp)                                      AS day,
-    event,
-    route,
-    method,
-    concat(toString(intDiv(status, 100)), 'xx')            AS status_class,
+    operation_type,
+    http_route,
+    http_method,
+    concat(toString(intDiv(http_status, 100)), 'xx')       AS status_class,
     outcome,
     count()                                                AS requests,
-    countIf(status >= 500)                                 AS errors,
-    sum(duration_ms)                                       AS duration_ms_sum,
-    max(toUInt64(duration_ms))                             AS duration_ms_max
+    countIf(http_status >= 500)                            AS errors,
+    sum(http_duration_ms)                                  AS duration_ms_sum,
+    max(http_duration_ms)                                  AS duration_ms_max
 FROM neuradex.events
-GROUP BY day, event, route, method, status_class, outcome;
+GROUP BY day, operation_type, http_route, http_method, status_class, outcome;
 
 -- Daily content captured per upstream host and content type. `distinct_content` is an
--- AggregateFunction(uniq, String); read it with uniqMerge.
+-- AggregateFunction(uniq, String); read it with uniqMerge. The content_* columns are derived
+-- from content_references, so this view only covers events that actually carry a reference.
 CREATE TABLE IF NOT EXISTS neuradex.content_daily
 (
     day                 Date,
-    upstream_host       String,
+    target_host         String,
     content_type        LowCardinality(String),
     fetches             SimpleAggregateFunction(sum, UInt64),
     bytes_captured      SimpleAggregateFunction(sum, UInt64),
@@ -130,7 +160,7 @@ CREATE TABLE IF NOT EXISTS neuradex.content_daily
 )
 ENGINE = AggregatingMergeTree
 PARTITION BY toYYYYMM(day)
-ORDER BY (day, upstream_host, content_type)
+ORDER BY (day, target_host, content_type)
 TTL day + INTERVAL 365 DAY
 SETTINGS ttl_only_drop_parts = 1;
 
@@ -139,14 +169,14 @@ TO neuradex.content_daily
 AS
 SELECT
     toDate(timestamp)                   AS day,
-    upstream_host,
+    target_host,
     content_type,
     count()                             AS fetches,
     sum(content_bytes)                  AS bytes_captured,
-    countIf(content_truncated)          AS truncated,
-    uniqState(content_hash_blake3)      AS distinct_content
+    countIf(truncated)                  AS truncated,
+    uniqState(content_blake3)           AS distinct_content
 FROM neuradex.events
-WHERE event = 'fetch'
-  AND content_captured
-  AND content_hash_blake3 != ''
-GROUP BY day, upstream_host, content_type;
+WHERE operation_type = 'fetch'
+  AND content_reference_count > 0
+  AND content_blake3 != ''
+GROUP BY day, target_host, content_type;

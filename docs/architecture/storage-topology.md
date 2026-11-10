@@ -107,7 +107,7 @@ A reader must never see a request index entry whose pack PUT did not complete.
 
 | Data | Classification | Access |
 | --- | --- | --- |
-| Page bodies | Restricted; may contain PII | `content.reader`, audited |
+| Page bodies | Restricted; may contain PII | `content.reader` via the future audited read API |
 | Event metadata | Internal/restricted | `audit.reader` |
 | Query text | Restricted | Policy-gated; `audit.reader` if enabled |
 | Header HMACs | Restricted | `audit.reader` |
