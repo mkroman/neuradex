@@ -38,9 +38,9 @@ runtime implementation in this branch.
 | **hot index** | Quickwit's 30-day searchable copy of events. Losing it loses recent search convenience, not the archival record. |
 | **analytics store** | ClickHouse's 365-day store of typed event columns and daily aggregates. It serves dashboards and capacity queries. |
 | **event schema** | The versioned field set in [reference/event-fields.md](reference/event-fields.md). `schema_version` is `"1.0.0"`. |
-| **header policy** | The rules for which upstream request/response headers are captured, redacted, HMACed, or dropped. See RFD 0005. |
+| **header policy** | The rules for which request/response headers are allowed, redacted, HMACed, or sanitized. Unknown headers are redacted, not dropped. See RFD 0005. |
 | **sensitive header** | A header whose value must never be stored verbatim, such as `authorization`, `cookie`, `set-cookie`, or `x-api-key`. |
-| **HMAC-SHA256** | The keyed digest used to record that a sensitive header was present without storing its value. It is not a content hash and cannot be reversed. |
+| **HMAC-SHA256** | The keyed digest used for IP/user/chat identifier headers when a key is configured. It is not a content hash and cannot be reversed. Credentials are redacted, not HMACed. |
 | **event spool** | The bounded local queue/disk buffer that absorbs sink outages. In local development it is `.local/neuradex/events.jsonl`; in production it is a managed local spool. |
 | **at-least-once** | The event delivery guarantee: duplicates are possible and are deduplicated by `request_id`/`event_id`; silent loss is not acceptable. |
 | **dedupe** | Collapsing duplicate event rows or duplicate content frames. Event duplicates are tolerated; `PackWriter` rejects a duplicate BLAKE3 hash, so the content layer must dedupe before appending. |

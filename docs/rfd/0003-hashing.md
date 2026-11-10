@@ -129,7 +129,7 @@ encoding choices.
 `ContentReference.blake3` is the key. `ContentReference.sha256` is not used for lookup. The
 frame/footer `xxh3` is never used for lookup, dedupe, or equality across frames.
 
-### Sensitive header HMAC
+### Hashed-header HMAC
 
 For the hashed-header list in `header_policy.rs` (IP/user/chat identifiers), the HMAC is over
 the raw header value bytes and is rendered as 64 lowercase hex characters. Credentials such as
