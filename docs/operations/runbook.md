@@ -212,13 +212,31 @@ Symptoms: a request event has content refs but the index object for its hour is 
 
 ## Retention and lifecycle
 
-1. Confirm the intended policy: 365 days for content/events/index/archive, 30 days for Quickwit.
-2. Check B2 lifecycle rules by prefix. A rule that applies to the whole bucket can delete
-   objects earlier than intended.
-3. Check ClickHouse TTL: `SHOW CREATE TABLE neuradex.events` and the partition list.
-4. Check Quickwit retention: the index config and the janitor log.
-5. A retention change is a reviewed change. Record the ticket and the expected deletion window.
-   There is no per-request deletion.
+1. Confirm the intended policy: `CONTENT_RETENTION_DAYS` (default 365) for content, 365 days for
+   the future request index and archive, 30 days for Quickwit, and the ClickHouse table TTL. The
+   service does not delete content; bucket lifecycle rules do.
+2. Generate the B2 policy from the settings the service uses:
+   `hack/content-lifecycle.sh --print > lifecycle.json`. Review the four prefixes (`packs/`,
+   `objects/`, `index/`, `events/`) and the retention days. This mode does not touch AWS.
+3. Compare the live configuration: `hack/content-lifecycle.sh --check`. Exit 1 means drift.
+   Inspect the live rules with:
+   ```sh
+   aws --endpoint-url "$CONTENT_S3_ENDPOINT" s3api get-bucket-lifecycle-configuration \
+     --bucket "$CONTENT_S3_BUCKET"
+   ```
+   Confirm nobody edited the rules in the B2 console or with `b2_update_bucket`, then re-apply
+   through the script after review. Do not hand-edit rules.
+4. `hack/content-lifecycle.sh --apply` replaces the entire lifecycle configuration. Check for
+   unmanaged rules first, and use the lifecycle-admin key, not the service's content key.
+5. Each prefix needs both halves of the B2 mapping: `Expiration.Days` hides the current version,
+   and `NoncurrentVersionExpiration.NoncurrentDays` deletes the hidden version. Hiding alone does
+   not free storage. B2's S3 API rejects overlapping prefixes; a legacy or console-created
+   overlapping rule can hide or delete data earlier than intended, so do not add one.
+6. Check ClickHouse TTL: `SHOW CREATE TABLE neuradex.events` and the partition list.
+7. Check Quickwit retention: the index config and the janitor log.
+8. A retention change is a reviewed change. Record the ticket and the expected deletion window.
+   There is no per-request deletion. See [deployment.md](deployment.md#retention) for the policy
+   and script details.
 
 ## Access and read audit
 

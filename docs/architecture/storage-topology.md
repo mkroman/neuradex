@@ -49,6 +49,8 @@ flowchart TB
 
 The service does not configure bucket lifecycle rules. `CONTENT_RETENTION_DAYS` is a policy
 value that is logged at startup; retention enforcement is an external B2/S3 lifecycle concern.
+[`hack/content-lifecycle.sh`](../../hack/content-lifecycle.sh) generates and applies the B2
+policy outside the service.
 
 ## Store responsibilities
 
@@ -177,10 +179,12 @@ local MinIO stack.
 
 ## Object lifecycle
 
-The service does not configure lifecycle rules. For production, set a B2/S3 lifecycle rule on the
-configured prefix (for example `packs/` and `objects/`) to match the intended
-`CONTENT_RETENTION_DAYS`; this is external to the service and should be reviewed like any
-retention change. There is no per-request deletion.
+The service does not configure lifecycle rules. For production,
+[`hack/content-lifecycle.sh`](../../hack/content-lifecycle.sh) generates the B2 policy for
+`packs/`, `objects/`, `index/`, and `events/` from `CONTENT_RETENTION_DAYS`, including the
+hide/delete pair B2 requires. This is external to the service and should be reviewed like any
+retention change; see [deployment.md](../operations/deployment.md#retention). There is no
+per-request deletion.
 
 ## Security
 

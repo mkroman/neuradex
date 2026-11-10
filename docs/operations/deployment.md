@@ -135,18 +135,87 @@ whenever the pod restarts or moves. An existing claim can be used with
 
 ## Retention
 
-The service records `CONTENT_RETENTION_DAYS` but never deletes packs or objects. Enforce
-retention with bucket lifecycle rules:
+The service records `CONTENT_RETENTION_DAYS` but never deletes packs or objects. Retention is
+enforced by bucket lifecycle rules. [`hack/content-lifecycle.sh`](../../hack/content-lifecycle.sh)
+generates the B2 policy for the prefixes the content plane uses now and the stores it will use
+later:
 
-- content packs: `packs/` prefix;
-- large standalone objects: `objects/` prefix;
-- future request index and event archive: `index/` and `events/` prefixes, when those stores
-  exist in the deployment.
+| Prefix | Contents |
+| --- | --- |
+| `packs/` | Content packfiles |
+| `objects/` | Large standalone bodies |
+| `index/` | Future hourly request index |
+| `events/` | Future event archive |
 
-Set the lifecycle window to the same 365 days as `content.retentionDays`. Lifecycle deletion is
-a safety net and can run late; do not rely on it for a precise deletion SLA. Never delete a pack
-by hand to remove one request: packs are immutable and shared, and the audit event is the
-durable record. See [RFD 0002](../rfd/0002-content-addressed-storage.md) and
+Use the same value as `content.retentionDays` (the chart sets `CONTENT_RETENTION_DAYS` from it;
+default 365). `CONTENT_S3_PREFIX`, when set, nests the same four prefixes under it.
+
+### B2 hide/delete pairing
+
+B2's S3 API maps `Expiration` to **hide**, not delete. A hidden version still consumes storage
+until a noncurrent-version rule deletes it. B2 also requires each `Expiration.Days` rule to be
+paired with a rule that has the same prefix and `Expiration.ExpiredObjectDeleteMarker: true`.
+The script emits three rules per prefix (12 total):
+
+| Rule | S3 field | B2 action |
+| --- | --- | --- |
+| Hide the current version | `Expiration.Days = CONTENT_RETENTION_DAYS` | Hide |
+| Remove orphan delete markers | `Expiration.ExpiredObjectDeleteMarker = true` | Remove delete markers |
+| Delete the hidden version | `NoncurrentVersionExpiration.NoncurrentDays = 1` | Delete |
+
+The noncurrent delay is one day. B2 runs lifecycle rules once per day and requires a positive
+delay, so deletion happens roughly one to two days after the retention window closes. Lifecycle
+is a safety net, not a precise deletion SLA. `AbortIncompleteMultipartUpload` is omitted because
+the service uploads packs and objects with single PUTs.
+
+The four prefixes do not overlap, which B2's S3 API requires. Do not add a bucket-wide (`""`)
+or parent-prefix rule: it would overlap every managed prefix. The policy is generated, not
+hard-coded, so a retention change does not require editing a checked-in JSON file.
+
+### Apply the policy
+
+```sh
+export CONTENT_RETENTION_DAYS=365
+export CONTENT_S3_BUCKET=neuradex-content
+export CONTENT_S3_ENDPOINT=https://s3.us-west-004.backblazeb2.com
+export CONTENT_S3_REGION=us-west-004
+export CONTENT_S3_ACCESS_KEY_ID=...
+export CONTENT_S3_SECRET_ACCESS_KEY=...
+export CONTENT_S3_FORCE_PATH_STYLE=true   # optional; default true
+export CONTENT_S3_PREFIX=neuradex         # optional; must match the service
+
+hack/content-lifecycle.sh --print > lifecycle.json   # default mode; no AWS calls
+hack/content-lifecycle.sh --check                    # exit 1 on drift
+hack/content-lifecycle.sh --apply                    # explicit write
+```
+
+`--print` needs only `jq` and is the review artifact; it does not validate the S3 connection
+settings and never calls AWS. `--output FILE` writes it to a file instead of stdout. `--check`
+and `--apply` also need the AWS CLI v2; the script maps the `CONTENT_S3_*` credentials to the
+CLI's `AWS_*` variables without echoing them. `--apply` verifies that bucket versioning is
+enabled, then replaces the bucket's entire lifecycle configuration. Exit status is 0 for success
+or in sync, 1 for drift or an operation failure, and 2 for a usage or configuration error.
+
+Prerequisites and access:
+
+- Versioning must be enabled on the bucket. `--check` and `--apply` verify it.
+- Use a separate lifecycle-admin key, not the service's content key. B2 exposes lifecycle reads
+  through bucket metadata and gates writes behind `writeBuckets`, which is not available to
+  bucket-restricted keys; versioning reads need `readBuckets`. Keep that key away from the data
+  plane.
+- The bucket must exist before the policy is applied.
+
+**The S3 API is the single writer.** Do not create, update, or delete these rules in the B2 web
+console or through the B2 Native API (`b2_update_bucket`). B2 regenerates rule IDs when either is
+used, and a second writer can silently drop rules the policy expects. `--check` ignores IDs but
+not rule content; any drift is a reviewed change, not an in-place edit.
+
+B2 is the target. A local MinIO can exercise the AWS CLI path, but MinIO does not reproduce
+B2's hide-then-delete mapping; do not use it to validate the B2 deletion semantics.
+
+Never delete a pack by hand to remove one request: packs are immutable and shared, and the
+audit event is the durable record. See
+[RFD 0002](../rfd/0002-content-addressed-storage.md) and
 [capacity-and-cost.md](capacity-and-cost.md) for the retention policy.
 
 Quickwit retention (30 days) lives in the index mapping, and ClickHouse retention (365 days)
