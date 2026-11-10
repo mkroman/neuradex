@@ -126,16 +126,18 @@ Retention is a policy change, not a code tweak. The order matters:
 
 1. Write the proposal: current usage, requested window, cost delta, security/privacy impact.
 2. Get approval from the service owner, security, and the budget owner.
-3. Change the B2 lifecycle rules, ClickHouse TTL, and Quickwit retention as one coordinated
-   change. A mismatch leaves orphan data or a lookup gap.
+3. Change the B2 lifecycle rules with [`hack/content-lifecycle.sh`](../../hack/content-lifecycle.sh)
+   (`--print`, review, `--check`, then `--apply`), plus ClickHouse TTL and Quickwit retention, as
+   one coordinated change. A mismatch leaves orphan data or a lookup gap.
 4. Record the change in RFD 0008 (or a new RFD) and the operations log.
 5. Verify with object counts/ages and ClickHouse partition metadata.
 6. Do not shorten retention and then lengthen it; deleted data cannot be recovered.
 
 Current policy: 365 days content/events/index/archive; 30 days Quickwit. `CONTENT_RETENTION_DAYS`
-only records the content policy value; the service does not delete objects, so B2/S3 lifecycle
-rules are the enforcement point. Per-request deletion is not supported. A legal deletion request
-needs a pack rewrite, which is not implemented.
+only records the content policy value; the service does not delete objects. The checked-in
+lifecycle script owns the B2 policy and encodes the required hide/delete pair; see
+[deployment.md](deployment.md#retention). Per-request deletion is not supported. A legal deletion
+request needs a pack rewrite, which is not implemented.
 
 ## Capacity planning
 
