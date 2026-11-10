@@ -264,8 +264,9 @@ sequenceDiagram
     S-->>R: bytes + content metadata
 ```
 
-- The current `PackReader` takes a complete pack byte slice. The format is range-friendly (128-byte
-  trailer, fixed-size footer entries), but a range-GET reader is future work.
+- `neuradex-content` reads a pack with range GETs: the trailer, the footer, then the selected
+  frame. `PackReader` in `neuradex-packfile` still takes a complete pack slice; the range adapter
+  lives in the content crate and verifies the frame-level hashes.
 - The footer may be cached in memory by pack key; it is immutable.
 - Frames are self-describing. If the request index and footer disagree, verify the frame header;
   a footer mismatch means the index or footer must be rebuilt, not that the bytes changed.
