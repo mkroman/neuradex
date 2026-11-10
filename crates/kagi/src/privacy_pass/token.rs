@@ -298,6 +298,7 @@ mod tests {
             max_tokens: 8,
             low_token_count: 0,
             state_path: None,
+            fallback: false,
         }
     }
 
@@ -313,6 +314,7 @@ mod tests {
             max_tokens: 3,
             low_token_count: 1,
             state_path: None,
+            fallback: false,
         };
         let store = TokenStore::new(&options);
 
@@ -341,6 +343,7 @@ mod tests {
             max_tokens: 1,
             low_token_count: 0,
             state_path: None,
+            fallback: false,
         };
         let store = TokenStore::new(&options);
         store.add([dummy_token(1)]);

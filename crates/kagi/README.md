@@ -73,9 +73,21 @@ let results = client.search("rust programming language").await?;
 ```
 
 `ClientOptions::privacy_pass` accepts a `PrivacyPassOptions` value to tune the
-batch size, store capacity, and low-water mark. Tokens live in memory, are
-consumed once, and are refilled on demand or in the background when the store
-runs low.
+batch size, store capacity, low-water mark, and an optional state file. Tokens
+live in memory, are consumed once, and are refilled on demand or in the
+background when the store runs low. Setting `PrivacyPassOptions::state_path`
+persists unspent tokens atomically (owner-only permissions on Unix), so a
+restart reuses the remaining batch instead of spending one of the account's ten
+monthly issuance rounds; a missing, unreadable, or corrupt file starts empty.
+
+With `PrivacyPassOptions::fallback` set, a search that fails in a way session
+authentication can cover is retried there: a quota rejection (429 — Kagi allows
+about ten issuance rounds per account per month) degrades Privacy Pass until
+the start of the next calendar month, a subscription rejection (403) until the
+client is dropped, and a rejected fresh batch or a broken issuer response only
+the one search. Searches then send the session token again, which links them to
+the account, so the fallback is off by default. Transport failures and a 401
+issuance rejection never fall back: they fail the session path just the same.
 
 ## Wire protocol
 

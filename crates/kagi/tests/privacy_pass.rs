@@ -7,8 +7,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use kagi::SearchResult;
+use kagi::{Error, PrivacyPassError, SearchResult};
 use test_support::httpmock::Mock;
+use test_support::kagi::KagiHarness;
 use test_support::privacy_pass::PrivacyPassHarness;
 use tokio::time::{sleep, timeout};
 
@@ -141,7 +142,7 @@ async fn concurrent_searches_each_redeem_their_own_tokens() {
     // of them, so the second batch is issued on demand. The session limit matches the search
     // count, so the search gate does not serialize the redemptions and mask a concurrent issuance
     // race.
-    let client = Arc::new(harness.client_with_options(SEARCHES, SEARCHES, 0, SEARCHES));
+    let client = Arc::new(harness.client_with_options(SEARCHES, SEARCHES, 0, SEARCHES, false));
     let mut tasks = Vec::with_capacity(SEARCHES);
 
     for _ in 0..SEARCHES {
@@ -214,7 +215,7 @@ async fn search_retries_when_the_stream_is_rejected() {
 async fn privacy_pass_searches_are_limited_by_max_sessions() {
     let harness = PrivacyPassHarness::start().with_flow_delay(Duration::from_millis(500));
     let flow = Flow::search(&harness);
-    let client = Arc::new(harness.client_with_options(4, 8, 0, 1));
+    let client = Arc::new(harness.client_with_options(4, 8, 0, 1, false));
 
     let first = tokio::spawn({
         let client = Arc::clone(&client);
@@ -272,7 +273,7 @@ async fn the_low_water_mark_starts_a_background_refill() {
     let flow = Flow::search(&harness);
     // The first search leaves one of the three issued tokens; taking it drops the store below
     // the low-water mark of two and starts the background refill.
-    let client = harness.client_with_options(3, 8, 2, kagi::DEFAULT_MAX_SESSIONS);
+    let client = harness.client_with_options(3, 8, 2, kagi::DEFAULT_MAX_SESSIONS, false);
 
     let results = client
         .search(QUERY)
@@ -343,4 +344,169 @@ async fn a_new_client_reuses_persisted_tokens_instead_of_issuing_again() {
     flow.issuance.assert_calls(1);
     flow.document.assert_calls(2);
     flow.stream.assert_calls(2);
+}
+/// The session-mode mocks a fallback search uses instead of Privacy Pass.
+///
+/// The mock matchers of the two harnesses are disjoint — the Privacy Pass responders require
+/// the `PrivateToken` authorization header and the `X-Kagi-PrivacyPass-Client` marker, the
+/// session responders require the session cookies and `X-Kagi-Authorization` — so both can be
+/// registered on one server without shadowing each other.
+struct SessionFlow<'a> {
+    /// Serves the session cookie for the login token.
+    session: Mock<'a>,
+    /// Serves the document nonce.
+    nonce: Mock<'a>,
+    /// Serves the stream, accepting both a first-request nonce and session reuse.
+    stream: Mock<'a>,
+}
+
+impl<'a> SessionFlow<'a> {
+    /// Mocks the session flow on the Privacy Pass harness's server.
+    ///
+    /// The harness must outlive the returned mocks.
+    fn new(sessions: &'a KagiHarness) -> Self {
+        Self {
+            session: sessions.mock_session(),
+            nonce: sessions.mock_nonce(),
+            stream: sessions.mock_search_stream_reusable(SEARCH_FIXTURE, Duration::ZERO),
+        }
+    }
+
+    /// Asserts that no session request was made.
+    fn assert_unused(&self) {
+        self.session.assert_calls(0);
+        self.nonce.assert_calls(0);
+        self.stream.assert_calls(0);
+    }
+}
+
+#[tokio::test]
+async fn quota_exhaustion_falls_back_to_the_session_flow_and_degrades() {
+    let harness = PrivacyPassHarness::start();
+    let challenge = harness.mock_challenge();
+    let issuance = harness.mock_issuance_with_status(429);
+    let sessions = KagiHarness::with_server(Arc::clone(&harness.server));
+    let flow = SessionFlow::new(&sessions);
+    let client = harness.client_with_options(4, 8, 0, kagi::DEFAULT_MAX_SESSIONS, true);
+    let privacy_pass = client.privacy_pass().expect("privacy pass is enabled");
+
+    let results = client
+        .search(QUERY)
+        .await
+        .expect("the search falls back to the session flow");
+
+    assert_eq!(results.len(), 5);
+    assert!(
+        privacy_pass.degraded(),
+        "quota exhaustion degrades privacy pass"
+    );
+
+    // A degraded search skips issuance entirely instead of repeating the rejected request.
+    client
+        .search(QUERY)
+        .await
+        .expect("the degraded search uses the session flow");
+
+    challenge.assert_calls(1);
+    issuance.assert_calls(1);
+    // The second search reuses the parked session, so only the stream runs again: the nonce
+    // document is fetched when a session is established, not on reuse.
+    flow.session.assert_calls(1);
+    flow.nonce.assert_calls(1);
+    flow.stream.assert_calls(2);
+}
+
+#[tokio::test]
+async fn subscription_rejection_falls_back_and_degrades_for_the_client_lifetime() {
+    let harness = PrivacyPassHarness::start();
+    let challenge = harness.mock_challenge();
+    let issuance = harness.mock_issuance_with_status(403);
+    let sessions = KagiHarness::with_server(Arc::clone(&harness.server));
+    let flow = SessionFlow::new(&sessions);
+    let client = harness.client_with_options(4, 8, 0, kagi::DEFAULT_MAX_SESSIONS, true);
+    let privacy_pass = client.privacy_pass().expect("privacy pass is enabled");
+
+    let results = client
+        .search(QUERY)
+        .await
+        .expect("the search falls back to the session flow");
+
+    assert_eq!(results.len(), 5);
+    assert!(
+        privacy_pass.degraded(),
+        "a subscription rejection degrades privacy pass"
+    );
+
+    challenge.assert_calls(1);
+    issuance.assert_calls(1);
+    flow.nonce.assert_calls(1);
+    flow.stream.assert_calls(1);
+}
+
+#[tokio::test]
+async fn without_the_fallback_the_quota_error_propagates() {
+    let harness = PrivacyPassHarness::start();
+    let challenge = harness.mock_challenge();
+    let issuance = harness.mock_issuance_with_status(429);
+    let sessions = KagiHarness::with_server(Arc::clone(&harness.server));
+    let flow = SessionFlow::new(&sessions);
+    let client = harness.client_with_options(4, 8, 0, kagi::DEFAULT_MAX_SESSIONS, false);
+    let privacy_pass = client.privacy_pass().expect("privacy pass is enabled");
+
+    let error = client
+        .search(QUERY)
+        .await
+        .expect_err("the quota error propagates without a fallback");
+    let Error::PrivacyPass(PrivacyPassError::TokenStatus(error)) = &error else {
+        panic!("expected a Privacy Pass token status error, got {error:?}");
+    };
+
+    assert_eq!(error.status(), Some(reqwest::StatusCode::TOO_MANY_REQUESTS));
+    assert!(
+        !privacy_pass.degraded(),
+        "no degradation without a fallback"
+    );
+
+    challenge.assert_calls(1);
+    issuance.assert_calls(1);
+    flow.assert_unused();
+}
+
+#[tokio::test]
+async fn rejected_redemptions_fall_back_to_the_session_flow() {
+    let harness = PrivacyPassHarness::start();
+    let challenge = harness.mock_challenge();
+    let issuance = harness.mock_issuance();
+    let (document, stream) = harness.mock_search_flow_with_rejections(QUERY, SEARCH_FIXTURE, 1, 1);
+    let sessions = KagiHarness::with_server(Arc::clone(&harness.server));
+    let flow = SessionFlow::new(&sessions);
+    let client = harness.client_with_options(4, 8, 0, kagi::DEFAULT_MAX_SESSIONS, true);
+    let privacy_pass = client.privacy_pass().expect("privacy pass is enabled");
+
+    let results = client
+        .search(QUERY)
+        .await
+        .expect("the search falls back to the session flow");
+
+    assert_eq!(results.len(), 5);
+    assert!(
+        !privacy_pass.degraded(),
+        "a rejected redemption does not degrade privacy pass"
+    );
+
+    // The next search redeems tokens again: the fallback only covered the failed search.
+    client
+        .search(QUERY)
+        .await
+        .expect("the next search uses privacy pass again");
+
+    // The first search rejected its document and its stream, issued a retry batch, and then
+    // fell back; the second redeemed the tokens the retry batch had left.
+    challenge.assert_calls(2);
+    issuance.assert_calls(2);
+    document.assert_calls(3);
+    stream.assert_calls(2);
+    flow.session.assert_calls(1);
+    flow.nonce.assert_calls(1);
+    flow.stream.assert_calls(1);
 }

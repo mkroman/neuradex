@@ -76,6 +76,7 @@ impl PrivacyPassHarness {
             tokens_to_stash.max(8),
             0,
             DEFAULT_MAX_SESSIONS,
+            false,
         )
     }
 
@@ -90,11 +91,11 @@ impl PrivacyPassHarness {
     /// Panics if the test client cannot be built.
     #[must_use]
     pub fn client_with_state(&self, path: impl Into<PathBuf>) -> Client {
-        self.build_client(4, 8, 0, DEFAULT_MAX_SESSIONS, Some(path.into()))
+        self.build_client(4, 8, 0, DEFAULT_MAX_SESSIONS, Some(path.into()), false)
     }
 
-    /// Builds a Privacy Pass client with explicit batch size, capacity, low-water mark, and
-    /// maximum simultaneous searches.
+    /// Builds a Privacy Pass client with explicit batch size, capacity, low-water mark,
+    /// maximum simultaneous searches, and session fallback.
     ///
     /// # Panics
     ///
@@ -106,6 +107,7 @@ impl PrivacyPassHarness {
         max_tokens: usize,
         low_token_count: usize,
         max_sessions: usize,
+        fallback: bool,
     ) -> Client {
         self.build_client(
             tokens_to_stash,
@@ -113,6 +115,7 @@ impl PrivacyPassHarness {
             low_token_count,
             max_sessions,
             None,
+            fallback,
         )
     }
 
@@ -124,6 +127,7 @@ impl PrivacyPassHarness {
         low_token_count: usize,
         max_sessions: usize,
         state_path: Option<PathBuf>,
+        fallback: bool,
     ) -> Client {
         Client::with_token_and_options(
             TOKEN,
@@ -136,6 +140,7 @@ impl PrivacyPassHarness {
                     max_tokens,
                     low_token_count,
                     state_path,
+                    fallback,
                 }),
                 ..ClientOptions::default()
             },
@@ -198,6 +203,20 @@ impl PrivacyPassHarness {
                     Err(error) => HttpMockResponse::builder().status(500).body(error).build(),
                 }
             });
+        })
+    }
+
+    /// Mocks the token issuance endpoint rejecting every request with `status`.
+    #[must_use]
+    pub fn mock_issuance_with_status(&self, status: u16) -> Mock<'_> {
+        self.server.mock(move |when, then| {
+            when.method("POST")
+                .path("/pp/gettokens")
+                .header("content-type", "application/private-token-request")
+                .header("authorization", TOKEN)
+                .header("x-kagi-privacypass-client", "true")
+                .header_missing("cookie");
+            then.status(usize::from(status));
         })
     }
 
