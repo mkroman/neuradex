@@ -1,0 +1,20 @@
+[package]
+name = "neuradex-audit"
+version.workspace = true
+edition.workspace = true
+description = "Audit event schema, header policy, and sinks for neuradex."
+license.workspace = true
+publish = false
+
+[dependencies]
+base64.workspace = true
+hmac.workspace = true
+http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+
+[lints]
+workspace = true
