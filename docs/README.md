@@ -9,17 +9,19 @@ assumes **named access**: there are no anonymous audit or content readers.
 
 ## Status
 
-The audit event crate is implemented (PR #67), and the packfile format crate is implemented
-(PR #68). The content orchestration crate is scaffolded, and none of these are wired into the HTTP
-service yet. The local compose stack in this repository *is* runnable. Where a document describes
-an endpoint, setting, or table that does not exist yet, the document says so explicitly.
+The audit event and content planes are wired into the HTTP service. Audit events are emitted as
+JSONL to `AUDIT_LOG_PATH` (or stdout); content is off by default and can be stored in a local
+directory or an S3-compatible bucket (MinIO locally, B2 when configured). The service does
+**not** write to Quickwit, ClickHouse, or an event archive itself: the local compose stack
+provides those and an optional Vector bridge. The local compose stack *is* runnable. Where a document describes an endpoint, setting,
+or table that does not exist yet, the document says so explicitly.
 
 | Area | Status | Source of truth |
 | --- | --- | --- |
 | HTTP API (`/v1/fetch`, `/v1/peek`, `/v1/search`, `/v1/openwebui_search`, `/healthz`) | implemented | `crates/neuradex` |
 | Local observability stack (Quickwit, MinIO, ClickHouse, Jaeger, optional Vector) | implemented by this PR | `compose.yaml`, `hack/` |
-| Audit event schema and header policy | implemented in `neuradex-audit`; service wiring pending | [RFD 0001](rfd/0001-audit-event-model.md), [RFD 0005](rfd/0005-header-policy.md) |
-| Content-addressed packfiles | packfile implemented (PR #68); content orchestration specified/scaffolded | [RFD 0002](rfd/0002-content-addressed-storage.md), [reference/packfile-format.md](reference/packfile-format.md) |
+| Audit event schema and header policy | implemented and wired into the service | [RFD 0001](rfd/0001-audit-event-model.md), [RFD 0005](rfd/0005-header-policy.md) |
+| Content-addressed packfiles | implemented; `CONTENT_STORE` defaults to `off` | [RFD 0002](rfd/0002-content-addressed-storage.md), [reference/packfile-format.md](reference/packfile-format.md) |
 | Hashing rules (BLAKE3 / SHA-256 / XXH3) | implemented in the audit/packfile crates | [RFD 0003](rfd/0003-hashing.md) |
 | Quickwit + ClickHouse + B2 storage topology | specified | [RFD 0004](rfd/0004-storage-and-analytics.md) |
 | Capacity, cost, and 365-day retention | under discussion | [RFD 0008](rfd/0008-capacity-cost-and-retention.md) |
@@ -46,17 +48,17 @@ flowchart LR
     Client["LLM agent / Open WebUI"] -->|HTTP| Service["neuradex service"]
     Service -->|fetch / peek| Web["Upstream web"]
     Service -->|search| Kagi["Kagi staging"]
-    Service --> Events["Audit event builder"]
-    Service --> Capture["Content capture"]
-    Events --> Hot["Quickwit 0.8.2<br/>hot index, 30 days"]
-    Events --> Analytics["ClickHouse<br/>analytics, 365 days"]
-    Events --> Archive["B2 event archive<br/>hourly NDJSON.zst"]
-    Capture --> Packs["B2 packfiles<br/>128 MiB target, 10 min max age"]
-    Packs --> Index["B2 hourly request index"]
+    Service --> Events["Audit JSONL<br/>AUDIT_LOG_PATH or stdout"]
+    Service --> Capture["Content capture<br/>off by default"]
+    Events -. optional Vector .-> Hot["Quickwit 0.8.2<br/>hot index, 30 days"]
+    Events -. optional Vector .-> Analytics["ClickHouse<br/>analytics, 365 days"]
+    Capture --> Packs["Local or S3<br/>packfiles; 5 s flush"]
+    Packs -. future .-> Index["Hourly request index"]
     Service -.->|OTLP| Traces["Jaeger / collector"]
-    Archive --> Replay["replay / reindex"]
-    Index --> Read["content read path"]
-    Packs --> Read
+    Events -. future .-> Archive["B2 event archive"]
+    Archive -.-> Replay["replay / reindex"]
+    Index -.-> Read["content read path"]
+    Packs -.-> Read
 ```
 
 The non-negotiable invariants:
@@ -65,8 +67,9 @@ The non-negotiable invariants:
    response still returns; the event records the degradation instead of lying.
 2. **Content identity is BLAKE3-256.** SHA-256 is the independent audit hash. XXH3-64 is a
    checksum of a compressed frame, never a content identity.
-3. **No per-request object.** Bodies are packed into immutable 128 MiB packfiles with a footer
-   index; an hourly request index maps request IDs to pack frames. Event archives are hourly.
+3. **No per-request object (target design).** Bodies are packed into immutable packfiles with a
+   footer index; the hourly request index and event archive are future work. The current service
+   writes packs to the configured local/S3 store and flushes every 5 seconds.
 4. **Frames are self-describing; the footer is a rebuildable index.** The request index
    accelerates lookup; a lost footer can be rebuilt from frame headers, but a lost pack cannot
    be rebuilt from an index.
@@ -91,11 +94,18 @@ docker compose ps
 Then run the service on the host with an OTLP endpoint:
 
 ```sh
+mkdir -p .local/neuradex
 export KAGI_SESSION_TOKEN=staging-token
+export AUDIT_LOG_PATH=.local/neuradex/events.jsonl
+export CONTENT_STORE=local
+export CONTENT_LOCAL_PATH=.local/neuradex/content
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 export LOG_FORMAT=json
 cargo run
 ```
+
+Content is off by default; set `CONTENT_STORE` to `local` or `s3` to enable it. Without
+`AUDIT_LOG_PATH` (or with `-`), audit events go to stdout.
 
 The optional Vector profile tails `.local/neuradex/events.jsonl` into Quickwit and ClickHouse:
 
@@ -104,7 +114,7 @@ mkdir -p .local/neuradex
 docker compose --profile ingest up -d vector
 ```
 
-The full sequence, including a synthetic event, is in
+The full sequence, including real service-generated events, is in
 [development/local-development.md](development/local-development.md).
 
 ## Documentation map

@@ -150,7 +150,7 @@ nested mappings (Quickwit) or flatten the union (ClickHouse), not assume a fixed
 ```json
 {
   "storage": "pack",
-  "key": "packs/v1/date=2026-11-10/hour=12/pack-019a.nrp",
+  "key": "packs/fetch-response/2026-11-10T12/4242-0.pack",
   "blake3": "<64 hex>",
   "sha256": "<64 hex>",
   "size": 5123,
@@ -182,18 +182,15 @@ It is not a `{name: value}` map.
 ### Emission and sinks
 
 `RequestRecord` accumulates facts and `finish()` builds the event. `CompletionGuard` ensures one
-event on drop, abort, or panic. `AuditSink` is synchronous; the service wraps it in a bounded
-async queue/background writer so the request path never blocks on a sink.
+event on drop, abort, or panic. `AuditSink` is synchronous; the service installs a `JsonlSink`
+that writes one compact JSON line and flushes after every event. `AUDIT_LOG_PATH` selects a file
+(create+append at startup); unset or `-` writes to stdout.
 
-The same event JSON is written to:
-
-- Quickwit (nested object mapping, 30 days),
-- ClickHouse (flat projection, 365 days),
-- the hourly B2 archive (NDJSON.zst, 365 days).
-
-Quickwit stores arrays as `{"items": [...]}` because its `json` field is object-only; this is a
-hot-index shaping detail, not an event field. ClickHouse derived columns (`content_bytes`, etc.)
-are computed by Vector, not emitted by the crate.
+The current service does not write Quickwit, ClickHouse, or a B2 event archive. The optional
+local Vector bridge tails the JSONL and maps it to Quickwit/ClickHouse; an archive is target
+design. Quickwit stores arrays as `{"items": [...]}` because its `json` field is object-only;
+ClickHouse derived columns (`content_bytes`, etc.) are computed by Vector, not emitted by the
+crate.
 
 ### Schema evolution
 
@@ -236,12 +233,11 @@ small relative to a 25 MiB body.
 
 - At-least-once delivery; duplicates are possible. `event_id` is unique, but the current schema
   has no idempotent sink key beyond it.
-- A sink outage spools; if the spool fills, events are dropped only after a high-severity alert.
-  Content is shed before events.
-- Quickwit/ClickHouse are derived; B2 archive is the source of truth. Replay from the archive.
-- The archive object key includes close time and writer, so retries never overwrite.
-- Alerts: event lag > 5 min, spool depth > 80%, archive gap for a closed hour, duplicate rate >
-  1%, ClickHouse insert failures > 0 for 5 min.
+- The audit sink is synchronous: a JSONL write failure is logged (`error.type=audit_sink`) and
+  the event is lost; the HTTP response is unaffected. There is no event spool or retry queue.
+- Quickwit/ClickHouse are optional local views fed by Vector; the JSONL file is the service's
+  durable audit output. A B2 event archive is target design.
+- Alerts: audit JSONL write failures, Vector lag, duplicate rate, ClickHouse insert failures.
 - The audit crate has no async runtime; the service must not block the request path on a sink.
 
 ## Open questions

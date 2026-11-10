@@ -7,8 +7,9 @@ events yet. Read-audit and auth-subject fields are future work (RFD 0009).
 
 Every inbound request produces exactly one `AuditEvent`, emitted by a completion guard. The
 event is nested: `service`, `http`, `operation`, `content_references`, and the header captures
-are objects/arrays, not a flat row. The event is serialized once and fanned out to Quickwit
-(nested mapping), ClickHouse (flat projection), and the B2 archive (original JSON).
+are objects/arrays, not a flat row. The service serializes one compact JSON line per event to
+`AUDIT_LOG_PATH` (or stdout). The optional local Vector bridge can fan the JSONL out to Quickwit
+and ClickHouse; the B2 archive is target design.
 
 ```mermaid
 flowchart LR
@@ -16,9 +17,10 @@ flowchart LR
     B --> G["CompletionGuard"]
     G --> E["AuditEvent 1.0.0"]
     E --> S["AuditSink (sync)"]
-    S --> Q["Quickwit (nested)"]
-    S --> C["ClickHouse (flattened)"]
-    S --> A["B2 archive (NDJSON)"]
+    S --> L["AUDIT_LOG_PATH / stdout"]
+    L -. optional Vector .-> Q["Quickwit (nested)"]
+    L -. optional Vector .-> C["ClickHouse (flattened)"]
+    L -. future .-> A["B2 archive (NDJSON)"]
     E --> T["trace_id / span_id"]
     T --> J["OTLP traces"]
 ```
@@ -98,7 +100,7 @@ target URL: only scheme/host/port/path plus `target_url_sha256`.
 ```json
 {
   "storage": "pack",
-  "key": "packs/v1/date=2026-11-10/hour=12/pack-019a.nrp",
+  "key": "packs/fetch-response/2026-11-10T12/4242-0.pack",
   "blake3": "<64 hex>",
   "sha256": "<64 hex>",
   "size": 5123,
@@ -145,23 +147,20 @@ stateDiagram-v2
     [*] --> Building: request starts
     Building --> Building: fields recorded
     Building --> Finished: response/abort/panic
-    Finished --> Spooled: AuditSink
-    Spooled --> Hot: Quickwit ingest
-    Spooled --> Analytics: ClickHouse insert
-    Spooled --> Archived: hour closes
+    Finished --> JSONL: AuditSink (flush per event)
+    JSONL --> Durable: file or stdout
+    JSONL -. Vector .-> Hot: Quickwit ingest
+    JSONL -. Vector .-> Analytics: ClickHouse insert
+    Durable --> [*]
     Hot --> Searchable: commit
     Analytics --> Queryable: batch insert
-    Archived --> Durable: PUT 2xx
     Searchable --> [*]
     Queryable --> [*]
-    Durable --> [*]
-    Finished --> Dropped: spool full + alert
-    Dropped --> [*]
 ```
 
-Quickwit visibility depends on the 10-second commit; ClickHouse on the insert batch; the archive
-on the hour close + grace. These are independent timelines; `timestamp` does not imply ordering
-across sinks.
+The JSONL file/stdout is written synchronously and flushed per event. When the optional Vector
+bridge is used, Quickwit visibility depends on its 10-second commit and ClickHouse on the insert
+batch. The event archive is future work.
 
 ## Deduplication
 
@@ -253,7 +252,7 @@ never embedded.
   "content_references": [
     {
       "storage": "pack",
-      "key": "packs/v1/date=2026-11-10/hour=12/pack-019a.nrp",
+      "key": "packs/fetch-response/2026-11-10T12/4242-0.pack",
       "blake3": "9f2c000000000000000000000000000000000000000000000000000000000000",
       "sha256": "3a7d000000000000000000000000000000000000000000000000000000000000",
       "size": 5123,

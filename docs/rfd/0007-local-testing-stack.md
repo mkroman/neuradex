@@ -118,7 +118,7 @@ Details:
 ```mermaid
 flowchart LR
     Host["Host: cargo run<br/>neuradex"] -->|OTLP HTTP 4318| Jaeger["jaeger:2.22.0<br/>UI :16686"]
-    Host -->|writes| Spool[".local/neuradex/events.jsonl"]
+    Host -->|writes JSONL| Spool[".local/neuradex/events.jsonl"]
     Vector["vector (profile ingest)"] -->|tail| Spool
     Vector -->|NDJSON ingest| Quickwit["quickwit:0.8.2<br/>:7280 / :7281"]
     Vector -->|JSONEachRow| ClickHouse["clickhouse:25.8<br/>:8123 / native :19000"]
@@ -136,9 +136,9 @@ flowchart LR
 5. `clickhouse` starts, runs `init.sql` on an empty data directory, becomes healthy.
 6. `jaeger` starts independently.
 7. `vector` (optional) waits for `quickwit-init` to complete successfully and ClickHouse to be
-   healthy, then tails the spool.
+   healthy, then tails the audit JSONL file.
 
-The service on the host can start before the stack; it will log sink failures and spool events.
+The service can start before the stack; it writes JSONL locally and Vector catches up when it starts.
 For a clean demo, start the stack first.
 
 ### Ports and URLs
@@ -162,10 +162,10 @@ For a clean demo, start the stack first.
 | `quickwit_data:/quickwit/qwdata` | Indexes, splits, metastore | `docker compose down -v` |
 | `minio_data:/data` | `neuradex-content`, `neuradex-quickwit` | `docker compose down -v` |
 | `clickhouse_data:/var/lib/clickhouse` | `neuradex.events` and views | `docker compose down -v` |
-| `.local/neuradex/events.jsonl` (host) | Event spool for Vector | `rm -rf .local/neuradex` |
+| `.local/neuradex/events.jsonl` (host) | Audit JSONL for Vector | `rm -rf .local/neuradex` |
 | Jaeger memory | Traces | Restart `jaeger` |
 
-`.local/` is gitignored. Never commit a spool file; it contains real request metadata.
+`.local/` is gitignored. Never commit the audit log; it contains real request metadata.
 
 ### Credentials
 
@@ -207,8 +207,8 @@ production.
 - Jaeger receives traces that may contain URLs and service metadata. Treat the local UI as
   sensitive if you are debugging real traffic.
 - The Vector source reads a host path. Mount it read-only; do not give Vector write access to
-  the spool.
-- `.local/` must stay gitignored. A spool file can contain query text, URLs, and header HMACs.
+  the audit log.
+- `.local/` must stay gitignored. The audit log can contain URLs and header HMACs.
 
 ## Operational considerations
 
@@ -225,7 +225,7 @@ production.
   it is left alone.
 - Port 9000 conflict: ClickHouse native is 19000 for this reason. If another service owns 9000,
   change the MinIO host port, not the container port.
-- Vector not shipping: check the profile is enabled, the spool file exists, and
+- Vector not shipping: check the profile is enabled, `AUDIT_LOG_PATH` points at the file, and
   `docker compose logs vector`.
 - CI does not start this stack. The offline test suite must not depend on it. A future
   integration job can use `docker compose` or testcontainers.

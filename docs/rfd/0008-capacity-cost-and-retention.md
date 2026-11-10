@@ -38,7 +38,8 @@ measurements. The workload numbers are estimates:
 - 100,000 fetches/hour;
 - average fetch body ~4 MiB (a guesstimate, not measured);
 - 25 MiB maximum captured body;
-- 128 MiB pack target, 10 minute maximum pack age;
+- 128 MiB pack target; the service flushes every 5 seconds and seals every open pack. The
+  10-minute maximum pack age is a policy backstop, not the normal trigger;
 - no immediate per-request deletion.
 
 This RFD models storage, object count, event volume, network, and CPU, and proposes the

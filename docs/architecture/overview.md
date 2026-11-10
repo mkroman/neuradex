@@ -1,7 +1,9 @@
 # Architecture overview
 
-**Status:** target design. The HTTP service and `neuradex-audit` are implemented; the packfile
-format is implemented (PR #68); the content orchestration and service wiring are pending. See [docs/README.md](../README.md#status).
+**Status:** the HTTP service, audit event emission, and content storage are implemented. Audit
+events are JSONL (`AUDIT_LOG_PATH` or stdout); content is off by default and uses a local or S3
+store. Quickwit, ClickHouse, the B2 event archive, and the hourly request index are target
+infrastructure, not service writes. See [docs/README.md](../README.md#status).
 
 ## System context
 
@@ -20,8 +22,8 @@ flowchart TB
     subgraph Service["neuradex"]
         API["HTTP API<br/>fetch / peek / search / openwebui_search"]
         Audit["Audit event builder<br/>header policy"]
-        Capture["Content capture<br/>hashes + spool"]
-        Packer["Pack builder<br/>128 MiB / 10 min"]
+        Capture["Content capture<br/>off by default"]
+        Packer["Pack builder<br/>5 s flush; 128 MiB target"]
     end
 
     subgraph Upstream["Upstreams"]
@@ -32,7 +34,7 @@ flowchart TB
     subgraph Stores["Storage and analytics"]
         QW["Quickwit 0.8.2<br/>hot 30 days"]
         CH["ClickHouse<br/>analytics 365 days"]
-        B2["Backblaze B2<br/>packs, index, archive<br/>365 days"]
+        B2["Backblaze B2 / S3<br/>content packs<br/>(when CONTENT_STORE=s3)"]
         Jaeger["Jaeger / OTLP<br/>traces"]
     end
 
@@ -45,15 +47,16 @@ flowchart TB
     API --> Audit
     API --> Capture
     Capture --> Packer
-    Audit --> QW
-    Audit --> CH
-    Audit --> B2
-    Packer --> B2
+    Audit --> JSONL["Audit JSONL<br/>file or stdout"]
+    JSONL -. optional Vector .-> QW
+    JSONL -. optional Vector .-> CH
+    Packer --> Store["Local directory or S3 bucket"]
     API -.->|OTLP| Jaeger
 ```
 
 The service is the only component that talks to Kagi and the only component that writes content.
-The stores are derived views except B2, which is the source of truth.
+The audit JSONL file/stdout is the service's only audit output. Quickwit/ClickHouse are fed by the
+optional local Vector bridge, and an object-store archive is future work.
 
 ## Components
 
@@ -61,15 +64,15 @@ The stores are derived views except B2, which is the source of truth.
 | --- | --- | --- | --- |
 | `neuradex` HTTP API | Request parsing, validation, upstream calls, response | User-visible | `crates/neuradex` |
 | Audit event builder | Build one nested `AuditEvent` per request; redact headers; assign IDs | Audit completeness | `crates/neuradex-audit` |
-| Content capture | Tee decompressed bytes; hash; spool; mark truncation | Content completeness | `crates/neuradex-content` |
-| Pack builder | Seal 128 MiB/10 min packs; 96-byte frame headers, footer, 128-byte trailer; upload | Content availability | `crates/neuradex-content` + `crates/neuradex-packfile` |
-| Request index writer | Hourly `request_id → frame` object | Content lookup | `crates/neuradex-content` |
-| Event archive writer | Hourly NDJSON.zst object | Cold audit truth | `crates/neuradex-content` |
-| Quickwit | Full-text search over the last 30 days | Hot search unavailable | Quickwit 0.8.2 |
-| ClickHouse | Typed analytics and daily aggregates over 365 days | Dashboards/analytics unavailable | ClickHouse 25.8 |
-| B2 | Durable packs, indexes, archives | Content/source-of-truth loss | Backblaze B2 |
+| Content capture | Capture request/response bytes when enabled; hash; pack; flush every 5 s | Content completeness | `crates/neuradex-content` |
+| Pack builder | Seal packs on the 5 s flush or size/age policy; 96-byte frame headers, footer, 128-byte trailer; upload | Content availability | `crates/neuradex-content` + `crates/neuradex-packfile` |
+| Request index writer | Hourly `request_id → frame` object | Content lookup | future; not wired |
+| Event archive writer | Hourly NDJSON.zst object | Cold audit truth | future; not wired |
+| Quickwit | Full-text search over the last 30 days (via optional local Vector) | Hot search unavailable | Quickwit 0.8.2 |
+| ClickHouse | Typed analytics and daily aggregates over 365 days (via optional local Vector) | Dashboards/analytics unavailable | ClickHouse 25.8 |
+| Local/S3 store | Packs and objects | Content/source-of-truth loss | Local directory or B2/S3 |
 | Jaeger | Local OTLP traces | Trace visibility only | Jaeger 2.22.0 |
-| Vector (optional local) | Tail spool; fan out to Quickwit/ClickHouse | Local ingest demo only | Vector 0.49 |
+| Vector (optional local) | Tail the audit JSONL; fan out to Quickwit/ClickHouse | Local ingest demo only | Vector 0.49 |
 
 ## Data planes
 
@@ -78,15 +81,14 @@ flowchart LR
     subgraph Request["Request plane (synchronous)"]
         C["Client"] --> S["Service"] --> U["Upstream"]
     end
-    subgraph AuditPlane["Audit plane (async, at-least-once)"]
-        E["Event"] --> Q["Quickwit"]
-        E --> CH["ClickHouse"]
-        E --> A["B2 archive"]
+    subgraph AuditPlane["Audit plane (synchronous JSONL sink)"]
+        E["Event"] --> L["AUDIT_LOG_PATH / stdout"]
+        L -. optional Vector .-> Q["Quickwit"]
+        L -. optional Vector .-> CH["ClickHouse"]
     end
-    subgraph ContentPlane["Content plane (async, best-effort)"]
+    subgraph ContentPlane["Content plane (best-effort, 5 s flush)"]
         B["Body bytes"] --> P["Packfile"]
-        P --> I["Hourly index"]
-        P --> B2["B2"]
+        P --> S["Local / S3 store"]
     end
     subgraph TracePlane["Trace plane (sampled/independent)"]
         T["OTLP spans"] --> J["Jaeger/collector"]
@@ -98,9 +100,10 @@ flowchart LR
 
 Rules that follow from the split:
 
-- The request plane never waits for audit/content/trace export.
-- The audit plane has higher priority than the content plane. If resources are scarce, shed
-  content first and mark the event.
+- The request plane does not wait for Quickwit/ClickHouse or the optional Vector bridge.
+- Audit events are emitted synchronously to the JSONL sink; content is best-effort.
+- Quickwit/ClickHouse are local/derived views fed by Vector; the service's durable audit output
+  is the JSONL file (or stdout).
 - The trace plane is independent: a trace may be sampled out or the collector may be down, but
   the audit event always has `trace_id`/`span_id` because the service creates spans locally.
 - A derived store (Quickwit, ClickHouse) can be rebuilt from B2; B2 cannot be rebuilt from them.
@@ -128,7 +131,7 @@ Local differences that must not leak into production assumptions:
 3. **BLAKE3 is identity.** SHA-256 is audit. XXH3 is a frame checksum only.
 4. **Packs are immutable.** No per-request objects, no per-request manifests, no in-place edits.
 5. **Frames are self-describing; the footer is a rebuildable index.** The hourly index accelerates lookup; it does not replace the pack.
-6. **Hot is short, cold is long.** Quickwit 30 days, ClickHouse/B2 365 days.
+6. **Hot is short, cold is long (target).** Quickwit 30 days, ClickHouse/object storage 365 days.
 7. **Named access only.** Reads are authenticated, authorized, and audited.
 8. **At-least-once, not exactly-once.** Duplicates are tolerated; silent loss is not.
 

@@ -1,7 +1,10 @@
 # Runbook
 
-This runbook assumes the production stores (B2, Quickwit, ClickHouse) and the local compose
-stack where noted. Commands use `$B2_BUCKET`, `$B2_ENDPOINT`, `$QW`, `$CH`, and `$CH_AUTH` as
+This runbook covers the target production stores (B2, Quickwit, ClickHouse) and the local
+compose stack. The current service writes audit events as JSONL to `AUDIT_LOG_PATH` (or stdout)
+and content to `CONTENT_STORE` local/S3; Quickwit/ClickHouse sections apply when the optional
+Vector bridge is running. The service does not write an event spool, request index, or event
+archive yet. Commands use `$B2_BUCKET`, `$B2_ENDPOINT`, `$QW`, `$CH`, and `$CH_AUTH` as
 placeholders. Do not paste real credentials into a ticket.
 
 ## Triage decision tree
@@ -93,8 +96,8 @@ aws --endpoint-url "$B2_ENDPOINT" s3 cp "s3://$B2_BUCKET/events/v1/date=<YYYY-MM
 
 If the event is in none of the three stores:
 
-1. Check the spool drop counter and the service log for `event spool full` or
-   `event_serialization_failed`.
+1. Check the service log for `audit_sink` errors and confirm `AUDIT_LOG_PATH` is writable. The
+   service has no event spool; a failed JSONL write is logged and the event is not retried.
 2. Check whether the request was `/healthz` (not audited) or a rejected request that failed
    before the event builder.
 3. Treat it as an audit-loss incident. Preserve logs and the request ID; do not backfill an
@@ -106,8 +109,8 @@ If the event is in none of the three stores:
    `sha256`, `size`, and optional `content_type`. There is no `content_captured` boolean or
    `content_capture_error` field in schema 1.0.0.
 2. If the array is absent/empty, the body was not stored. The reason is in the content-plane
-   logs (spool full, client disconnect, upstream error, upload failure, index failure), not in
-   the event. A future capture-status field is an open question.
+   logs (body over limit, client disconnect, upstream error, store/upload failure), not in the
+   event. A future capture-status field is an open question.
 3. If a reference exists and the pack is missing:
    - Check lifecycle: has the object aged past 365 days?
    - Check B2 for the reference's `key`:
@@ -119,16 +122,16 @@ If the event is in none of the three stores:
 
 ## Pack upload failures
 
-Symptoms: upload error rate, growing content spool, content-plane logs. A future content event may make this explicit.
+Symptoms: upload error rate, growing temporary content files, content-plane logs.
 
 1. Check B2 status and credentials. A 403 usually means a scoped key was rotated or lacks
    `PutObject`; a 5xx is B2-side.
 2. Check the object key and size:
    ```sh
    aws --endpoint-url "$B2_ENDPOINT" s3api head-object \
-     --bucket "$B2_BUCKET" --key "packs/v1/date=.../hour=.../pack-<id>.nrp"
+     --bucket "$B2_BUCKET" --key "packs/<operation>/<YYYY-MM-DDTHH>/<pid>-<sequence>.pack"
    ```
-3. Check the local spool disk. A full disk turns upload failures into data loss.
+3. Check the local content root and system temporary directory. A full disk turns upload failures into lost content.
 4. If uploads succeed but index writes fail, packs are orphans. Reconcile:
    - List packs under the hour.
    - List index objects under the hour.
@@ -156,7 +159,7 @@ Symptoms: search 5xx, ingest errors, `quickwit` unhealthy.
 
 1. Check `docker compose ps quickwit` (local) or the Quickwit pod/service (prod).
 2. Check the log for disk full, metastore errors, or a bad index config.
-3. The API is unaffected; events spool. Do not stop the service.
+3. The API is unaffected; the service keeps writing JSONL locally. Do not stop the service.
 4. If the index is corrupt or deleted, recreate it from `hack/quickwit/neuradex-events.yaml`
    and replay from the B2 archive. Quickwit mappings are not mutable in place; use a new index
    and swap the query target.
@@ -169,7 +172,7 @@ Symptoms: insert errors, query 5xx, disk full.
 1. Check the pod/container and the error log.
 2. If the disk is full, drop expired partitions (TTL should do this) or expand the volume. Do
    not delete the `events` table.
-3. The API is unaffected; events spool. Do not stop the service.
+3. The API is unaffected; the service keeps writing JSONL locally. Do not stop the service.
 4. If the schema drifted, add the missing column and replay the affected window. Vector's
    `skip_unknown_fields` drops unknown keys silently; check the mapping before replaying.
 5. If the table is lost, recreate it with `hack/clickhouse/init.sql` and replay from the archive.
@@ -198,14 +201,14 @@ Symptoms: a request event has content refs but the index object for its hour is 
 4. If the archive is also missing, content lookup for that hour is unrecoverable; record the
    gap.
 
-## Spool is full
+## Audit log or content disk is full
 
-1. Identify which spool: event or content.
+1. Identify the disk: the `AUDIT_LOG_PATH` filesystem, the local content root, or the system temp
+   directory used by the content writer.
 2. Free space or expand the volume.
-3. If content is shedding, the API is still correct; events should continue.
-4. If events are shedding, page immediately. This is an audit-loss incident.
-5. After recovery, confirm the drop counter stops increasing and the spool drains. Do not
-   restart the service before draining unless it is the only way to free a stuck file.
+3. If content writes fail, the API is still correct; requests continue without new content refs.
+4. If the audit JSONL cannot be written, page immediately: this is an audit-loss incident.
+5. Restarting may be required if a file handle is stuck; confirm appends resume afterward.
 
 ## Retention and lifecycle
 
@@ -236,7 +239,7 @@ Symptoms: a request event has content refs but the index object for its hour is 
 | Quickwit 0 hits after ingest | Wait 10 s; check `quickwit` log | Fix a parse error, usually a header type |
 | ClickHouse init SQL skipped | `docker compose logs clickhouse` | `docker compose down -v` or apply DDL |
 | MinIO port bind fails | `ss -ltnp \| grep 9000` | Use a port override; do not kill another user's service |
-| Vector no output | `docker compose --profile ingest ps vector` | Enable the profile; check the spool path/mount |
+| Vector no output | `docker compose --profile ingest ps vector` | Enable the profile; check `AUDIT_LOG_PATH` and the Vector mount |
 | Jaeger no traces | `OTEL_EXPORTER_OTLP_ENDPOINT` unset | Export it and restart the service |
 
 Reset the local stack only when you accept losing its data:

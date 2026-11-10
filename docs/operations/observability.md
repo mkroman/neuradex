@@ -1,8 +1,8 @@
 # Observability
 
-**Status:** structured logs and OpenTelemetry spans exist in the service. The audit/content
-pipeline metrics and alerts are target design; the local stack provides Quickwit, ClickHouse,
-and Jaeger to inspect them.
+**Status:** structured logs, OpenTelemetry spans, and JSONL audit events exist in the service.
+Content references appear when `CONTENT_STORE` is enabled. The Quickwit/ClickHouse pipeline is
+an optional local Vector bridge; metrics/alerts below are partly target design.
 
 ## Signal flow
 
@@ -10,12 +10,13 @@ and Jaeger to inspect them.
 flowchart LR
     S["neuradex"] -->|tracing events| L["stdout logs<br/>text or JSON"]
     S -->|OTLP spans/logs| J["Jaeger / collector"]
-    S -->|audit events| Q["Quickwit"]
-    S -->|audit events| C["ClickHouse"]
-    S -->|pack/event archive| B["B2"]
+    S -->|audit JSONL| A["AUDIT_LOG_PATH / stdout"]
+    A -. optional Vector .-> Q["Quickwit"]
+    A -. optional Vector .-> C["ClickHouse"]
+    S -->|packs/objects| B["Local / S3 store"]
     Q --> D["Dashboards / ad-hoc"]
     C --> D
-    B --> R["Replay / audit"]
+    B --> R["Read / audit"]
 ```
 
 There are three planes:
@@ -24,7 +25,7 @@ There are three planes:
 | --- | --- | --- | --- |
 | Logs | `RUST_LOG`, JSON fields | Log platform | Debugging one request |
 | Traces | OTLP spans | Jaeger local / backend | Latency and call graph |
-| Audit events | Quickwit/ClickHouse/B2 | 30/365/365 days | Accountability, analytics, capacity |
+| Audit events | JSONL file/stdout; optional Vector to Quickwit/ClickHouse | Operator-managed; 30/365 in the local stack | Accountability, analytics, capacity |
 
 Do not use logs as the audit record. A log line can be sampled or dropped; an audit event is the
 record.
@@ -37,6 +38,8 @@ record.
 | HTTP server span | OTel traces | `http.route`, status, duration |
 | Outbound HTTP client spans | OTel traces | Sanitized `url.full`, upstream host/port, status, protocol |
 | Search span | OTel traces | Query length, timeout, queue ms, result count |
+| Audit events | JSONL file/stdout, one per request except `/healthz` | Synchronous, flushed per event |
+| Content packs/objects | `CONTENT_STORE` local/S3 | 5-second flush; off by default |
 | `/healthz` | HTTP | 204; not audited |
 | `/openapi.json` | HTTP | Always served |
 | `/docs` | HTTP | Feature-gated |
@@ -69,7 +72,7 @@ request metadata.
 | Fetch latency p95 | < 2 s (excluding upstream) | `http_duration_ms` by route |
 | Search queue wait p95 | < 1 s | `queue_ms` |
 | Audit event completeness | ≥ 99.99% of requests | Events vs request count |
-| Event searchability | < 30 s p95 | Request timestamp vs Quickwit `_timestamp`/ingest lag |
+| Event searchability | < 30 s p95 (local Vector path) | Request timestamp vs Quickwit ingest lag |
 | Content capture rate | ≥ 99.9% of successful fetches | fetch events with `content_reference_count > 0` / fetch events |
 | Content read availability | 99.9% | Read API success |
 | Read audit completeness | 100% of reads (future) | Read audit count vs read requests; not in schema 1.0.0 |
@@ -100,7 +103,7 @@ ORDER BY t;
 
 ```sql
 -- Compare event rows with an independent request counter if one exists.
--- Otherwise, watch for gaps in the event_id sequence and the spool drop counter.
+-- Otherwise, watch for gaps in the event_id sequence and audit_sink warnings in logs.
 SELECT
     toStartOfHour(timestamp) AS hour,
     count() AS events,
@@ -161,9 +164,9 @@ WHERE operation_type = 'fetch'
 | API 5xx rate | > 1% for 5 min | page | Service logs, upstreams |
 | Upstream error spike | `outcome=upstream_error` > 5% for 10 min | page | Kagi/web status |
 | Event lag | event `timestamp` to Quickwit visibility > 5 min p95 | page | Quickwit ingest/commit |
-| Event spool depth | > 80% for 5 min | page | Disk, sink health |
+| Audit JSONL write failure | any | page | Disk/permissions |
 | Event drop counter | any increase | page | Audit-loss incident |
-| Content spool depth | > 80% for 5 min | ticket | Uploader/B2 |
+| Content flush failure | > 1% for 15 min | ticket | Local/S3 store |
 | Content capture rate | < 99% of successful fetches for 15 min | ticket | Capture errors (logs; no status field yet) |
 | Pack upload failures | > 1% for 15 min | ticket | B2/credentials |
 | Pack count anomaly | > 50% above model for 3 days | ticket | Body sizes/seal bug |
@@ -232,7 +235,7 @@ sinks are down; readiness should reflect the HTTP path, not B2/Quickwit/ClickHou
 ## Dashboards to build
 
 1. **Golden signals:** requests, errors, p95/p99 by route.
-2. **Audit pipeline:** event lag, spool depth, archive completeness, duplicates.
+2. **Audit pipeline:** audit JSONL writes, Vector lag (optional), duplicates.
 3. **Content pipeline:** capture rate, bytes/day, p50/p95/p99 body size, truncation, upload
    failures, pack count, compression ratio, dedupe rate.
 4. **Access:** read audit by principal/action/bytes, denied requests, break-glass.

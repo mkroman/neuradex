@@ -106,16 +106,18 @@ Adopt A/A/A/A:
 
 - **B2** for content packs, request indexes, event archives, and future large-body CAS objects.
   Access through `aws-sdk-s3` with `behavior-version-latest`, `rt-tokio`, `rustls`, and the
-  default HTTPS client. Endpoint and region come from the standard AWS environment variables
-  (`AWS_ENDPOINT_URL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`).
+  default HTTPS client. The service takes explicit `CONTENT_S3_ENDPOINT`, `CONTENT_S3_REGION`,
+  `CONTENT_S3_BUCKET`, `CONTENT_S3_ACCESS_KEY_ID`, and `CONTENT_S3_SECRET_ACCESS_KEY` settings;
+  it does not read the standard AWS environment variables.
 - **Quickwit 0.8.2** for the `neuradex-events` index, 30-day retention, local file storage in
   the compose stack; S3-backed index storage when deployed.
 - **ClickHouse** database `neuradex`, table `events`, daily materialized views, 365-day TTL.
 - **Jaeger 2.22.0** for local OTLP only; production trace storage is an open question.
 
 The `neuradex-content` crate keeps object storage behind a feature: `local` is the default for
-tests/dev, `s3` enables `aws-sdk-s3`. The service enables `s3` in production builds. This keeps
-the packfile logic testable without a network.
+tests/dev, `s3` enables `aws-sdk-s3`. The service enables the `s3` feature and selects `off`,
+`local`, or `s3` at runtime with `CONTENT_STORE`. This keeps the packfile logic testable without
+a network.
 
 ### Store responsibilities
 
@@ -137,7 +139,7 @@ flowchart LR
     Spool --> CH["ClickHouse insert<br/>JSONEachRow"]
     Spool --> Hour["Hourly event archive<br/>NDJSON.zst -> B2"]
     Req --> Capture["Content capture"]
-    Capture --> Pack["Pack builder<br/>128 MiB / 10 min"]
+    Capture --> Pack["Pack builder<br/>128 MiB target; 5 s service flush"]
     Pack --> Upload["PUT pack to B2"]
     Upload --> Index["Hourly request index -> B2"]
     Index --> Event
