@@ -106,6 +106,22 @@ contiguous in `tools.txt`; Renovate's regex depends on it.
 | Workflows | Third-party actions must be SHA-pinned; zizmor audits |
 | Branch protection | `ci-success` is the required check |
 
+## Code style
+
+`cargo fmt --check` and Clippy enforce formatting and lints, not module layout or naming. Follow
+[style.md](style.md):
+
+- Use `foo.rs` + `foo/bar.rs`; do not add `foo/mod.rs`.
+- Do not use `#[path]` to work around the layout.
+- Modules are `snake_case`; types/traits are `UpperCamelCase`; functions/methods are
+  `snake_case` (Rust API Guidelines naming).
+- Use `crate::` / `super::` / `self::` paths; `extern crate` is not needed.
+
+This follows the Rust 2018 Edition Guide's
+[Path and module system changes](https://doc.rust-lang.org/edition-guide/rust-2018/path-changes.html)
+and the Rust Style Guide's advice to avoid `#[path]`. Reviewers enforce it; there is no CI lint for
+module layout.
+
 ## Docs and compose changes
 
 - Markdown is not linted by CI. Keep links relative and test them with a local link checker if

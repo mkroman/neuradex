@@ -150,6 +150,29 @@ Compression features for Kagi are unrelated and must stay enabled in `neuradex` 
 | HTTP middleware and handlers | `neuradex` | Composition root |
 | OTLP/logging setup | `neuradex` | Runtime concern |
 
+### Module layout
+
+Use the modern `foo.rs` + `foo/bar.rs` layout, not a `foo/mod.rs` module root:
+
+```text
+crates/neuradex-audit/src/
+├── lib.rs
+├── event.rs
+├── header_policy.rs
+├── request_record.rs
+└── sink.rs
+```
+
+`lib.rs` declares `mod event; mod header_policy; mod request_record; mod sink;`. If `event` grows
+submodules, add `event/header_policy.rs` and declare `mod header_policy;` from `event.rs`;
+`event.rs` remains the module root. The module name matches the file stem, and `foo/bar.rs` is a
+submodule of `foo` without an intermediate `mod.rs`.
+
+This follows the Rust 2018 Edition Guide's
+[Path and module system changes](https://doc.rust-lang.org/edition-guide/rust-2018/path-changes.html)
+and the Rust Style Guide's advice to avoid `#[path]`. Do not add `#[path]` to work around a
+layout. See [development/style.md](../development/style.md) for naming, paths, and visibility.
+
 ### Interface sketch
 
 Names are indicative; the implementation may adjust them, but the direction and ownership are
@@ -157,7 +180,7 @@ fixed.
 
 ```rust
 // neuradex-audit
-pub struct Event { /* flat fields, serde */ }
+pub struct AuditEvent { /* nested fields, serde */ }
 pub struct HeaderPolicy { /* allow-list, hmac key */ }
 impl HeaderPolicy {
     pub fn capture_request(&self, headers: &HeaderMap) -> CapturedHeaders;
