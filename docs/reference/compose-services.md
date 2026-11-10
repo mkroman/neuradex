@@ -8,13 +8,13 @@ the host with `cargo run`; it is not a compose service yet. Every published port
 
 | Service | Image | Host ports | Profile | Depends on | Healthcheck |
 | --- | --- | --- | --- | --- | --- |
-| `quickwit` | `quickwit/quickwit:0.8.2` | 7280, 7281 | default | — | `GET /health/livez` |
-| `quickwit-init` | `quickwit/quickwit:0.8.2` | none | default | `quickwit` healthy | none (one-shot) |
+| `quickwit` | `quickwit/quickwit:0.9.3` | 7280, 7281 | default | — | `quickwit index list` |
+| `quickwit-init` | `quickwit/quickwit:0.9.3` | none | default | `quickwit` healthy | none (one-shot) |
 | `minio` | `quay.io/minio/minio:latest` | 9000, 9001 | default | — | `GET /minio/health/live` |
 | `minio-init` | `quay.io/minio/mc:latest` | none | default | `minio` healthy | none (one-shot) |
-| `clickhouse` | `clickhouse/clickhouse-server:25.8` | 8123, 19000→9000 | default | — | `clickhouse-client SELECT 1` |
-| `jaeger` | `jaegertracing/jaeger:2.22.0@sha256:836b…` | 4317, 4318, 16686 | default | — | none |
-| `vector` | `timberio/vector:0.49.0-debian` | none | `ingest` | `quickwit-init` completed, `clickhouse` healthy | none |
+| `clickhouse` | `clickhouse/clickhouse-server:26.10` | 8123, 19000→9000 | default | — | `clickhouse-client SELECT 1` |
+| `jaeger` | `jaegertracing/jaeger:2.23.0` | 4317, 4318, 16686 | default | — | none |
+| `vector` | `timberio/vector:0.61.0-debian` | none | `ingest` | `quickwit-init` completed, `clickhouse` healthy | none |
 
 ### Dependency graph
 
@@ -63,7 +63,9 @@ read-only and buffers in its own container filesystem.
   and index root under `/quickwit/qwdata`).
 - Starts with `quickwit run --config /quickwit/config/quickwit.yaml`.
 - `QW_DISABLE_TELEMETRY=true` avoids outbound telemetry.
-- `quickwit-init` waits for `/health/livez`, lists indexes, and creates `neuradex-events` only
+- The image has no `curl`, so the healthcheck runs `quickwit index list` with
+  `QW_CLUSTER_ENDPOINT=http://127.0.0.1:7280`.
+- `quickwit-init` waits for that healthcheck, lists indexes, and creates `neuradex-events` only
   if missing. It uses `QW_CLUSTER_ENDPOINT=http://quickwit:7280`.
 - The index config is `hack/quickwit/neuradex-events.yaml` (version 0.8, 30-day retention,
   10-second commit). See [quickwit-index.md](quickwit-index.md).
@@ -89,7 +91,7 @@ read-only and buffers in its own container filesystem.
 
 ### Jaeger
 
-- All-in-one Jaeger 2.22.0, same image/digest as the zeta compose stack.
+- All-in-one Jaeger 2.23.0.
 - OTLP HTTP on 4318, gRPC on 4317, UI on 16686.
 - In-memory storage; restart drops traces.
 - The service exports traces when `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318`.
@@ -150,8 +152,8 @@ PY
 ```
 
 Tested with Docker Compose v2.40+ / Docker 29 on Linux: `docker compose config`, `up -d`, the
-Quickwit `/health/livez` endpoint, index creation, ClickHouse init SQL/materialized views, MinIO
-bucket creation, and Jaeger UI/OTLP were exercised. On a clean host, `docker compose up -d`
+Quickwit CLI healthcheck, index creation, ClickHouse init SQL/materialized views, MinIO bucket
+creation, and Jaeger UI/OTLP were exercised. On a clean host, `docker compose up -d`
 pulls the images and starts the default services. The first start can take a minute.
 
 ## Port conflicts
@@ -199,11 +201,11 @@ mutable in place.
 
 | Image | Pin | Notes |
 | --- | --- | --- |
-| `quickwit/quickwit:0.8.2` | tag | Index config version 0.8, node config 0.7 |
-| `clickhouse/clickhouse-server:25.8` | tag | LTS line; supports the DDL |
-| `jaegertracing/jaeger:2.22.0@sha256:836b…` | digest | Copied from the zeta compose stack |
+| `quickwit/quickwit:0.9.3` | tag | Index config version 0.8, node config 0.7 |
+| `clickhouse/clickhouse-server:26.10` | tag | LTS line; supports the DDL |
+| `jaegertracing/jaeger:2.23.0` | tag | All-in-one; in-memory local storage |
 | `quay.io/minio/minio:latest` | tag | Local only; not a production pin |
-| `timberio/vector:0.49.0-debian` | tag | `http` + `clickhouse` sinks; `shape_quickwit`/`flatten` remaps |
+| `timberio/vector:0.61.0-debian` | tag | `http` + `clickhouse` sinks; `shape_quickwit`/`flatten` remaps |
 
 Renovate may bump tags. If MinIO `latest` drifts, pin a release or digest; the local stack is not
 a production artifact.
