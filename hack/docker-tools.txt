@@ -1,10 +1,11 @@
 # Docker build tool manifest.
 #
 # Installed by install-tools.sh while building the image's chef layer. Kept
-# separate from tools.txt so bumping these cargo tools only invalidates the
+# separate from mise.toml so bumping these cargo tools only invalidates the
 # Docker layer that installs them, not the CI tool cache.
 #
-# [tool] blocks and keys have the same semantics as tools.txt.
+# [tool] blocks are only used for Docker build tools; CI/operator tools are
+# managed by mise.
 #
 [cargo-auditable]
 repo=rust-secure-code/cargo-auditable

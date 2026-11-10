@@ -66,11 +66,13 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Install shellcheck
-        # $HOME/.local/bin is already on PATH on ubuntu-latest.
-        run: ./hack/install-tools.sh "$HOME/.local/bin" shellcheck
+      - name: Set up mise
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: "2026.10.19"
+          install_args: "github:koalaman/shellcheck"
       - name: Lint scripts
-        run: shellcheck hack/*.sh
+        run: mise exec -- shellcheck hack/*.sh
 
   # Stable check for branch protection: job names change with the matrix and the
   # reusable-workflow split, this one does not.

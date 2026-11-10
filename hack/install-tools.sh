@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 #
-# Install pinned CI tool releases from their upstream GitHub releases.
+# Install pinned Docker build tool releases from their upstream GitHub releases.
 #
-# Tool metadata lives in tools.txt as readable [tool] blocks. Renovate
+# This is intentionally limited to the Docker build stage. CI and developer
+# tools are managed by mise (mise.toml / mise.lock); do not add them here.
+#
+# Tool metadata lives in docker-tools.txt as readable [tool] blocks. Renovate
 # maintains every block's version and SHA-256 with the
 # github-release-attachments datasource, so adding a tool only requires a new
-# block. Set TOOLS_FILE to use a different manifest (the Dockerfile uses
-# docker-tools.txt for the cargo tools it installs).
+# block. Set TOOLS_FILE to use a different manifest.
 #
 # Every download is verified with SHA-256 before extraction. Raw assets are
 # installed directly; archives use the binary path from the manifest. No
@@ -21,7 +23,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
-readonly TOOLS_FILE="${TOOLS_FILE:-${SCRIPT_DIR}/tools.txt}"
+readonly TOOLS_FILE="${TOOLS_FILE:-${SCRIPT_DIR}/docker-tools.txt}"
 
 BIN_DIR="${1:-${HOME}/.local/bin}"
 shift || true

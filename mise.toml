@@ -1,0 +1,57 @@
+# Keep this in step with the mise-action `version` inputs and renovate.json's
+# `constraints.mise`; they select the CLI that reads this lockfile.
+min_version = "2026.10.19"
+
+[settings]
+lockfile = true
+minimum_release_age = "7d"
+# Resolve checksums from the forge/registry itself, not mise's metadata mirror.
+# Versions are pinned exactly, so the version-list cache buys nothing here.
+use_versions_host = false
+
+[tools]
+"github:EmbarkStudios/cargo-deny" = "0.20.2"
+"github:koalaman/shellcheck" = "0.11.0"
+"github:kubernetes-sigs/kind" = "0.33.0"
+
+# Helm publishes only signature assets on GitHub, not installable archives.
+# GitHub remains the version source for Renovate, but the archive comes from
+# the official get.helm.sh mirror and is verified against mise.lock.
+[tools."github:helm/helm"]
+version = "4.3.1"
+[tools."github:helm/helm".platforms]
+linux-x64 = { url = "https://get.helm.sh/helm-v{{ version }}-linux-amd64.tar.gz" }
+macos-arm64 = { url = "https://get.helm.sh/helm-v{{ version }}-darwin-arm64.tar.gz" }
+
+[tasks.fmt]
+run = "cargo fmt --all -- --check"
+
+[tasks.clippy]
+run = "cargo clippy --all-targets --workspace --locked -- -D warnings"
+
+[tasks.test]
+run = "cargo test --workspace --locked"
+
+[tasks.test-lean]
+run = "cargo test -p neuradex --no-default-features --locked"
+
+[tasks.doc]
+run = "cargo doc --workspace --no-deps --all-features --locked"
+env = { RUSTDOCFLAGS = "-D warnings" }
+
+[tasks.deny]
+run = "cargo-deny --log-level warn --manifest-path Cargo.toml --all-features check advisories"
+
+[tasks.shellcheck]
+run = "shellcheck hack/*.sh"
+
+[tasks.check]
+run = [
+  "mise run fmt",
+  "mise run clippy",
+  "mise run test",
+  "mise run test-lean",
+  "mise run doc",
+  "mise run deny",
+  "mise run shellcheck",
+]

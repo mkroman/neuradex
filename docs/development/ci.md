@@ -76,22 +76,36 @@ The Kind job has a scope check:
 
 ## Local equivalents
 
+Install mise first (see [local-development.md](local-development.md#prerequisites)), then run
+`mise install --locked` once and use the tasks below. `mise run check` runs all seven gated
+tasks. Each task wraps the raw command in [testing.md](testing.md#before-a-pr), which is still
+available when debugging a failure.
+
 | CI job | Local command |
 | --- | --- |
-| Formatting | `cargo fmt --check` |
-| Clippy | `cargo clippy --all-targets --workspace -- -D warnings` |
-| Test (default) | `cargo test --workspace` |
-| Test (lean) | `cargo test -p neuradex --no-default-features` |
-| Rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features` |
-| Shellcheck | `shellcheck hack/*.sh` |
-| Cargo Deny | `cargo-deny --log-level warn --manifest-path Cargo.toml --all-features check advisories` |
-| Chart lint | `helm lint chart/neuradex --set kagiSessionToken=ci-dummy` |
+| Formatting | `mise run fmt` |
+| Clippy | `mise run clippy` |
+| Test (default) | `mise run test` |
+| Test (lean) | `mise run test-lean` |
+| Rustdoc | `mise run doc` |
+| Shellcheck | `mise run shellcheck` |
+| Cargo Deny | `mise run deny` |
+| Chart lint | `mise exec -- helm lint chart/neuradex --set kagiSessionToken=ci-dummy` |
 | Compose config | `docker compose config --quiet` |
 | Workflow audit | `zizmor .github/workflows` (if installed) |
 
-Tool versions and checksums live in `hack/tools.txt`; Docker build tools in
-`hack/docker-tools.txt`. Install with `hack/install-tools.sh`. Keep `repo`/`version`/`sha256`
-contiguous in `tools.txt`; Renovate's regex depends on it.
+Tool versions and mise backends live in `mise.toml`; per-platform URLs and checksums live in
+`mise.lock`. Install them with `mise install --locked`. CI puts the pinned tools on `PATH` with
+`jdx/mise-action` and uses `mise exec` where a job needs a single tool. Docker build tools are
+the exception: they stay in `hack/docker-tools.txt` and are installed by `hack/install-tools.sh`
+during the image build. Renovate manages `mise.toml`/`mise.lock` and `hack/docker-tools.txt`,
+with a 7-day minimum release age.
+
+`mise.toml` sets `use_versions_host = false`, so `mise lock` takes GitHub-backed checksums from
+the GitHub release metadata or checksum assets instead of mise's metadata mirror; every
+download is then verified against `mise.lock`. Helm is the one non-GitHub artifact: GitHub is its
+version source, but the archive comes from the official `get.helm.sh` mirror, whose published
+`.sha256sum` is recorded in `mise.lock`.
 
 ## Gates and policy
 

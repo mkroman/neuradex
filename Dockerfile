@@ -19,8 +19,8 @@ RUN apt-get update && \
 
 # Install cargo-chef and cargo-auditable from their checksummed GitHub releases
 # (prebuilt binaries — much faster in CI than compiling them). Versions and
-# checksums live in hack/docker-tools.txt; the other CI tools live in
-# hack/tools.txt.
+# checksums live in hack/docker-tools.txt; CI/operator tools are managed by
+# mise.
 COPY hack/install-tools.sh hack/docker-tools.txt /usr/local/lib/ci/
 RUN TOOLS_FILE=/usr/local/lib/ci/docker-tools.txt \
     bash /usr/local/lib/ci/install-tools.sh /usr/local/bin cargo-chef cargo-auditable
