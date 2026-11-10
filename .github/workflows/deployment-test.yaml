@@ -28,15 +28,19 @@ jobs:
           persist-credentials: false
       - name: Lint chart
         run: helm lint chart/neuradex --set kagiSessionToken=ci-dummy
+      - name: Install Vector
+        uses: jaxxstorm/action-install-gh-release@b82b2052fdf822192f2119b7e289a6f63e668bc8
+        with:
+          repo: vectordotdev/vector
+          tag: v0.61.0
+          binaries-location: bin
+          cache: enable
       - name: Validate event pipeline config
-        uses: ./.github/actions/vector-validate
         env:
           CLICKHOUSE_PASSWORD: test
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
-        with:
-          config: deploy/event-pipeline/vector.yaml
-          version: "0.61.0"
+        run: vector validate --no-environment deploy/event-pipeline/vector.yaml
       - name: Render chart variants
         run: |
           helm template defaults chart/neuradex \
