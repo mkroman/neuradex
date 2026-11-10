@@ -299,6 +299,7 @@ mod tests {
             Duration::from_secs(30),
             2,
             false,
+            false,
         )
         .expect("valid state");
 

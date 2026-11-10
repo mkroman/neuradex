@@ -176,6 +176,7 @@ fn run_service() -> Result<(), Box<dyn std::error::Error>> {
         REQUEST_TIMEOUT,
         config.max_sessions,
         config.privacy_pass,
+        config.privacy_pass_fallback,
         config.privacy_pass_state(),
         audit_config(&config)?,
     )?;

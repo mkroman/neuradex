@@ -161,6 +161,11 @@
       "default": true,
       "description": "Use anonymous Privacy Pass tokens for searches. Disable to fall back to session-cookie search authentication; the session token is required for issuance either way."
     },
+    "privacyPassFallback": {
+      "type": "boolean",
+      "default": false,
+      "description": "Retry a failed Privacy Pass search with session-cookie authentication. The retried searches are linked to the account, so this trades anonymity for availability: a 429 quota rejection stays degraded until the next month, a 403 subscription rejection until the pod restarts."
+    },
     "kagiMaxSessions": {
       "type": "integer",
       "default": 2,

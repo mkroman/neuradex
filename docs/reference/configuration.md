@@ -16,6 +16,7 @@ cannot start without `KAGI_SESSION_TOKEN`.
 | `USER_AGENT` | no | `kagi::USER_AGENT` | valid header value | `User-Agent` sent with fetches and searches |
 | `KAGI_MAX_SESSIONS` | no | `2` | integer 1–64 | Maximum simultaneous searches; out-of-range is a startup error |
 | `KAGI_PRIVACY_PASS` | no | `true` | boolean | `true` uses Privacy Pass; `false` uses the session cookie |
+| `KAGI_PRIVACY_PASS_FALLBACK` | no | `false` | boolean | Retry a failed Privacy Pass search with the session cookie; only effective with `KAGI_PRIVACY_PASS=true` |
 | `KAGI_PRIVACY_PASS_STATE` | no | XDG state path | file path, `off`, `none`, or `-` | File holding unspent Privacy Pass tokens across restarts. Empty falls back to the default; `off`/`none`/`-` keep tokens in memory. |
 | `RUST_LOG` | no | `info` | `tracing` filter | Local log filter, e.g. `neuradex=debug` |
 | `LOG_FORMAT` | no | `text` | `text`, `json` | Local log formatter; `json` is selected case-insensitively after trimming |
@@ -32,6 +33,8 @@ Notes:
 
 - `KAGI_MAX_SESSIONS` is not silently clamped: values outside 1–64 fail startup.
 - `KAGI_PRIVACY_PASS` accepts `1/true/yes/on` and `0/false/no/off`, case-insensitive, trimmed.
+- `KAGI_PRIVACY_PASS_FALLBACK` accepts the same boolean spellings and has no effect when
+  `KAGI_PRIVACY_PASS=false`.
 - `KAGI_PRIVACY_PASS_STATE` is trimmed; an empty value is treated as unset and falls back to the
   default path. `off`, `none`, and `-` disable persistence. Relative `XDG_STATE_HOME` values are
   ignored, as the XDG base directory specification requires.
@@ -70,6 +73,22 @@ Behavior:
   is small and local, so the brief block is acceptable; no lock is held across an await.
 - `KAGI_PRIVACY_PASS_STATE` has no effect when `KAGI_PRIVACY_PASS=false`. The configured path (or
   `memory`) is logged once at startup.
+
+## Privacy Pass fallback
+
+With `KAGI_PRIVACY_PASS_FALLBACK=true`, a Privacy Pass search that Kagi refuses is retried
+with session-cookie authentication instead of failing:
+
+- A quota rejection (`429`, roughly ten issuance rounds per account per month) degrades Privacy
+  Pass until the start of the next calendar month, when Kagi's generation epoch resets.
+- A subscription rejection (`403`) degrades it for the rest of the process lifetime; restart the
+  service after fixing the plan.
+- A rejected fresh batch or a malformed issuer response falls back for that one search only.
+
+Degraded searches skip token issuance entirely, and a degraded service reports
+`session_fallback` in its `neuradex.search.request` audit event. The fallback trades away
+Privacy Pass's unlinkability — those searches are linked to the account — so it is off by
+default.
 
 ## Audit
 
@@ -198,9 +217,9 @@ remote endpoint. The S3 access key and secret are secrets; do not log or commit 
 ## Precedence and validation
 
 - Environment variables override built-in defaults; there is no config file.
-- Invalid `LISTEN_ADDR`, `KAGI_MAX_SESSIONS`, `KAGI_PRIVACY_PASS`, a missing/empty
-  `KAGI_SESSION_TOKEN`, invalid content values, or an invalid selected content store is a
-  startup error with a human-readable message.
+- Invalid `LISTEN_ADDR`, `KAGI_MAX_SESSIONS`, `KAGI_PRIVACY_PASS`,
+  `KAGI_PRIVACY_PASS_FALLBACK`, a missing/empty `KAGI_SESSION_TOKEN`, invalid content values, or
+  an invalid selected content store is a startup error with a human-readable message.
 - Booleans accept `1/true/yes/on` and `0/false/no/off`, case-insensitive, trimmed.
 - `AUDIT_LOG_PATH` is trimmed; empty and `-` mean stdout.
 - The service logs the listen address, content mode/policy, Kagi search mode, and Privacy Pass
@@ -229,6 +248,10 @@ LOG_FORMAT=json
 # Optional: override where unspent Privacy Pass tokens are kept.
 # Default: ${XDG_STATE_HOME:-$HOME/.local/state}/neuradex/privacy-pass/tokens.json
 # KAGI_PRIVACY_PASS_STATE=.local/neuradex/privacy-pass/tokens.json
+
+# Optional: retry failed Privacy Pass searches with the session cookie. The retried searches
+# are linked to the account, so this is a deliberate availability/privacy trade-off.
+# KAGI_PRIVACY_PASS_FALLBACK=true
 
 # Audit JSONL for the optional Vector profile.
 AUDIT_LOG_PATH=.local/neuradex/events.jsonl

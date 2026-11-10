@@ -732,6 +732,7 @@ fn run(cli: &Cli) {
         Duration::from_secs(30),
         1,
         false,
+        false,
     )
     .expect("build the application state");
     let server = service_runtime.spawn(async move {
