@@ -1,7 +1,8 @@
 # Storage topology
 
-**Status:** B2/Quickwit/ClickHouse design is specified; the local MinIO/Quickwit/ClickHouse
-stack is implemented in `compose.yaml`.
+**Status:** the service writes audit JSONL and, when enabled, local/S3 content packs. The
+Quickwit/ClickHouse/MinIO compose stack is implemented; the B2 event archive and hourly request
+index are target design, not service writes.
 
 ## Topology
 
@@ -9,107 +10,108 @@ stack is implemented in `compose.yaml`.
 flowchart TB
     subgraph Host["neuradex runtime"]
         SVC["HTTP service"]
-        SPOOL["Local spool<br/>events + content"]
+        AUDIT["Audit JSONL<br/>AUDIT_LOG_PATH or stdout"]
+        CONTENT["Content store<br/>local or S3"]
     end
 
-    subgraph B2["Backblaze B2 (S3 API)"]
-        B1["neuradex-content"]
-        P["packs/v1/..."]
-        I["index/v1/..."]
-        A["events/v1/..."]
-        C["cas/v1/..."]
-        B1 --- P
-        B1 --- I
-        B1 --- A
-        B1 --- C
-        B2B["neuradex-quickwit<br/>(reserved)"]
+    subgraph Optional["Optional local bridge"]
+        V["Vector (profile ingest)"]
+        QW["Quickwit 0.8.2<br/>30 days"]
+        CH["ClickHouse<br/>365 days"]
     end
 
-    subgraph Hot["Quickwit 0.8.2"]
-        QW["neuradex-events<br/>30 days"]
-    end
-
-    subgraph Analytics["ClickHouse"]
-        CH["neuradex.events<br/>365 days"]
-        MV["events_daily / content_daily"]
-        CH --- MV
+    subgraph Remote["Remote object storage (when CONTENT_STORE=s3)"]
+        S3["S3-compatible bucket<br/>Backblaze B2 / MinIO"]
     end
 
     subgraph Trace["OTLP"]
         J["Jaeger / collector"]
     end
 
-    SVC -->|PutObject / GetObject / Head| P
-    SVC -->|GetObject| I
-    SVC -->|PutObject| A
-    SVC -->|PutObject| C
-    SVC -->|ingest| QW
-    SVC -->|insert| CH
+    SVC --> AUDIT
+    SVC --> CONTENT
+    CONTENT --> S3
+    AUDIT -. tail .-> V
+    V --> QW
+    V --> CH
     SVC -.->|OTLP| J
-    SPOOL --> SVC
-    QW -.->|future splits| B2B
 ```
+
+## What the service writes
+
+| Output | Location | Status |
+| --- | --- | --- |
+| Audit events | `AUDIT_LOG_PATH` file, or stdout when unset/`-` | implemented |
+| Content packs | `packs/{operation}/{yyyy-mm-ddTHH}/{pid}-{sequence}.pack` in the local root or S3 bucket | implemented when `CONTENT_STORE` is `local`/`s3` |
+| Large content objects | `objects/{blake3}` in the same store | implemented at the 30 MiB threshold |
+| Hourly request index | Object store | future; not written by the service |
+| Hourly event archive | Object store | future; not written by the service |
+
+The service does not configure bucket lifecycle rules. `CONTENT_RETENTION_DAYS` is a policy
+value that is logged at startup; retention enforcement is an external B2/S3 lifecycle concern.
 
 ## Store responsibilities
 
 | Store | Data | Retention | Source of truth? | Rebuild from |
 | --- | --- | --- | --- | --- |
-| B2 `neuradex-content/packs/` | Packfiles with content frames | 365 days | Yes for content | Original write only |
-| B2 `neuradex-content/index/` | Hourly request index | 365 days | Yes for request→frame mapping | Event archive + pack footers |
-| B2 `neuradex-content/events/` | Hourly event archive (NDJSON.zst) | 365 days | Yes for events | Original write only |
-| B2 `neuradex-content/cas/` | Future standalone large bodies | 365 days | Yes | Original write only |
-| B2 `neuradex-quickwit/` | Future Quickwit splits/metastore | 30 days | No | Reindex from event archive |
-| Quickwit | Hot event documents | 30 days | No | Replay event archive |
-| ClickHouse | Typed rows + daily aggregates | 365 days | No (derived) | Replay event archive |
+| Local content root | Packs and objects | Operator-managed | Yes for content | Original write only |
+| S3 bucket (`CONTENT_STORE=s3`) | Packs and objects | B2/S3 lifecycle | Yes for content | Original write only |
+| Audit JSONL file / stdout | One event per request | Operator-managed | Yes for audit events | Original write only |
+| Quickwit | Hot event documents (optional Vector) | 30 days | No | Replay the JSONL |
+| ClickHouse | Typed rows + daily aggregates (optional Vector) | 365 days | No | Replay the JSONL |
 | Jaeger | Local traces | Process lifetime | No | Re-run request |
 
 ## Bucket and prefix layout
 
-```text
-s3://neuradex-content/
-  packs/v1/date=YYYY-MM-DD/hour=HH/pack-<pack_id>.nrp
-  index/v1/date=YYYY-MM-DD/hour=HH/requests-<closed_at>-<writer>.ndjson.zst
-  events/v1/date=YYYY-MM-DD/hour=HH/events-<closed_at>-<writer>.ndjson.zst
-  cas/v1/blake3/<first2>/<blake3-hex>
+The current service writes:
 
-s3://neuradex-quickwit/
-  indexes/neuradex-events/...        # future
-  metastore/...                      # future
+```text
+<content root or s3://CONTENT_S3_BUCKET/CONTENT_S3_PREFIX>/
+  packs/{operation}/{yyyy-mm-ddTHH}/{pid}-{sequence}.pack
+  objects/{blake3}
 ```
 
-- `date`/`hour` are close time for index/archive objects, and pack creation time for packs.
-- Keys are immutable. A retry writes a new key with a new `closed_at`/`writer` or pack ID.
-- Do not list a whole year's prefix in a request path. Use the index and pack ID.
-- The local stack uses MinIO with the same bucket names; Quickwit uses a file index root instead
-  of the `neuradex-quickwit` bucket.
+Examples:
+
+```text
+packs/fetch-response/2026-11-10T12/4242-0.pack
+packs/search-request/2026-11-10T12/4242-1.pack
+packs/search-response/2026-11-10T12/4242-2.pack
+objects/9f2c...
+```
+
+The target design additionally calls for an hourly request index and hourly event archive; those
+prefixes are not written by the service yet. The local MinIO buckets are `neuradex-content` and
+`neuradex-quickwit`; the latter is reserved for future Quickwit remote storage.
 
 ## Consistency and durability
 
 | Store | Write visibility | Durability | Notes |
 | --- | --- | --- | --- |
-| B2 | Read-after-write for new objects | 11 nines claimed by B2 | Immutable keys avoid overwrite races |
-| Quickwit | After commit (10 s local) | Derived; splits on disk/S3 | Rebuildable |
-| ClickHouse | After insert batch | Derived; MergeTree parts | Rebuildable |
-| MinIO local | Immediate | Named volume; not durable | Dev only |
+| Local content root | Immediate | Local disk; not replicated | Dev/single-host use |
+| S3-compatible bucket | Read-after-write for new objects | Provider-dependent | Pack keys are unique; no overwrite of a sealed pack |
+| Audit JSONL | Synchronous flush per event | Local file/stdout | No rotation; append on restart |
+| Quickwit | After commit (10 s local) | Derived | Rebuildable from JSONL |
+| ClickHouse | After insert batch | Derived | Rebuildable from JSONL |
 
-The write order is:
+Current write order:
 
-1. Pack PUT completes.
-2. Request index PUT completes.
-3. Event is emitted with refs (or pending refs resolved).
-4. Event archive is written after the hour closes.
-5. Quickwit/ClickHouse eventually catch up.
+1. The request handler appends a body to the content writer (hash/compress/pack).
+2. The audit event is emitted with a content reference; the reference key is the pack key or
+   `objects/{blake3}`.
+3. Every 5 seconds (and once at shutdown) the content writer flushes, sealing open packs and
+   uploading them. The reference is durable only after that upload.
+4. Optional Vector tails the audit JSONL into Quickwit/ClickHouse.
 
-A reader must handle a request whose content ref is pending or whose pack is not yet indexed.
-A reader must never see a request index entry whose pack PUT did not complete.
+There is no request index and no per-request manifest. A pack reference resolves by searching the
+pack footer for the BLAKE3 hash; the event carries the pack key and hash.
 
 ## Data classification
 
 | Data | Classification | Access |
 | --- | --- | --- |
-| Page bodies | Restricted; may contain PII | `content.reader` via the future audited read API |
-| Event metadata | Internal/restricted | `audit.reader` |
-| Query text | Restricted | Policy-gated; `audit.reader` if enabled |
+| Page bodies / search request-response JSON | Restricted; may contain PII | Future audited read API; local/S3 credentials otherwise |
+| Event metadata | Internal/restricted | `audit.reader` (future read API) |
 | Header HMACs | Restricted | `audit.reader` |
 | Aggregates | Internal | `analyst` |
 | Traces | Internal; may contain URLs | OTLP backend access |
@@ -119,70 +121,71 @@ A reader must never see a request index entry whose pack PUT did not complete.
 
 | Domain | Failure | Impact | Mitigation |
 | --- | --- | --- | --- |
-| B2 region | API outage | Content/archive writes delayed; reads fail | Spool, retries, status page |
-| B2 bucket | Lifecycle misconfig | Early data loss | Restrict lifecycle changes; audit |
-| Quickwit node | Crash/corrupt index | Hot search down | Recreate/replay from archive |
-| ClickHouse node | Crash/disk full | Analytics down | Replay from archive; restore DDL |
-| Local spool disk | Full | Content/event shedding | Capacity alarm; dedicated volume |
-| Network | B2/Quickwit/ClickHouse unreachable | Sink lag | Bounded spool; degradation |
-| Clock | Skew | Pack age/hour key wrong | NTP; unique keys; do not rely on exact hour |
+| Local content root | Disk full/unwritable | Content writes fail; requests continue | Free space; monitor; content is best-effort |
+| S3 endpoint | API outage | Uploads fail; sealed items stay queued | Retry on next flush; monitor |
+| S3 bucket | Lifecycle misconfig | Early data loss | Restrict lifecycle changes; audit |
+| Audit file path | Parent missing/unwritable | Startup fails | Create the parent; fix permissions |
+| Quickwit node | Crash/corrupt index | Hot search down | Recreate/replay from JSONL |
+| ClickHouse node | Crash/disk full | Analytics down | Replay from JSONL; restore DDL |
+| Vector | Stopped/misconfigured | Local hot/analytics stops | Restart; JSONL remains |
+| Clock | Skew | Pack hour key differs; still unique | NTP |
 
 ## Local vs production
 
 | Aspect | Local | Production |
 | --- | --- | --- |
-| Object store | MinIO (`quay.io/minio/minio`) | B2 S3 API |
-| Object credentials | `neuradex` / `neuradex-local-secret` | Scoped B2 application keys |
+| Content store | `CONTENT_STORE=local` (default off) or MinIO via `s3` | B2 S3 API or another S3-compatible store |
+| Content credentials | `neuradex` / `neuradex-local-secret` for MinIO | Scoped application keys |
+| Audit output | `AUDIT_LOG_PATH=.local/neuradex/events.jsonl` or stdout | Managed file/log collector |
 | Quickwit storage | File under named volume | S3-backed splits + metastore (TBD) |
-| ClickHouse | Single node, no auth beyond local user | Cluster/managed (TBD), TLS |
+| ClickHouse | Single node, local user | Cluster/managed (TBD), TLS |
 | Traces | Jaeger in-memory | OTLP collector/backend (TBD) |
 | TLS | none | required |
-| Retention | same values, disposable volumes | lifecycle + TTL |
+| Retention | Operator-managed | Lifecycle + TTL |
 
 ## S3 configuration
 
-The service uses `aws-sdk-s3` with the standard AWS environment variables:
+The service uses explicit `CONTENT_S3_*` settings; it does **not** read the standard AWS
+environment variables.
 
 ```sh
-export AWS_ACCESS_KEY_ID=...
-export AWS_SECRET_ACCESS_KEY=...
-export AWS_REGION=us-west-004
-export AWS_ENDPOINT_URL=https://s3.us-west-004.backblazeb2.com
-export AWS_ALLOW_HTTP=false
+export CONTENT_STORE=s3
+export CONTENT_S3_ENDPOINT=https://s3.us-west-004.backblazeb2.com
+export CONTENT_S3_REGION=us-west-004
+export CONTENT_S3_BUCKET=neuradex-content
+export CONTENT_S3_ACCESS_KEY_ID=...
+export CONTENT_S3_SECRET_ACCESS_KEY=...
+export CONTENT_S3_PREFIX=neuradex
+export CONTENT_S3_FORCE_PATH_STYLE=true
 ```
 
 For MinIO locally:
 
 ```sh
-export AWS_ACCESS_KEY_ID=neuradex
-export AWS_SECRET_ACCESS_KEY=neuradex-local-secret
-export AWS_REGION=us-east-1
-export AWS_ENDPOINT_URL=http://127.0.0.1:9000
-export AWS_ALLOW_HTTP=true
+export CONTENT_STORE=s3
+export CONTENT_S3_ENDPOINT=http://127.0.0.1:9000
+export CONTENT_S3_REGION=us-east-1
+export CONTENT_S3_BUCKET=neuradex-content
+export CONTENT_S3_ACCESS_KEY_ID=neuradex
+export CONTENT_S3_SECRET_ACCESS_KEY=neuradex-local-secret
+export CONTENT_S3_FORCE_PATH_STYLE=true
 ```
 
-`AWS_ALLOW_HTTP` is a neuradex/content setting, not an AWS SDK standard variable; it exists so
-the local stack can use plain HTTP. Never enable it in production. The SDK needs path-style
-addressing for MinIO; set the equivalent option in the content store constructor (planned).
+`CONTENT_S3_FORCE_PATH_STYLE` defaults to `true`; B2 and MinIO need path-style addressing.
+`CONTENT_S3_PREFIX` is optional and has surrounding slashes stripped. Use HTTPS outside the
+local MinIO stack.
 
 ## Object lifecycle
 
-| Prefix | Rule | Grace |
-| --- | --- | --- |
-| `packs/v1/` | Delete after 365 days | Daily; may run hours late |
-| `index/v1/` | Delete after 365 days | Daily |
-| `events/v1/` | Delete after 365 days | Daily |
-| `cas/v1/` | Delete after 365 days | Daily |
-
-Lifecycle is a safety net, not a per-request deletion mechanism. A pack and its index should
-expire together; if they do not, readers see a missing pack and return "expired". B2 lifecycle
-rules operate on object age, not event timestamps.
+The service does not configure lifecycle rules. For production, set a B2/S3 lifecycle rule on the
+configured prefix (for example `packs/` and `objects/`) to match the intended
+`CONTENT_RETENTION_DAYS`; this is external to the service and should be reviewed like any
+retention change. There is no per-request deletion.
 
 ## Security
 
-- Buckets are private. No public access, no presigned URLs in logs.
-- Writer credentials can put/get/head/list but not delete. Reader credentials can get/head only.
-- Lifecycle/admin credentials are break-glass.
-- TLS to B2; SSE at rest. Customer-managed keys are an open question.
-- The local stack uses root credentials and no TLS; it is for synthetic data only.
+- Buckets/directories are private. No public access, no presigned URLs in logs.
+- Content credentials can put/get/head/list; lifecycle/admin credentials are separate.
+- TLS to remote object storage; SSE at rest for B2. Customer-managed keys are an open question.
+- The local stack uses root MinIO credentials and plain HTTP; it is for synthetic data only.
 - See [access-security.md](access-security.md) and [RFD 0009](../rfd/0009-access-and-read-audit.md).

@@ -1,7 +1,8 @@
 # Request lifecycle
 
-**Status:** the HTTP behaviour is implemented; the audit and content steps are the target design
-and are not wired yet. The order is fixed so the implementation has one path to follow.
+**Status:** implemented. Audit events are emitted as JSONL (`AUDIT_LOG_PATH` or stdout). Content
+is off by default; when `CONTENT_STORE` is `local` or `s3`, bodies are packed and flushed every
+5 seconds. Quickwit/ClickHouse are optional local views fed by Vector, not service sinks.
 
 ## Fetch (`GET /v1/fetch`)
 
@@ -13,10 +14,9 @@ sequenceDiagram
     participant S as neuradex
     participant U as Upstream web
     participant A as Audit builder
-    participant P as Content spool/packer
-    participant Q as Quickwit
-    participant CH as ClickHouse
-    participant B as B2
+    participant P as Content packer
+    participant L as Audit JSONL
+    participant B as Local/S3 store
 
     C->>I: GET /v1/fetch?url=…
     I->>I: Authenticate, authorize, strip identity headers
@@ -35,13 +35,10 @@ sequenceDiagram
     S-->>C: 200 JSON body + metrics
     P->>P: BLAKE3 + SHA-256 + zstd + XXH3
     P->>P: append frame to open pack
-    Note over P: Seal at 128 MiB or 10 min
-    P->>B: PUT pack
-    P->>B: PUT hourly request index
+    Note over P: 5 s flush seals open packs
+    P->>B: upload pack after flush
     A->>A: build event with content refs
-    A->>Q: ingest (commit=auto)
-    A->>CH: insert JSONEachRow
-    A->>B: append to hourly event archive
+    A->>L: write one JSONL event
     S-->>A: trace_id/span_id always available
 ```
 
@@ -54,24 +51,24 @@ sequenceDiagram
 | 3 | Generate `request_id` and start the server span | no | Internal error; 500 |
 | 4 | Fetch upstream, following redirects manually | yes | 502 `upstream`; audit with final/failed URL |
 | 5 | Validate text content type | yes | 415/400; audit |
-| 6 | Stream body; tee to content spool; parse head | yes for stream, no for spool | If spool is full, drop content and continue |
+| 6 | Stream body; tee to content capture; parse head | yes for stream | If capture fails/over limit, continue without content |
 | 7 | Serialize response | yes | 500 internal; audit with `error_type=serialization_failed` |
 | 8 | Return response to client | — | Client may disconnect; mark `outcome=aborted` |
 | 9 | Finish hashing/compression; append frame | no | Omit the content reference; capture failure is future schema work |
-| 10 | Seal/upload pack; write hourly index | no | Retry; then mark events |
-| 11 | Emit event to Quickwit/ClickHouse/archive | no | Spool; alert on lag/depth |
+| 10 | Flush every 5 s: seal/upload open packs | no | Log; sealed items stay queued for retry |
+| 11 | Emit event to JSONL (file/stdout) | yes | Log `audit_sink`; response still returns |
 
-Steps 1–8 are the only ones on the critical path. Step 6's tee must not apply backpressure to
-the upstream read if the content spool is full; the capture path drops and marks instead.
+Steps 1–8 are the only ones on the client path. Content capture is best-effort; a content
+failure is logged and does not fail the request. Audit emission is synchronous but separate from
+the HTTP response status.
 
-### Response is sent before content is indexed
+### Response is sent before content is durable
 
-The response body and metrics are complete before the pack is sealed. This is deliberate: a
-128 MiB pack may take seconds to fill and upload, and the client should not wait. The event's
-content refs are filled when the pack is indexed. If the event is emitted before the refs are
-known, the current schema has two choices: emit the event without a reference and let a later
-content event supply it, or buffer until the reference is known. The open question is recorded
-in RFD 0002/0004; there is no `content_pending` field in `AuditEvent` 1.0.0.
+The response body and metrics are complete before the 5-second content flush seals and uploads
+the pack. The audit event carries the pack key and BLAKE3 hash returned by `append`; the bytes
+are durable only after a successful flush. If the flush fails, the reference points at content
+that is not yet in the store; the content writer keeps sealed items queued for the next flush and
+logs the failure. There is no `content_pending` field in `AuditEvent` 1.0.0.
 
 ## Peek (`GET /v1/peek`)
 
@@ -81,7 +78,7 @@ sequenceDiagram
     participant C as Client
     participant S as neuradex
     participant U as Upstream
-    participant P as Content spool
+    participant P as Content capture
 
     C->>S: GET /v1/peek?url=…
     S->>U: GET url
@@ -135,7 +132,9 @@ sequenceDiagram
   `query_length` and `query_terms`.
 - `operation.returned_result_count`, `upstream_result_count`, `zero_results`, `result_digest`, and
   `top_hosts` describe the result set without storing full URLs.
-- Search does not capture content bytes; there is no `content_references` array.
+- When content storage is enabled, search captures the request JSON (`search-request`) and the
+  response JSON (`search-response`) as content references. With content off, there is no
+  `content_references` array.
 
 ## Error and fallback paths
 
@@ -164,10 +163,11 @@ chain is logged, never rendered. The audit event records `error_type`, not the m
 - If the body reaches `FETCH_MAX_BYTES` (25 MiB), the captured prefix *is* canonical content:
   `operation.truncated=true`, and the reference's hashes identify the prefix. The reference
   `size` is the prefix length, not the announced `operation.content_length`.
-- If the content spool is full, the body is still returned to the client; the event has no
-  content reference. A future capture-status field would record `spool_full`.
-- A pack upload failure after retries means the events referencing that pack have no durable
-  content. The events themselves are not lost; the content plane must report the failure.
+- If content capture is disabled or the body exceeds `CONTENT_MAX_BODY_BYTES`, the body is still
+  returned to the client; the event has no content reference. The content writer logs the
+  failure. A future capture-status field would make the reason explicit.
+- A content flush failure leaves sealed items queued for the next 5-second flush; events may
+  reference content that is not durable yet. The events themselves are not lost.
 
 ## Timing fields
 

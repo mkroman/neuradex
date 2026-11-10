@@ -148,7 +148,8 @@ first is summarized; the full array is in `content_references`.
 
 There is no `content_captured`, `content_capture_error`, `content_kind`, `content_pack_id`,
 `content_frame_offset`, or `content_frame_length` column. Absence of references means no
-content; the request index holds the frame location.
+content; a pack reference resolves by footer lookup in the current service, with an hourly
+request index as future work.
 
 ## Materialized views
 

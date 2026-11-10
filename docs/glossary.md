@@ -34,14 +34,14 @@ runtime implementation in this branch.
 | Term | Meaning |
 | --- | --- |
 | **audit event** | A structured, nested JSON `AuditEvent` for one request. It contains metadata, never bodies, query text, or full target URLs. |
-| **event archive** | The hourly, immutable NDJSON (zstd-compressed) object in B2 that contains the full audit events for that hour. It is the cold source of truth. |
+| **event archive** | **Future work:** the hourly, immutable NDJSON object that contains the full audit events for that hour. The current service writes only the local JSONL audit log. |
 | **hot index** | Quickwit's 30-day searchable copy of events. Losing it loses recent search convenience, not the archival record. |
 | **analytics store** | ClickHouse's 365-day store of typed event columns and daily aggregates. It serves dashboards and capacity queries. |
 | **event schema** | The versioned field set in [reference/event-fields.md](reference/event-fields.md). `schema_version` is `"1.0.0"`. |
 | **header policy** | The rules for which request/response headers are allowed, redacted, HMACed, or sanitized. Unknown headers are redacted, not dropped. See RFD 0005. |
 | **sensitive header** | A header whose value must never be stored verbatim, such as `authorization`, `cookie`, `set-cookie`, or `x-api-key`. |
 | **HMAC-SHA256** | The keyed digest used for IP/user/chat identifier headers when a key is configured. It is not a content hash and cannot be reversed. Credentials are redacted, not HMACed. |
-| **event spool** | The bounded local queue/disk buffer that absorbs sink outages. In local development it is `.local/neuradex/events.jsonl`; in production it is a managed local spool. |
+| **event spool** | **Future work:** a bounded local queue that absorbs audit-sink outages. The current service writes JSONL synchronously to `AUDIT_LOG_PATH`/stdout and has no spool. |
 | **at-least-once** | The event delivery guarantee: duplicates are possible and are deduplicated by `request_id`/`event_id`; silent loss is not acceptable. |
 | **dedupe** | Collapsing duplicate event rows or duplicate content frames. Event duplicates are tolerated; `PackWriter` rejects a duplicate BLAKE3 hash, so the content layer must dedupe before appending. |
 
@@ -60,12 +60,12 @@ runtime implementation in this branch.
 | **trailer** | The fixed 128-byte tail pointing at the footer, carrying pack BLAKE3/SHA-256 and a copy of the footer checksum. |
 | **pack_id** | A 128-bit opaque object-key identifier, unique per pack. It is not encoded in the pack; events reference the pack object key. |
 | **sealed pack** | A pack whose frame set is final and whose footer/trailer have been written. Only sealed packs are uploaded. |
-| **request index** | An hourly, immutable object mapping `request_id` to pack ID, frame offset/length, and content hashes. It is not a per-request manifest. |
+| **request index** | **Future work:** an hourly, immutable object mapping `request_id` to pack key, frame offset/length, and content hashes. The current service does not write one; a pack reference resolves by footer lookup. |
 | **manifest** | A per-request object listing content. Deliberately *not* used; the footer plus hourly index replace it. |
 | **large-body threshold** | 30 MiB. A body at or above it is intended to be stored as a standalone CAS object. Because the capture cap is 25 MiB, the threshold is effectively disabled today. |
-| **capture error** | A marker on an event saying why content is absent or partial, e.g. `client_disconnect`, `spool_full`, `upstream_error`. |
+| **capture error** | **Future work:** a marker on an event saying why content is absent or partial. The current schema uses the absence of `content_references`; the reason is in logs. |
 | **truncated** | The captured bytes were cut at the endpoint cap. The hash identifies the captured prefix, not the full upstream body. |
-| **content ref** | A `content_references[]` entry (`storage`, `key`, `blake3`, `sha256`, `size`, optional `content_type`) that locates stored content. The frame offset/length are in the hourly request index. |
+| **content ref** | A `content_references[]` entry (`storage`, `key`, `blake3`, `sha256`, `size`, optional `content_type`) that locates stored content. For a pack, `key` is the pack object key; the frame is found by footer lookup. The hourly request index is future work. |
 | **dedupe window** | The in-memory hash map used by one pack builder to avoid writing the same body twice into the same pack. There is no global content index today. |
 
 ## Storage and analytics
@@ -75,7 +75,7 @@ runtime implementation in this branch.
 | **B2** | Backblaze B2, accessed through its S3-compatible API using the official `aws-sdk-s3` Rust SDK. |
 | **S3 API** | The object API used for B2. The service uses `aws-sdk-s3`, not `object_store`. |
 | **bucket** | A B2 bucket. `neuradex-content` holds packs, indexes, and archives; `neuradex-quickwit` is reserved for Quickwit remote storage. |
-| **prefix** | A key namespace inside a bucket, e.g. `packs/v1/date=2026-11-10/hour=01/`. |
+| **prefix** | A key namespace inside a bucket, e.g. `packs/<operation>/2026-11-10T12/`. |
 | **Quickwit** | The full-text search engine for hot audit events. Version 0.8.2; 30-day retention. |
 | **index** | A Quickwit index with a fixed document mapping. `neuradex-events` is the local index. |
 | **split** | A Quickwit immutable segment. Splits are published by the indexer after `commit_timeout_secs`. |
@@ -85,7 +85,7 @@ runtime implementation in this branch.
 | **hot / cold** | Hot = Quickwit, 30 days, low-latency search. Cold = B2 archive, 365 days, source of truth. ClickHouse is the 365-day analytical middle. |
 | **Jaeger** | Local OTLP trace UI and collector. Version 2.22.0 in the compose stack. |
 | **OTLP** | OpenTelemetry Protocol. The service exports traces/logs over OTLP/HTTP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. |
-| **Vector** | Optional local log shipper. It tails the event spool and writes NDJSON to Quickwit and JSONEachRow to ClickHouse. |
+| **Vector** | Optional local log shipper. It tails the audit JSONL and writes NDJSON to Quickwit and JSONEachRow to ClickHouse. |
 | **lifecycle rule** | A B2 bucket rule that expires objects by prefix/age. It is a safety net for the 365-day policy, not a per-request delete mechanism. |
 
 ## Capacity and operations
@@ -93,9 +93,9 @@ runtime implementation in this branch.
 | Term | Meaning |
 | --- | --- |
 | **pack target** | 128 MiB of encoded pack bytes. The builder seals when the next frame would exceed it. |
-| **pack max age** | 10 minutes from the first frame. It bounds content staleness at low traffic; at the modelled 4 MiB average, size triggers first (about every 1.2 seconds). |
+| **pack max age** | `CONTENT_MAX_PACK_AGE_SECS` (default 600). The service flushes every 5 seconds, sealing every open pack; the age is a backstop checked during appends. |
 | **steady state** | The storage occupied after one full retention period at a constant ingest rate. |
-| **RPO** | Recovery point objective. For events, the spool bound; for content, the last successfully uploaded pack. |
+| **RPO** | Recovery point objective. For events, the audit log/flush point; for content, the last successfully flushed pack. |
 | **RTO** | Recovery time objective. Target for restoring search/analytics after a component loss. |
 | **read amplification** | Bytes read to serve one lookup. A future range-read adapter can keep it to the footer plus one frame; the current `PackReader` takes the full pack slice. |
 | **cardinality** | The number of distinct values in a field. `request_id` is high-cardinality; `event`, `route`, and `status_class` are low. |

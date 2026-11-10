@@ -15,18 +15,20 @@ updated: 2026-11-10
 
 # RFD 2: Content-addressed storage
 
-> **Status:** the packfile format and reader/writer are implemented in `neuradex-packfile`
-> (PR #68). The content orchestration (capture, pack builder, hourly index, upload) is specified
-> and the crate is scaffolded.
+> **Status:** the packfile format and content writer are implemented and wired into the service.
+> `CONTENT_STORE` selects `off` (default), a local directory, or an S3-compatible bucket. The
+> hourly request index and event archive are target design, not current service writes.
 
 ## Summary
 
-Store captured response bodies in immutable **packfiles** in Backblaze B2. A pack targets
-128 MiB of encoded bytes and is sealed at 10 minutes from its first frame, whichever comes
-first. Frames start at offset 0 and are self-describing; each pack ends with a sorted 64-byte
-footer index (plus an optional SHA-256 audit table) and a 128-byte trailer. An **hourly request
-index** object maps `request_id` to the pack, frame offset, frame length, and hashes. There are
-no per-request S3 manifests and no per-request objects.
+Store captured request/response bodies in immutable **packfiles** in a local directory or an
+S3-compatible bucket. A pack targets 128 MiB of appended plaintext bytes. The service flushes
+every 5 seconds, and each flush seals every open pack; the 10-minute max-age policy is a
+backstop rather than the normal trigger. Frames start at offset 0 and are self-describing; each
+pack ends with a sorted 64-byte footer index (plus an optional SHA-256 audit table) and a
+128-byte trailer. The target design adds an **hourly request index** mapping `request_id` to the
+pack, frame offset/length, and hashes; the current service resolves a pack reference by footer
+lookup. There are no per-request manifests and no per-request objects.
 
 Content identity is the BLAKE3-256 digest of the captured bytes. SHA-256 is stored for audit.
 XXH3-64 checksums the compressed frame only.
@@ -141,20 +143,26 @@ the *identity* hash is much harder and needs RFD 0003.
 
 ### Object layout
 
+The current service writes packs grouped by operation:
+
 ```text
-s3://neuradex-content/
-  packs/v1/date=2026-11-10/hour=01/pack-<pack_id>.nrp
-  index/v1/date=2026-11-10/hour=01/requests-<closed_at>-<writer>.ndjson.zst
-  events/v1/date=2026-11-10/hour=01/events-<closed_at>-<writer>.ndjson.zst
-  cas/v1/blake3/<first2>/<blake3-hex>          # future large-body path
+<CONTENT_LOCAL_PATH or s3://CONTENT_S3_BUCKET/CONTENT_S3_PREFIX>/
+  packs/{operation}/{yyyy-mm-ddTHH}/{pid}-{sequence}.pack
+  objects/{blake3}                              # body at/above the 30 MiB threshold
 ```
 
-- `pack_id` is a 128-bit opaque object-key identifier (UUIDv7 is the provisional encoding).
-  It is not encoded in the pack; the packfile format has no pack header or ID field.
-- `closed_at` is the UTC close time, `writer` is a short instance identifier. Together they make
-  the key unique across retries and multiple writers.
-- `date`/`hour` are derived from the **close** time, not from each event's timestamp. A late
-  event keeps its original timestamp inside the next hour's object.
+The target design adds:
+
+```text
+  index/v1/date=YYYY-MM-DD/hour=HH/requests-<closed_at>-<writer>.ndjson.zst
+  events/v1/date=YYYY-MM-DD/hour=HH/events-<closed_at>-<writer>.ndjson.zst
+```
+
+- A pack key is fixed when the pack opens; `operation` is sanitized to a safe lowercase name,
+  and the hour is the pack creation hour.
+- The current service does **not** write the hourly request index or event archive. It also does
+  not write a per-request manifest.
+- A large body is stored as `objects/{blake3}`, not as a frame.
 - `neuradex-quickwit` is reserved for future Quickwit remote storage; the local stack uses a
   file-backed index root.
 
@@ -210,7 +218,7 @@ The request index is an hourly, zstd-compressed NDJSON object. One line per requ
 captured content:
 
 ```json
-{"request_id":"req-...","event_id":"evt-...","pack_key":"packs/v1/date=2026-11-10/hour=12/pack-019a.nrp","frame_offset":4096,"frame_length":1234,"blake3":"...","sha256":"...","size":5123,"content_type":"text/html","truncated":false}
+{"request_id":"req-...","event_id":"evt-...","pack_key":"packs/fetch-response/2026-11-10T12/4242-0.pack","frame_offset":4096,"frame_length":1234,"blake3":"...","sha256":"...","size":5123,"content_type":"text/html","truncated":false}
 ```
 
 Properties:
@@ -293,9 +301,9 @@ At the assumed 4 MiB average body and 100,000 fetches/hour:
 | 365-day steady-state bytes | ~3.34 PiB |
 | B2 storage at $6/TiB-month | ~$20k/month (see RFD 0008) |
 
-The pack target is much smaller than the 10-minute age bound in this regime: at 4 MiB average,
-32 fetches fill a pack in about 1.2 seconds. Max age matters at low traffic or when the capture
-path is stalled; it prevents a pack from staying open indefinitely.
+The service flushes every 5 seconds, which seals every open pack; the 10-minute age policy is a
+backstop. At 4 MiB average, 32 fetches fill a 128 MiB pack in about 1.2 seconds, so size (or the
+next 5-second flush) triggers first. At low traffic, the 5-second flush creates smaller packs.
 
 Network is the bottleneck: 9.15 TiB/day is about 111 MiB/s average, or ~0.93 Gbit/s, before
 peak. At a 2× peak it is ~1.9 Gbit/s. Hashing and zstd are a small fraction of one core at this

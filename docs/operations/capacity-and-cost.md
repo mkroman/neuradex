@@ -8,7 +8,9 @@ measure, what to alarm on, and how to change retention without losing data.
 
 Assumptions: 100,000 fetches/hour, 40,000 searches/hour, 4 MiB average captured body, 365-day
 retention, B2 at $6/TiB-month. The ClickHouse `content_bytes` and `content_blake3` columns are
-derived by Vector from `content_references`, not fields of `AuditEvent`.
+derived by Vector from `content_references`, not fields of `AuditEvent`. The service flushes
+content every 5 seconds; at the modelled volume a 128 MiB pack fills in ~1.2 seconds, so the
+model is size-bound, not flush-bound. At low traffic the 5-second flush creates smaller packs.
 
 | Quantity | Value |
 | --- | --- |
@@ -130,8 +132,10 @@ Retention is a policy change, not a code tweak. The order matters:
 5. Verify with object counts/ages and ClickHouse partition metadata.
 6. Do not shorten retention and then lengthen it; deleted data cannot be recovered.
 
-Current policy: 365 days content/events/index/archive; 30 days Quickwit. Per-request deletion is
-not supported. A legal deletion request needs a pack rewrite, which is not implemented.
+Current policy: 365 days content/events/index/archive; 30 days Quickwit. `CONTENT_RETENTION_DAYS`
+only records the content policy value; the service does not delete objects, so B2/S3 lifecycle
+rules are the enforcement point. Per-request deletion is not supported. A legal deletion request
+needs a pack rewrite, which is not implemented.
 
 ## Capacity planning
 
@@ -145,7 +149,8 @@ not supported. A legal deletion request needs a pack rewrite, which is not imple
 | CPU | zstd is the largest cost; leave 2 cores for the pipeline at peak |
 
 At 4 MiB average, content upload is ~111 MiB/s average and ~222 MiB/s at 2× peak. If the host
-cannot sustain that, the spool grows; if the spool fills, content sheds. Events remain.
+cannot sustain that, content writes queue in temporary files; if the disk fills, content is
+lost for new requests. Audit events remain independent.
 
 ## Monthly review
 

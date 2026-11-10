@@ -127,9 +127,9 @@ plane is wired in. Each entry:
 | `size` | number | yes | Content size in bytes |
 | `content_type` | string | no | Media type, when known |
 
-There is no frame offset/length in the event. The hourly request index maps `request_id` to the
-pack frame (RFD 0002). A `pack` reference without a request-index entry is not resolvable; an
-`object` reference is directly addressable by `key`.
+There is no frame offset/length in the event. The current service resolves a `pack` reference
+by searching the pack footer for the BLAKE3 hash; an hourly request index is future work
+(RFD 0002). An `object` reference is directly addressable by `key`.
 
 Absence of `content_references` means no content was captured or the request does not produce
 content (search, infrastructure). The schema has no `content_captured` or
@@ -246,7 +246,7 @@ noted). The `authorization` header is redacted; the content reference is a pack.
   "content_references": [
     {
       "storage": "pack",
-      "key": "packs/v1/date=2026-11-10/hour=12/pack-019a.nrp",
+      "key": "packs/fetch-response/2026-11-10T12/4242-0.pack",
       "blake3": "9f2c000000000000000000000000000000000000000000000000000000000000",
       "sha256": "3a7d000000000000000000000000000000000000000000000000000000000000",
       "size": 5123,
@@ -353,8 +353,8 @@ Quickwit mapping or ClickHouse DDL until the audit crate emits them:
   carries `content_references` and fetch/peek `truncated`; a future capture-status field may be
   added.
 - Top-level `content_hash_blake3`, `content_hash_sha256`, `content_bytes`, `content_pack_id`,
-  `content_frame_offset`, `content_frame_length` — use `content_references` and the hourly
-  request index instead.
+  `content_frame_offset`, `content_frame_length` — use `content_references`; a future hourly
+  request index may add the frame offset/length.
 - `query_text`, `target_url`, `result_count`, `redirects_followed` — the actual names are
   `query_sha256`/length/terms, `target_*`/`target_url_sha256`, `returned_result_count`, and
   `operation.redirects`.

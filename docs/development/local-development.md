@@ -70,11 +70,19 @@ console is at <http://127.0.0.1:9001> (`neuradex` / `neuradex-local-secret`) and
 ## Run the service
 
 ```sh
+mkdir -p .local/neuradex
 export KAGI_SESSION_TOKEN=staging-token
+export AUDIT_LOG_PATH=.local/neuradex/events.jsonl
+export CONTENT_STORE=local
+export CONTENT_LOCAL_PATH=.local/neuradex/content
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 export LOG_FORMAT=json
 cargo run
 ```
+
+Content is **off by default**; the two `CONTENT_*` variables above enable the local store.
+Without `AUDIT_LOG_PATH`, audit events go to stdout. The audit file is opened in append mode at
+startup, and content is flushed every 5 seconds; restart the service to change configuration.
 
 Then exercise the API:
 
@@ -89,40 +97,45 @@ curl -sS -XPOST 'http://127.0.0.1:8080/v1/search' \
 The service exports spans/logs when `OTEL_EXPORTER_OTLP_ENDPOINT` is set; open Jaeger at
 <http://127.0.0.1:16686> and look for service `neuradex`.
 
-> The audit/content pipeline is not wired into the service in this branch. The next section
-> feeds the same event shape directly into the stack so the mappings can be developed and
-> tested before the code lands.
-
-## Send a synthetic event
-
-The optional Vector profile tails `.local/neuradex/events.jsonl`. Create the directory and one
-event:
+Audit events are written to `.local/neuradex/events.jsonl`; content is written under
+`.local/neuradex/content/` when the fetch returns a body. Inspect the JSONL directly:
 
 ```sh
-mkdir -p .local/neuradex
-cat > .local/neuradex/events.jsonl <<'JSON'
-{"event":"neuradex.request","schema_version":"1.0.0","event_id":"evt-local-1","timestamp":"2026-11-10T12:36:56.789Z","service":{"name":"neuradex","version":"0.1.0"},"trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","span_id":"00f067aa0ba902b7","request_id":"req-local-1","http":{"method":"GET","route":"/v1/fetch","path":"/v1/fetch","status":200,"duration_ms":42},"outcome":"success","operation":{"type":"fetch","target_scheme":"https","target_host":"example.com","target_path":"/","target_url_sha256":"7d5e1f180f774d3f6d57faa2ae34610fdbfb752d0c0e48d840e3f2d633a27f78","redirects":0,"final_host":"example.com","upstream_status":200,"content_type":"text/html","content_length":5123,"bytes_read":5123,"ttfb_ms":10,"total_ms":42,"truncated":false,"stopped_at_head":false},"content_references":[{"storage":"pack","key":"packs/v1/date=2026-11-10/hour=12/pack-local-1.nrp","blake3":"9f2c000000000000000000000000000000000000000000000000000000000000","sha256":"3a7d000000000000000000000000000000000000000000000000000000000000","size":5123,"content_type":"text/html"}]}
-JSON
+tail -n 1 .local/neuradex/events.jsonl | jq '{event, request_id, http, operation, content_references}'
+find .local/neuradex/content -type f | sort
 ```
 
-Start Vector:
+## Send events to the optional stack
+
+The optional Vector profile tails `.local/neuradex/events.jsonl` and writes to Quickwit and
+ClickHouse. Start it after the service has produced at least one event:
 
 ```sh
 docker compose --profile ingest up -d vector
 docker compose logs -f vector
 ```
 
+Generate a fetch and a search so both event shapes appear:
+
+```sh
+curl -sS 'http://127.0.0.1:8080/v1/fetch?url=https://example.com' >/dev/null
+curl -sS -XPOST 'http://127.0.0.1:8080/v1/search' \
+  -H 'content-type: application/json' \
+  -d '{"query":"rust programming","limit":3,"timeout":10}' >/dev/null
+sleep 12
+```
+
 Verify both sinks:
 
 ```sh
-# Quickwit: wait a few seconds for the 10 s commit.
+# Quickwit: the index commits every 10 s.
 curl -sS -XPOST 'http://127.0.0.1:7280/api/v1/neuradex-events/search' \
   -H 'content-type: application/json' \
   -d '{"query":"*","max_hits":5}' | jq '{num_hits, ids: [.hits[]._source.request_id]}'
 
 # ClickHouse: the row and the daily materialized view.
 curl -sS 'http://127.0.0.1:8123/?user=neuradex&password=neuradex-local-secret' \
-  --data-binary "SELECT event, request_id, operation_type, http_route, content_bytes FROM neuradex.events WHERE request_id='req-local-1' FORMAT PrettyCompact"
+  --data-binary "SELECT event, request_id, operation_type, http_route, content_reference_count, content_bytes FROM neuradex.events ORDER BY timestamp DESC LIMIT 5 FORMAT PrettyCompact"
 
 curl -sS 'http://127.0.0.1:8123/?user=neuradex&password=neuradex-local-secret' \
   --data-binary "SELECT * FROM neuradex.events_daily ORDER BY day DESC LIMIT 5 FORMAT PrettyCompact"
@@ -131,6 +144,9 @@ curl -sS 'http://127.0.0.1:8123/?user=neuradex&password=neuradex-local-secret' \
 Quickwit indexes the nested `service`/`http`/`operation` objects and stores arrays as
 `{"items":[…]}` because its `json` field is object-only. ClickHouse gets a flat projection with
 JSON strings for `content_references` and the header captures. Both come from the same event.
+
+The service itself does not write to Quickwit, ClickHouse, or an event archive; content goes to the configured local/S3 store (MinIO locally, B2 when configured). Vector is the local bridge.
+The event archive and request index described in the RFDs are not wired into the service yet.
 
 ## Inspect the stores
 
@@ -191,18 +207,30 @@ The compose stack's credentials are intentionally local:
 | `CLICKHOUSE_USER` | `neuradex` |
 | `CLICKHOUSE_PASSWORD` | `neuradex-local-secret` |
 
-For a local S3 client:
+To exercise the S3 content backend against MinIO instead of the local store, set these and
+restart `cargo run`:
 
 ```sh
-export AWS_ACCESS_KEY_ID=neuradex
-export AWS_SECRET_ACCESS_KEY=neuradex-local-secret
-export AWS_REGION=us-east-1
-export AWS_ENDPOINT_URL=http://127.0.0.1:9000
-export AWS_ALLOW_HTTP=true
+export CONTENT_STORE=s3
+export CONTENT_S3_ENDPOINT=http://127.0.0.1:9000
+export CONTENT_S3_REGION=us-east-1
+export CONTENT_S3_BUCKET=neuradex-content
+export CONTENT_S3_ACCESS_KEY_ID=neuradex
+export CONTENT_S3_SECRET_ACCESS_KEY=neuradex-local-secret
+export CONTENT_S3_FORCE_PATH_STYLE=true
 ```
 
 Do not reuse these values outside the local stack. See
 [reference/configuration.md](../reference/configuration.md).
+
+Useful local overrides for a quick content test:
+
+```sh
+export CONTENT_PACK_TARGET_BYTES=1048576
+export CONTENT_MAX_PACK_AGE_SECS=10
+```
+
+The service still flushes every 5 seconds, so a small pack closes at the next tick.
 
 ## Reset
 
@@ -213,7 +241,7 @@ docker compose down
 # Stop and delete all local Quickwit/MinIO/ClickHouse data.
 docker compose down -v
 
-# Delete the local event spool (contains metadata; never commit it).
+# Delete the local audit log and content store (contains metadata/real bytes; never commit it).
 rm -rf .local/neuradex
 ```
 
@@ -229,11 +257,13 @@ are not mutable in place; delete the index and re-run `quickwit-init`.
 | `quickwit-init` exits 1 with `index already exists` | Index exists but check failed | Inspect `quickwit index list`; delete/recreate if the mapping changed |
 | Quickwit search returns 0 after ingest | Commit is asynchronous | Wait ≥ 10 s; check `quickwit` logs for parse errors |
 | Quickwit rejects `request_headers` | Headers were a JSON string, not an object | Send objects in the event; Quickwit `json` fields require objects |
-| ClickHouse `request_headers` is empty | Vector transform not applied | Ensure the `encode_clickhouse` transform is in the chain |
+| ClickHouse `request_headers` is empty | Vector flatten transform not applied | Ensure the `flatten` transform is in the chain |
 | MinIO port bind fails | Another MinIO owns 9000/9001 | Use the override above |
 | ClickHouse init SQL did not run | Data directory was not empty | `docker compose down -v` or apply DDL manually |
-| Vector not shipping | Profile not enabled, or spool file missing | `docker compose --profile ingest up -d vector`; check logs |
+| Vector not shipping | Profile not enabled, or audit log file missing | `docker compose --profile ingest up -d vector`; check the `AUDIT_LOG_PATH` file and logs |
 | Jaeger has no traces | OTLP endpoint not set, or service not restarted | Export `OTEL_EXPORTER_OTLP_ENDPOINT` and restart `cargo run` |
+| No audit events in the JSONL | `AUDIT_LOG_PATH` unset (stdout) or path parent missing | Set `AUDIT_LOG_PATH` and ensure its parent exists; restart the service |
+| No content references | `CONTENT_STORE` is still `off` | Set `CONTENT_STORE=local` and `CONTENT_LOCAL_PATH`; restart |
 
 ## Next steps
 

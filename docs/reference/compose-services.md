@@ -70,8 +70,8 @@ read-only and buffers in its own container filesystem.
 
 ### MinIO
 
-- S3-compatible store for the future content plane and Quickwit archive. The service itself
-  can point at it with `AWS_ENDPOINT_URL=http://127.0.0.1:9000`.
+- S3-compatible store for the content plane and Quickwit archive. Point the service at it with
+  `CONTENT_STORE=s3` and the `CONTENT_S3_*` settings (not the standard AWS variables).
 - `minio-init` creates `neuradex-content` and `neuradex-quickwit` with `mc mb --ignore-existing`.
   It uses the dedicated `quay.io/minio/mc:latest` image, as in the zeta compose stack. If Quay
   requires a login for that image, authenticate or mirror it; see Troubleshooting.

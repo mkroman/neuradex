@@ -104,7 +104,7 @@ dependency. Keep the tests sync; this crate must not need a runtime.
 | Capture a complete body | Frame written; event ref filled |
 | Capture at cap | `truncated=true`; hash of prefix |
 | Client disconnect | No canonical frame; `client_disconnect` marker |
-| Spool full | Frame dropped; `spool_full` marker; response unaffected |
+| Content body over limit / store full | Append fails; no content reference; response unaffected |
 | Pack seals at size | Upload called once; index written after |
 | Pack seals at age | Upload called once |
 | Dedupe within pack | One frame; two references |
@@ -132,7 +132,7 @@ handlers. New tests for this work:
 | `/healthz` is not audited | No event |
 | Content capture failure does not change the response | 200 with body; event has no content reference (capture status is future) |
 | Search event has query hash, not query text | `operation.query_sha256` set; no query text field |
-| Event sink down | Response still 200; spool/alert |
+| Audit JSONL write fails | Response still returns; `audit_sink` warning; event lost |
 | Ingress identity spoofing | Unsigned header ignored/rejected |
 
 The existing audit test in `src/api/v1.rs` installs a global tracing subscriber; follow its
@@ -180,11 +180,11 @@ Run these in a disposable stack:
 
 | Injection | Expected |
 | --- | --- |
-| `docker compose stop quickwit` | Events spool; API unaffected; restart catches up |
-| `docker compose stop clickhouse` | Inserts fail/spool; API unaffected; restart catches up |
-| `docker compose stop minio` | Content/archive writes fail or spool; API unaffected |
-| Fill the content spool | Content shed and marked; events continue |
-| Fill the event spool | Events shed after an alert; API continues |
+| `docker compose stop quickwit` | JSONL continues; Vector/Quickwit lag; API unaffected |
+| `docker compose stop clickhouse` | JSONL continues; Vector/ClickHouse lag; API unaffected |
+| `docker compose stop minio` | S3 content uploads fail; API unaffected |
+| Fill the content disk | Content append/upload fails; no reference; API continues |
+| Fill the audit-log disk | JSONL write fails; event lost; API continues |
 | Flip one byte in a pack frame | Read returns 502; `content.read` failure; no bad bytes |
 | Kill the pack builder mid-pack | Partial pack discarded; no upload |
 | Set clock ±5 minutes | Keys unique; pack may seal early/late; no loss |

@@ -1,8 +1,9 @@
 # Quickwit index
 
 **Status:** the local index is created by `quickwit-init` from
-`hack/quickwit/neuradex-events.yaml`. The mapping follows the serialized `AuditEvent` (schema
-`1.0.0`), including its nested `service`, `http`, and `operation` objects.
+`hack/quickwit/neuradex-events.yaml`. The service does not write to Quickwit directly; the
+optional Vector profile tails the audit JSONL and ingests it. The mapping follows the serialized
+`AuditEvent` (schema `1.0.0`), including its nested `service`, `http`, and `operation` objects.
 
 ## Index identity
 
@@ -19,8 +20,9 @@
 | Local index root | `file:///quickwit/qwdata/indexes` |
 | Local metastore | `file:///quickwit/qwdata/indexes` |
 
-Quickwit is the **hot** store. It is not the 365-day source of truth; the B2 archive is. A
-missing index is a search incident, not data loss.
+In the local stack Quickwit is an optional **hot** view fed by Vector. It is not the source of
+truth; the service's audit JSONL is the current record, and a B2 event archive is target design.
+A missing index is a search incident, not service data loss.
 
 ## Mapping
 
@@ -147,8 +149,8 @@ retention:
 ```
 
 The janitor deletes splits older than 30 days on the daily schedule. This is independent of the
-B2 365-day retention and ClickHouse's 365-day TTL. Do not use Quickwit for a request older than
-30 days; use the archive or ClickHouse.
+service's JSONL audit log and ClickHouse's local 365-day TTL. Do not use Quickwit for a request
+older than 30 days; use the JSONL log, ClickHouse, or the target B2 archive.
 
 ## Local operation
 

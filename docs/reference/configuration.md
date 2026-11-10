@@ -1,21 +1,23 @@
 # Configuration
 
-Configuration is environment-first. Secrets are never committed. This page separates what the
-service reads **today** from the audit/content settings that are **planned** for the pipeline.
+The service reads its configuration from the process environment **once at startup** in
+`crates/neuradex/src/config.rs`. There is no config file, no hot reload, and no per-request
+override. Restart the process to apply a change.
 
-## Service environment (implemented)
+The service can start without content storage (the default) and without an audit log file. It
+cannot start without `KAGI_SESSION_TOKEN`.
 
-Read in `crates/neuradex/src/config.rs` at startup.
+## HTTP, Kagi, logs, and traces
 
 | Variable | Required | Default | Valid values | Meaning |
 | --- | --- | --- | --- | --- |
-| `KAGI_SESSION_TOKEN` | yes | — | non-empty string | Kagi session token; the service refuses to start without it |
+| `KAGI_SESSION_TOKEN` | yes to serve | — | non-empty string | Kagi session token; the service refuses to start without it. Not needed for `export-docs`. |
 | `LISTEN_ADDR` | no | `127.0.0.1:8080` | socket address | HTTP listen address |
 | `USER_AGENT` | no | `kagi::USER_AGENT` | valid header value | `User-Agent` sent with fetches and searches |
-| `KAGI_MAX_SESSIONS` | no | `2` | integer 1–64 | Maximum simultaneous searches; also bounds the service search gate |
-| `KAGI_PRIVACY_PASS` | no | `true` | boolean (`1/true/yes/on`, `0/false/no/off`) | `true` uses Privacy Pass; `false` uses the session cookie |
-| `RUST_LOG` | no | `info` | `tracing` filter | Log filter, e.g. `neuradex=debug` |
-| `LOG_FORMAT` | no | `text` | `text`, `json` | Log formatter; Helm sets `json` |
+| `KAGI_MAX_SESSIONS` | no | `2` | integer 1–64 | Maximum simultaneous searches; out-of-range is a startup error |
+| `KAGI_PRIVACY_PASS` | no | `true` | boolean | `true` uses Privacy Pass; `false` uses the session cookie |
+| `RUST_LOG` | no | `info` | `tracing` filter | Local log filter, e.g. `neuradex=debug` |
+| `LOG_FORMAT` | no | `text` | `text`, `json` | Local log formatter; `json` is selected case-insensitively after trimming |
 | `OTEL_SERVICE_NAME` | no | `neuradex` | string | OTel `service.name` |
 | `OTEL_RESOURCE_ATTRIBUTES` | no | — | comma-separated `k=v` | Extra resource attributes |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | no | unset | URL | OTLP/HTTP endpoint; unset disables export |
@@ -27,116 +29,181 @@ Read in `crates/neuradex/src/config.rs` at startup.
 
 Notes:
 
-- `KAGI_MAX_SESSIONS` is clamped to 1–64; out-of-range values are a startup error, not a clamp.
-- The service always creates spans and log records locally; export is independent. A missing
-  endpoint keeps local runs quiet.
-- `LISTEN_ADDR=0.0.0.0:8080` is the container/Helm default; locally the default is loopback.
+- `KAGI_MAX_SESSIONS` is not silently clamped: values outside 1–64 fail startup.
+- `KAGI_PRIVACY_PASS` accepts `1/true/yes/on` and `0/false/no/off`, case-insensitive, trimmed.
+- The local formatter and the audit JSONL sink are independent. `RUST_LOG`/`LOG_FORMAT` control
+  tracing output; audit events are always JSON Lines.
+- The service always creates spans and log records locally; OTLP export is separate and off
+  when no endpoint is configured.
 
-### CLI
+## Audit
+
+| Variable | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `AUDIT_LOG_PATH` | no | unset → stdout | Path to the JSONL audit log. Unset, empty/whitespace, or `-` writes to stdout. A path is opened with create+append at startup; the parent directory must already exist. |
+| `AUDIT_HMAC_KEY` | no | unset | Raw key bytes used for HMAC-SHA256 of identifier/IP headers. Empty means no key; those headers are redacted. |
+
+Behavior:
+
+- Exactly one `AuditEvent` is emitted per request except `/healthz`, which is skipped. The
+  request middleware emits it for API calls, infrastructure endpoints, and `404`/`405`
+  fallbacks, including failures.
+- `JsonlSink` serializes one compact JSON object per line and calls `flush()` after **every**
+  event. The file is not buffered across requests.
+- With `AUDIT_LOG_PATH` set, the file is opened once at startup in append mode and kept open.
+  Restarting the service appends to the same file; there is no rotation and no truncation.
+- With no path (or `-`), events go to stdout. They are still JSONL and still independent of
+  `RUST_LOG`/`LOG_FORMAT`.
+- `AUDIT_HMAC_KEY` is used as raw bytes, not base64-decoded. It HMACs the identifier/IP headers
+  listed in [RFD 0005](../rfd/0005-header-policy.md); without it, those headers are redacted.
+- A sink write failure is logged (`error.type=audit_sink`) and does not change the HTTP response.
+- The service does **not** write to Quickwit, ClickHouse, or an object-store event archive. The
+  local compose stack provides those for a separate Vector/replay path; they are not configured
+  by the service.
+
+## Content
+
+| Variable | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `CONTENT_STORE` | no | `off` | `off`, `local`, or `s3` (case-insensitive, trimmed). Unset/`off` disables content storage. |
+| `CONTENT_LOCAL_PATH` | when `local` | — | Local store root. The directory is created at startup; relative paths are relative to the working directory. |
+| `CONTENT_S3_ENDPOINT` | when `s3` | — | S3-compatible endpoint, e.g. `https://s3.us-west-004.backblazeb2.com` |
+| `CONTENT_S3_REGION` | when `s3` | — | Signing region, e.g. `us-west-004` |
+| `CONTENT_S3_BUCKET` | when `s3` | — | Bucket name |
+| `CONTENT_S3_PREFIX` | no | unset | Optional key prefix; surrounding whitespace and slashes are stripped |
+| `CONTENT_S3_ACCESS_KEY_ID` | when `s3` | — | Access key identifier |
+| `CONTENT_S3_SECRET_ACCESS_KEY` | when `s3` | — | Secret access key |
+| `CONTENT_S3_FORCE_PATH_STYLE` | no | `true` | Path-style addressing; B2 and MinIO need it |
+| `CONTENT_PACK_TARGET_BYTES` | no | `134217728` (128 MiB) | Target **plaintext** bytes per pack; positive integer |
+| `CONTENT_MAX_PACK_AGE_SECS` | no | `600` (10 min) | Maximum open-pack age policy; positive integer |
+| `CONTENT_MAX_BODY_BYTES` | no | `26214400` (25 MiB) | Maximum captured body size; positive integer. Also the audit middleware request-body limit, capped at 1 MiB for JSON bodies. |
+| `CONTENT_RETENTION_DAYS` | no | `365` | Retention policy value; positive integer |
+| `CONTENT_COMPRESSION_LEVEL` | no | `3` | zstd level for packs; must be in the zstd range accepted by the writer |
+
+Required combinations:
+
+- `CONTENT_STORE=local` requires `CONTENT_LOCAL_PATH`; a missing or empty value fails startup
+  with `CONTENT_STORE=local requires CONTENT_LOCAL_PATH`.
+- `CONTENT_STORE=s3` requires `CONTENT_S3_ENDPOINT`, `CONTENT_S3_REGION`, `CONTENT_S3_BUCKET`,
+  `CONTENT_S3_ACCESS_KEY_ID`, and `CONTENT_S3_SECRET_ACCESS_KEY`. `CONTENT_S3_PREFIX` and
+  `CONTENT_S3_FORCE_PATH_STYLE` are optional.
+- The numeric content settings are parsed and validated **even when `CONTENT_STORE=off`**; an
+  invalid `CONTENT_PACK_TARGET_BYTES`/`CONTENT_MAX_PACK_AGE_SECS`/`CONTENT_MAX_BODY_BYTES`/
+  `CONTENT_RETENTION_DAYS`/`CONTENT_COMPRESSION_LEVEL` fails startup regardless of the backend.
+- `CONTENT_STORE` with any other value fails startup with
+  `invalid CONTENT_STORE: expected off, local, or s3`.
+
+Behavior:
+
+- Content is **off by default**. No content store is built and no `content_references` are
+  added to audit events. The rest of the service behaves normally.
+- The service stores request/response JSON for search endpoints and response bodies for fetch:
+  - `fetch`: the returned response body (`fetch-response`).
+  - `peek`: the head bytes actually read (`peek-response`).
+  - `search`: the request JSON (`search-request`) and response JSON (`search-response`).
+  - `openwebui_search`: the request JSON (`openwebui-search-request`) and response JSON
+    (`openwebui-search-response`).
+- A body over `CONTENT_MAX_BODY_BYTES` is rejected by the content writer; the request still
+  succeeds and the failure is logged. JSON request bodies are additionally capped at 1 MiB by
+  the extractor.
+- Packs are grouped by operation and stored as
+  `packs/{operation}/{yyyy-mm-ddTHH}/{pid}-{sequence}.pack`; large bodies are stored as
+  `objects/{blake3}`. The pack target is measured in appended plaintext bytes.
+- The service flushes content every **5 seconds** while serving, and performs one final
+  best-effort flush on shutdown. `ContentWriter::flush` seals every open pack, so packs normally
+  close at the 5-second tick rather than at `CONTENT_MAX_PACK_AGE_SECS`; the 10-minute policy is
+  a backstop checked during appends.
+- `CONTENT_RETENTION_DAYS` is stored in the content policy and logged at startup, but the
+  service does not delete objects or configure a bucket lifecycle. Retention enforcement is an
+  external B2/S3 lifecycle concern.
+- S3 credentials are explicit settings; the service does not read `AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, or `AWS_ENDPOINT_URL`.
+- Changing any content setting requires a restart. The store/client is built once at startup;
+  the local directory is created/opened at startup, and the S3 client is created once.
+
+## S3 examples
+
+Backblaze B2:
+
+```sh
+export CONTENT_STORE=s3
+export CONTENT_S3_ENDPOINT=https://s3.us-west-004.backblazeb2.com
+export CONTENT_S3_REGION=us-west-004
+export CONTENT_S3_BUCKET=neuradex-content
+export CONTENT_S3_ACCESS_KEY_ID=...
+export CONTENT_S3_SECRET_ACCESS_KEY=...
+export CONTENT_S3_PREFIX=neuradex
+export CONTENT_S3_FORCE_PATH_STYLE=true
+```
+
+MinIO locally:
+
+```sh
+export CONTENT_STORE=s3
+export CONTENT_S3_ENDPOINT=http://127.0.0.1:9000
+export CONTENT_S3_REGION=us-east-1
+export CONTENT_S3_BUCKET=neuradex-content
+export CONTENT_S3_ACCESS_KEY_ID=neuradex
+export CONTENT_S3_SECRET_ACCESS_KEY=neuradex-local-secret
+export CONTENT_S3_FORCE_PATH_STYLE=true
+```
+
+Plain HTTP is acceptable only for the local MinIO endpoint. Use HTTPS for B2 and any other
+remote endpoint. The S3 access key and secret are secrets; do not log or commit them.
+
+## CLI
 
 | Command | Purpose |
 | --- | --- |
-| `cargo run` | Serve |
-| `cargo run -- export-docs <out.html> [--spec <out.json>]` | Render the docs page without `AppState`; requires the `docs` feature |
-| `cargo run -- --help` | clap help |
-
-## Planned audit and content settings
-
-These names are the design's proposed configuration. **They are not implemented in this
-branch.** Do not set them expecting an effect until the wiring lands; the names may be adjusted
-in the implementation PR.
-
-| Variable | Proposed default | Meaning |
-| --- | --- | --- |
-| `NEURADEX_AUDIT_ENABLED` | `true` | Emit audit events |
-| `NEURADEX_AUDIT_EVENT_LOG` | unset | Local NDJSON spool path (e.g. `.local/neuradex/events.jsonl`) |
-| `NEURADEX_AUDIT_SPOOL_DIR` | `.local/neuradex/audit-spool` | Bounded event spool |
-| `NEURADEX_AUDIT_HMAC_KEY` | — | Key for the hashed-header HMAC-SHA256; without it, hashed headers are redacted |
-| `NEURADEX_AUDIT_QUICKWIT_URL` | unset | Quickwit ingest endpoint |
-| `NEURADEX_AUDIT_CLICKHOUSE_URL` | unset | ClickHouse HTTP endpoint |
-| `NEURADEX_AUDIT_CLICKHOUSE_DATABASE` | `neuradex` | ClickHouse database |
-| `NEURADEX_AUDIT_CLICKHOUSE_TABLE` | `events` | ClickHouse table |
-| `NEURADEX_CONTENT_ENABLED` | `true` | Capture content |
-| `NEURADEX_CONTENT_BUCKET` | `neuradex-content` | B2 bucket |
-| `NEURADEX_CONTENT_PACK_TARGET_BYTES` | `134217728` | 128 MiB encoded pack target |
-| `NEURADEX_CONTENT_PACK_MAX_AGE_SECS` | `600` | 10 minutes |
-| `NEURADEX_CONTENT_SPOOL_DIR` | `.local/neuradex/spool` | Local pack/content spool |
-| `NEURADEX_CONTENT_MAX_BODY_BYTES` | `26214400` | 25 MiB capture cap |
-| `NEURADEX_CONTENT_LARGE_BODY_BYTES` | `31457280` | 30 MiB standalone CAS threshold (effectively disabled) |
-| `NEURADEX_CONTENT_READ_MAX_BYTES` | `26214400` | Read API response cap |
-
-The defaults reflect the decisions in [RFD 0002](../rfd/0002-content-addressed-storage.md) and
-[RFD 0003](../rfd/0003-hashing.md). Changing `NEURADEX_CONTENT_MAX_BODY_BYTES` above 30 MiB
-activates the standalone CAS path; test it before doing so.
-
-## Object storage (B2 / S3)
-
-The content crate uses the official `aws-sdk-s3` via the `s3` feature. It reads the standard
-AWS environment variables:
-
-| Variable | Example | Meaning |
-| --- | --- | --- |
-| `AWS_ACCESS_KEY_ID` | `...` | B2 application key ID |
-| `AWS_SECRET_ACCESS_KEY` | `...` | B2 application key |
-| `AWS_REGION` | `us-west-004` | B2 region |
-| `AWS_ENDPOINT_URL` | `https://s3.us-west-004.backblazeb2.com` | B2 S3 endpoint |
-| `AWS_ALLOW_HTTP` | `false` | neuradex-specific escape hatch for local plain HTTP |
-
-For MinIO locally:
-
-```sh
-export AWS_ACCESS_KEY_ID=neuradex
-export AWS_SECRET_ACCESS_KEY=neuradex-local-secret
-export AWS_REGION=us-east-1
-export AWS_ENDPOINT_URL=http://127.0.0.1:9000
-export AWS_ALLOW_HTTP=true
-```
-
-Use path-style addressing for MinIO; the content store constructor sets it when the endpoint is
-not an AWS/B2 hostname (planned). Never set `AWS_ALLOW_HTTP=true` in production.
-
-## Compose environment
-
-| Service | Variable | Local value |
-| --- | --- | --- |
-| `minio` | `MINIO_ROOT_USER` | `neuradex` |
-| `minio` | `MINIO_ROOT_PASSWORD` | `neuradex-local-secret` |
-| `minio-init` | `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` | same |
-| `clickhouse` | `CLICKHOUSE_DB` | `neuradex` |
-| `clickhouse` | `CLICKHOUSE_USER` | `neuradex` |
-| `clickhouse` | `CLICKHOUSE_PASSWORD` | `neuradex-local-secret` |
-| `clickhouse` | `CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT` | `1` |
-| `quickwit` | `QW_DISABLE_TELEMETRY` | `true` |
-| `quickwit-init` | `QW_CLUSTER_ENDPOINT` | `http://quickwit:7280` |
-| `vector` | — | reads `hack/vector/neuradex-events.toml` |
-
-See [compose-services.md](compose-services.md) for ports and volumes.
-
-## Config files
-
-| File | Format | Used by | Purpose |
-| --- | --- | --- | --- |
-| `compose.yaml` | YAML | Docker Compose | Local stack |
-| `hack/quickwit/quickwit.yaml` | YAML, version 0.7 | Quickwit node | Node ID, ports, data dir, file metastore |
-| `hack/quickwit/neuradex-events.yaml` | YAML, version 0.8 | `quickwit-init` | Index mapping, commit timeout, 30-day retention |
-| `hack/clickhouse/init.sql` | SQL | ClickHouse init | Database, `events`, daily views |
-| `hack/vector/neuradex-events.toml` | TOML | Vector | File source, parse, Quickwit/ClickHouse sinks |
-
-Quickwit mappings are not mutable in place. A field change requires a new index (or delete +
-recreate) and a replay; see [quickwit-index.md](quickwit-index.md).
+| `cargo run` | Serve; reads the full configuration and requires `KAGI_SESSION_TOKEN` |
+| `cargo run -- export-docs <out.html> [--spec <out.json>]` | Render the docs page without `AppState`; requires the `docs` feature and no token |
+| `cargo run -- --help` | clap help, including the environment summary |
 
 ## Precedence and validation
 
-- Environment variables override built-in defaults; there is no config file for the service.
-- Invalid `LISTEN_ADDR`, `KAGI_MAX_SESSIONS`, `KAGI_PRIVACY_PASS`, or a missing/empty
-  `KAGI_SESSION_TOKEN` is a startup error with a human-readable message.
+- Environment variables override built-in defaults; there is no config file.
+- Invalid `LISTEN_ADDR`, `KAGI_MAX_SESSIONS`, `KAGI_PRIVACY_PASS`, a missing/empty
+  `KAGI_SESSION_TOKEN`, invalid content values, or an invalid selected content store is a
+  startup error with a human-readable message.
 - Booleans accept `1/true/yes/on` and `0/false/no/off`, case-insensitive, trimmed.
-- The service logs the listen address and port at startup but never logs the token.
+- `AUDIT_LOG_PATH` is trimmed; empty and `-` mean stdout.
+- The service logs the listen address, content mode/policy, and Kagi search mode at startup. It
+  never logs the Kagi token, audit HMAC key, or S3 secret.
 
-Validate a local configuration without starting the full stack:
+## Secrets
+
+| Secret | Where it belongs | Never |
+| --- | --- | --- |
+| `KAGI_SESSION_TOKEN` | Secret manager / Kubernetes Secret | In `compose.yaml`, docs, logs |
+| `AUDIT_HMAC_KEY` | Secret manager | In the audit log, image, or repo |
+| `CONTENT_S3_ACCESS_KEY_ID` / `CONTENT_S3_SECRET_ACCESS_KEY` | Secret manager | In the image, repo, or audit event |
+| ClickHouse password | Secret manager | In dashboards or query text |
+
+Local compose credentials are public by design. They are not a template for production.
+
+## Example local `.env`
 
 ```sh
-# Service config errors (no network needed).
+# .env (local only)
+KAGI_SESSION_TOKEN=staging-token
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+LOG_FORMAT=json
+
+# Audit JSONL for the optional Vector profile.
+AUDIT_LOG_PATH=.local/neuradex/events.jsonl
+
+# Content: local disk; off by default.
+CONTENT_STORE=local
+CONTENT_LOCAL_PATH=.local/neuradex/content
+```
+
+For a fast local content test, lower `CONTENT_PACK_TARGET_BYTES` (for example `1048576`) and
+`CONTENT_MAX_PACK_AGE_SECS` (for example `10`); the 5-second service flush still applies.
+
+## Validation
+
+```sh
+# Service config errors without starting the server.
 KAGI_SESSION_TOKEN=test cargo run -- --help
 
 # Compose file.
@@ -146,31 +213,3 @@ docker compose config --quiet
 docker compose --profile ingest run --rm --no-deps vector \
   validate --no-environment /etc/vector/vector.toml
 ```
-
-## Secrets
-
-| Secret | Where it belongs | Never |
-| --- | --- | --- |
-| `KAGI_SESSION_TOKEN` | Secret manager / Kubernetes Secret | In `compose.yaml`, docs, logs |
-| B2 application key | Secret manager | In the image, repo, or event |
-| Header HMAC key | Secret manager | In B2 credentials or event payloads |
-| ClickHouse password | Secret manager | In dashboards or query text |
-| Ingress signing key | Ingress secret manager | In the service image |
-
-Local compose credentials are public by design. They are not a template for production.
-
-## Example local `.env`
-
-Docker Compose reads `.env` automatically. Do not commit it (`.local/` and typical `.env`
-patterns are ignored; check `.gitignore` before adding one).
-
-```sh
-# .env (local only)
-KAGI_SESSION_TOKEN=staging-token
-OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
-LOG_FORMAT=json
-RUST_LOG=info
-```
-
-The compose services use their own environment in `compose.yaml`; this file is for `cargo run`
-and ad-hoc commands.

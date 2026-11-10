@@ -1,7 +1,8 @@
 # Failure model
 
-**Status:** target design. The service is implemented; the audit/content failure handling is
-specified and must be implemented with the pipeline.
+**Status:** target design plus current behavior. The service emits audit JSONL synchronously and
+writes content to local/S3; it has no event spool, request index, or archive. The spool/Quickwit/
+ClickHouse rows below describe the target local/production pipeline.
 
 ## Principles
 
@@ -90,7 +91,7 @@ These are targets, not guarantees. Measure them in staging.
 | Signal | Threshold | Severity | Runbook |
 | --- | --- | --- | --- |
 | Event ingest lag | > 5 min p95 for 10 min | page | [Event lag](../operations/runbook.md#events-are-missing-or-late) |
-| Event spool depth | > 80% for 5 min | page | [Spool full](../operations/runbook.md#spool-is-full) |
+| Event spool depth | > 80% for 5 min | page | [Audit/content disk full](../operations/runbook.md#audit-log-or-content-disk-is-full) |
 | Content spool depth | > 80% for 5 min | ticket | [Content missing](../operations/runbook.md#content-is-missing) |
 | Pack upload failure rate | > 1% for 15 min | ticket/page | [Upload failures](../operations/runbook.md#pack-upload-failures) |
 | Hash mismatch rate | > 0.01% for 15 min | page | [Hash mismatch](../operations/runbook.md#hash-mismatch) |
