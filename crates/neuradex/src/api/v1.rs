@@ -1,5 +1,6 @@
 //! API v1: routes and handlers.
 
+pub mod body_capture;
 pub mod error;
 pub mod extract;
 pub mod fetch;
@@ -11,28 +12,23 @@ pub mod search;
 pub mod stream;
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use axum::Extension;
 use axum::body::Bytes;
-use axum::extract::MatchedPath;
-use axum::extract::Request;
 use axum::http::header;
 use axum::http::{Method, StatusCode, Uri};
-use axum::middleware::{self, Next};
-use axum::response::{IntoResponse, Response};
+use axum::middleware;
+use axum::response::IntoResponse;
 use axum::routing;
 use axum::{Json, Router};
 #[cfg(feature = "docs")]
 use std::sync::LazyLock;
-use tracing::Instrument;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 pub use error::ApiError;
 use error::ErrorBody;
 
-use crate::metrics::duration_ms;
 use crate::state::AppState;
 
 /// The maximum number of redirects the fetch endpoints will follow.
@@ -45,7 +41,7 @@ pub(crate) const MAX_SEARCH_TIMEOUT_SECS: u64 = 30;
 ///
 /// The paths are collected from the `#[utoipa::path]` handlers at build time through
 /// [`utoipa_axum`], so the router and the document cannot drift apart; the document's metadata
-/// (info, tags, schemas) comes from [`openapi::base`]. The request tracing middleware is not
+/// (info, tags, schemas) comes from [`openapi::base`]. The request audit middleware is not
 /// applied here: [`router`] applies it once to the finished router, after the infrastructure
 /// endpoints and the fallbacks are registered, so those requests are audited too.
 fn api() -> (Router<Arc<AppState>>, utoipa::openapi::OpenApi) {
@@ -58,83 +54,6 @@ fn api() -> (Router<Arc<AppState>>, utoipa::openapi::OpenApi) {
         .split_for_parts();
 
     (router, openapi)
-}
-
-/// The path of the health endpoint, exempt from request tracing and audit events: probes are
-/// infrastructure traffic, and auditing each one would only add noise to the log pipeline.
-const HEALTHZ_PATH: &str = "/healthz";
-
-/// Wraps a request in a server span and emits one audit event for it.
-///
-/// The event is emitted at `INFO` on every request — API calls, infrastructure endpoints, and
-/// the `404`/`405` fallbacks — including failures, so a log pipeline can retain an unsampled
-/// request record independently of trace sampling.
-///
-/// `http.route` is recorded only for matched routes. The fallbacks have no route, and the
-/// conventions forbid falling back to the raw path, which would make the attribute
-/// high-cardinality.
-async fn trace_request(request: Request, next: Next) -> Response {
-    if request.uri().path() == HEALTHZ_PATH {
-        return next.run(request).await;
-    }
-
-    let method = request.method().clone();
-    let path = request.uri().path().to_owned();
-    let route = request
-        .extensions()
-        .get::<MatchedPath>()
-        .map(|matched| matched.as_str().to_owned());
-    // The OpenTelemetry HTTP conventions name a server span `{method} {route}`, falling back
-    // to the method when the fallback handlers have no matched route.
-    let span_name = route
-        .as_deref()
-        .map_or_else(|| method.to_string(), |route| format!("{method} {route}"));
-    let span = tracing::info_span!(
-        target: "neuradex::http",
-        "http.server",
-        "otel.name" = %span_name,
-        "otel.kind" = "server",
-        "http.request.method" = %method,
-        "http.route" = tracing::field::Empty,
-        "url.path" = %path,
-        "http.response.status_code" = tracing::field::Empty,
-        "error.type" = tracing::field::Empty,
-        "otel.status_code" = tracing::field::Empty,
-    );
-    if let Some(route) = &route {
-        span.record("http.route", route.as_str());
-    }
-
-    let started = Instant::now();
-    let response = next.run(request).instrument(span.clone()).await;
-    let status = response.status();
-    let error_type =
-        (status.is_client_error() || status.is_server_error()).then(|| status.as_u16().to_string());
-
-    span.record("http.response.status_code", status.as_u16());
-    if let Some(error_type) = &error_type {
-        span.record("error.type", error_type.as_str());
-    }
-    // Server-span status follows the HTTP conventions: 5xx is an error, 4xx is a client
-    // outcome and leaves the status unset. The audit event still records both.
-    if status.is_server_error() {
-        span.record("otel.status_code", "ERROR");
-    }
-
-    span.in_scope(|| {
-        tracing::event!(
-            name: "neuradex.http.request",
-            tracing::Level::INFO,
-            "http.request.method" = %method,
-            "http.route" = route.as_deref(),
-            "url.path" = %path,
-            "http.response.status_code" = status.as_u16(),
-            "neuradex.http.request.duration_ms" = duration_ms(started.elapsed()),
-            "error.type" = error_type.as_deref(),
-        );
-    });
-
-    response
 }
 
 /// Returns the OpenAPI document derived from the API routes.
@@ -170,6 +89,7 @@ pub fn openapi_spec() -> serde_json::Value {
 /// document derived by `utoipa`.
 pub fn router(state: AppState) -> Router {
     let (router, openapi) = api();
+    let state = Arc::new(state);
 
     // Serialize once at startup: the document is static, and the extension clone per request
     // is then just a refcount bump instead of a deep clone plus serialization.
@@ -186,13 +106,16 @@ pub fn router(state: AppState) -> Router {
         .route("/swagger-ui", routing::get(swagger_ui_redirect))
         .route("/swagger-ui/", routing::get(swagger_ui_redirect));
 
-    // The tracing middleware is applied last so it wraps every route and fallback, including
+    // The audit middleware is applied last so it wraps every route and fallback, including
     // the hand-registered infrastructure endpoints and the 404/405 handlers above.
     router
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
-        .layer(middleware::from_fn(trace_request))
-        .with_state(Arc::new(state))
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&state),
+            crate::audit::request_audit,
+        ))
+        .with_state(state)
 }
 
 /// Renders the documentation page from the OpenAPI document.

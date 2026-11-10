@@ -33,6 +33,7 @@ kagi = { path = "../kagi", default-features = false, features = [
     "deflate",
     "zstd",
 ] }
+neuradex-audit = { path = "../neuradex-audit" }
 neuradex-docs = { path = "../neuradex-docs", optional = true }
 opentelemetry.workspace = true
 opentelemetry-appender-tracing.workspace = true

@@ -7,6 +7,8 @@ use wreq::header::{ACCEPT_ENCODING, HeaderMap, HeaderValue, USER_AGENT};
 use wreq::redirect::Policy;
 use wreq_util::Emulation;
 
+use crate::audit::AuditConfig;
+
 /// Errors that can occur while constructing the application state.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -39,6 +41,8 @@ pub struct AppState {
     pub(crate) search_gate: tokio::sync::Semaphore,
     /// The default request headers sent with every fetch, kept for reporting.
     pub(crate) default_headers: HeaderMap,
+    /// The audit sink, header policy, and body-capture limit for request events.
+    pub(crate) audit: AuditConfig,
 }
 
 impl AppState {
@@ -56,6 +60,31 @@ impl AppState {
         max_sessions: usize,
         privacy_pass: bool,
     ) -> Result<Self, BuildError> {
+        Self::try_new_with_audit(
+            user_agent,
+            kagi_token,
+            timeout,
+            max_sessions,
+            privacy_pass,
+            AuditConfig::default(),
+        )
+    }
+
+    /// Constructs the application state with an explicit audit configuration.
+    ///
+    /// `max_sessions` is clamped to the service's accepted range (1 through 64).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP or Kagi clients fail to build.
+    pub fn try_new_with_audit(
+        user_agent: &str,
+        kagi_token: SecretString,
+        timeout: Duration,
+        max_sessions: usize,
+        privacy_pass: bool,
+        audit: AuditConfig,
+    ) -> Result<Self, BuildError> {
         let max_sessions = max_sessions.clamp(1, crate::config::MAX_SEARCH_SESSIONS);
         let kagi_client = kagi::Client::with_token_and_options(
             kagi_token,
@@ -68,14 +97,15 @@ impl AppState {
             },
         )?;
 
-        Self::try_new_with_kagi_client(user_agent, kagi_client, timeout)
+        Self::try_new_with_kagi_client_and_audit(user_agent, kagi_client, timeout, audit)
     }
 
     /// Constructs the application state around an existing Kagi client.
     ///
     /// The page-fetching HTTP client is built with the same production configuration as
     /// [`AppState::try_new`]. This is the injection point for a Kagi client pointed at another
-    /// endpoint, such as a local test server.
+    /// endpoint, such as a local test server. The audit configuration defaults to discarding
+    /// events.
     ///
     /// The search gate capacity is taken from [`kagi::Client::max_sessions`], clamped to the
     /// service's accepted range (1 through 64), so the service admits no more simultaneous
@@ -88,6 +118,25 @@ impl AppState {
         user_agent: &str,
         kagi_client: kagi::Client,
         timeout: Duration,
+    ) -> Result<Self, BuildError> {
+        Self::try_new_with_kagi_client_and_audit(
+            user_agent,
+            kagi_client,
+            timeout,
+            AuditConfig::default(),
+        )
+    }
+
+    /// Constructs the application state around an existing Kagi client and audit configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP client fails to build or a configured header is invalid.
+    pub fn try_new_with_kagi_client_and_audit(
+        user_agent: &str,
+        kagi_client: kagi::Client,
+        timeout: Duration,
+        audit: AuditConfig,
     ) -> Result<Self, BuildError> {
         let default_headers = default_headers(user_agent)?;
         let max_sessions = kagi_client
@@ -110,6 +159,7 @@ impl AppState {
             kagi_client,
             search_gate: tokio::sync::Semaphore::new(max_sessions),
             default_headers,
+            audit,
         })
     }
 
@@ -117,6 +167,11 @@ impl AppState {
     #[must_use]
     pub const fn kagi_client(&self) -> &kagi::Client {
         &self.kagi_client
+    }
+
+    /// Returns the audit configuration for request events.
+    pub(crate) const fn audit(&self) -> &AuditConfig {
+        &self.audit
     }
 }
 
@@ -225,6 +280,24 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("gzip, deflate, br, zstd")
         );
+    }
+
+    #[test]
+    fn defaults_to_the_null_audit_sink_and_default_header_policy() {
+        let state = AppState::try_new(
+            "test-agent",
+            SecretString::from("test-token"),
+            Duration::from_secs(30),
+            2,
+            false,
+        )
+        .expect("valid state");
+
+        assert_eq!(
+            state.audit().max_body_bytes(),
+            crate::config::DEFAULT_CONTENT_MAX_BODY_BYTES
+        );
+        assert!(!state.audit().header_policy().has_hmac_key());
     }
 
     #[test]

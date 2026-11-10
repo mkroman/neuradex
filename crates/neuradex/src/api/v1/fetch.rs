@@ -4,15 +4,18 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::Extension;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::header::CONTENT_TYPE;
 use axum::response::{IntoResponse, Response};
+use neuradex_audit::FetchOperation;
 use serde::Serialize;
 
 use crate::api::v1::error::ApiError;
 use crate::api::v1::extract::{ApiQuery, FETCH_INCLUDES, PageParams};
 use crate::api::v1::{redirect, stream};
+use crate::audit::RequestAuditHandle;
 use crate::metadata::PageMetadata;
 use crate::metrics::FetchMetrics;
 use crate::state::AppState;
@@ -98,12 +101,21 @@ pub struct FetchResponse {
 )]
 pub(crate) async fn fetch(
     State(state): State<Arc<AppState>>,
+    audit: Option<Extension<RequestAuditHandle>>,
     ApiQuery(params): ApiQuery<PageParams>,
 ) -> Result<Response, ApiError> {
     let url = params.url()?;
     let redirects = params.redirects()?;
     let includes = params.includes(FETCH_INCLUDES)?;
     let requested = url.to_string();
+
+    if let Some(Extension(audit)) = audit
+        && let Ok(uri) = requested.parse::<axum::http::Uri>()
+    {
+        audit.update(|record| {
+            record.set_fetch(FetchOperation::from_uri(&uri));
+        });
+    }
 
     let started = Instant::now();
     let (response, fetched) =

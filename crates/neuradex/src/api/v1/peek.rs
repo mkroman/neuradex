@@ -6,13 +6,16 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::Extension;
 use axum::Json;
 use axum::extract::State;
+use neuradex_audit::FetchOperation;
 use serde::Serialize;
 
 use crate::api::v1::error::ApiError;
 use crate::api::v1::extract::{ApiQuery, PEEK_INCLUDES, PageParams};
 use crate::api::v1::{redirect, stream};
+use crate::audit::RequestAuditHandle;
 use crate::metadata::PageMetadata;
 use crate::metrics::FetchMetrics;
 use crate::state::AppState;
@@ -80,12 +83,21 @@ pub struct PeekResponse {
 )]
 pub(crate) async fn peek(
     State(state): State<Arc<AppState>>,
+    audit: Option<Extension<RequestAuditHandle>>,
     ApiQuery(params): ApiQuery<PageParams>,
 ) -> Result<Json<PeekResponse>, ApiError> {
     let url = params.url()?;
     let redirects = params.redirects()?;
     let includes = params.includes(PEEK_INCLUDES)?;
     let requested = url.to_string();
+
+    if let Some(Extension(audit)) = audit
+        && let Ok(uri) = requested.parse::<axum::http::Uri>()
+    {
+        audit.update(|record| {
+            record.set_peek(FetchOperation::from_uri(&uri));
+        });
+    }
 
     let started = Instant::now();
     let (response, fetched) =
