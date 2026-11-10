@@ -4,7 +4,7 @@ title: Capacity, cost, and retention
 authors:
   - neuradex maintainers
 state: discussion
-discussion: TBD
+discussion: https://github.com/mkroman/neuradex/pull/70
 labels:
   - operations
   - storage

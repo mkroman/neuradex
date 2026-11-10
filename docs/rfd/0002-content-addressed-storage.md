@@ -4,7 +4,7 @@ title: Content-addressed storage
 authors:
   - neuradex maintainers
 state: published
-discussion: TBD
+discussion: https://github.com/mkroman/neuradex/pull/70
 labels:
   - content
   - storage
