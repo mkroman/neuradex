@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use neuradex_audit::{
-    AuditError, AuditSink, CompletionGuard, HeaderCapture, Outcome, RequestRecord,
+    AuditError, AuditSink, CompletionGuard, ContentReference, FetchOperation, HeaderCapture,
+    Operation, Outcome, RequestRecord, SearchOperation,
 };
 
 /// A clonable handle that handlers use to enrich the request's audit record.
@@ -27,6 +28,31 @@ impl RequestAuditHandle {
             // A panic while enriching a record must not prevent the guard from emitting it.
             Err(poisoned) => update(&mut poisoned.into_inner()),
         }
+    }
+
+    /// Appends a reference to content stored outside the audit event.
+    pub(crate) fn add_content_reference(&self, reference: ContentReference) {
+        self.update(|record| {
+            record.add_content_reference(reference);
+        });
+    }
+
+    /// Applies `update` to the search fields of a search or Open WebUI search operation.
+    pub(crate) fn update_search(&self, update: impl FnOnce(&mut SearchOperation)) {
+        self.update(|record| {
+            if let Some(search) = record.operation_mut().and_then(Operation::as_search_mut) {
+                update(search);
+            }
+        });
+    }
+
+    /// Applies `update` to the fetch fields of a fetch or peek operation.
+    pub(crate) fn update_fetch(&self, update: impl FnOnce(&mut FetchOperation)) {
+        self.update(|record| {
+            if let Some(fetch) = record.operation_mut().and_then(Operation::as_fetch_mut) {
+                update(fetch);
+            }
+        });
     }
 }
 

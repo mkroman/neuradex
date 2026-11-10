@@ -48,7 +48,10 @@ const TEXT_MEDIA_TYPES: &[&str] = &[
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum BodyMode {
     /// Stop as soon as the document head has been parsed.
-    Head,
+    Head {
+        /// Whether the bytes read before the stop are collected for content storage.
+        capture: bool,
+    },
     /// Read the full body, up to a maximum number of bytes.
     Full(u64),
 }
@@ -57,7 +60,7 @@ pub(crate) enum BodyMode {
 pub(crate) struct StreamedBody {
     /// The metadata captured from the document head.
     pub metadata: PageMetadata,
-    /// The body bytes read, when collecting the full body.
+    /// The body bytes read, when collecting the body or capturing the head.
     pub body: Option<Vec<u8>>,
     /// The number of body bytes read (decompressed).
     pub bytes_read: u64,
@@ -72,7 +75,7 @@ pub(crate) struct StreamedBody {
 /// needs a deeper channel to keep the parser busy while the async reader is scheduled.
 const fn channel_capacity(mode: BodyMode) -> usize {
     match mode {
-        BodyMode::Head => 1,
+        BodyMode::Head { .. } => 1,
         BodyMode::Full(_) => 4,
     }
 }
@@ -104,9 +107,9 @@ pub(crate) async fn read_body(
     mode: BodyMode,
     content_length: Option<u64>,
 ) -> Result<StreamedBody, ApiError> {
-    let (collect_body, max_bytes) = match mode {
-        BodyMode::Head => (false, HEAD_MAX_BYTES),
-        BodyMode::Full(max_bytes) => (true, max_bytes),
+    let (collect_body, stop_at_head, max_bytes) = match mode {
+        BodyMode::Head { capture } => (capture, true, HEAD_MAX_BYTES),
+        BodyMode::Full(max_bytes) => (true, false, max_bytes),
     };
 
     let mut stream = response.bytes_stream();
@@ -153,7 +156,7 @@ pub(crate) async fn read_body(
     let read = tokio::task::spawn_blocking(move || {
         let chunks = std::iter::from_fn(|| receiver.blocking_recv());
 
-        consume(chunks, collect_body, max_bytes, body_capacity)
+        consume(chunks, collect_body, stop_at_head, max_bytes, body_capacity)
     })
     .await;
 
@@ -194,7 +197,9 @@ pub(crate) async fn read_body(
 
 /// Consumes `chunks` through the head parser, collecting the body when `collect_body` is set.
 ///
-/// `body_capacity` pre-sizes the collected body; it is a hint and does not limit the read.
+/// `stop_at_head` stops after the end of the document head; `max_bytes` bounds a head-only read
+/// and is the body cap for a full read. `body_capacity` pre-sizes the collected body; it is a hint
+/// and does not limit the read.
 ///
 /// # Errors
 ///
@@ -202,6 +207,7 @@ pub(crate) async fn read_body(
 fn consume(
     chunks: impl Iterator<Item = Result<Bytes, wreq::Error>>,
     collect_body: bool,
+    stop_at_head: bool,
     max_bytes: u64,
     body_capacity: usize,
 ) -> Result<StreamedBody, ApiError> {
@@ -252,13 +258,13 @@ fn consume(
             continue;
         }
 
-        // Only the head-only mode can stop at the end of the head; the full mode keeps reading
+        // Only a head-only read can stop at the end of the head; a full read keeps reading
         // the body until its cap or the end of the response.
-        if !collect_body && parser.is_done() {
+        if stop_at_head && parser.is_done() {
             break;
         }
 
-        if !collect_body && bytes_read >= max_bytes {
+        if stop_at_head && bytes_read >= max_bytes {
             at_limit = true;
         }
     }
@@ -379,10 +385,16 @@ mod tests {
     }
 
     /// Runs `consume` over chunks copied from `chunks`.
-    fn read_chunks(chunks: &[&[u8]], collect_body: bool, max_bytes: u64) -> StreamedBody {
+    fn read_chunks(
+        chunks: &[&[u8]],
+        collect_body: bool,
+        stop_at_head: bool,
+        max_bytes: u64,
+    ) -> StreamedBody {
         consume(
             chunks.iter().map(|chunk| Ok(Bytes::copy_from_slice(chunk))),
             collect_body,
+            stop_at_head,
             max_bytes,
             0,
         )
@@ -391,7 +403,7 @@ mod tests {
 
     #[test]
     fn bounds_the_channel_by_body_mode() {
-        assert_eq!(channel_capacity(BodyMode::Head), 1);
+        assert_eq!(channel_capacity(BodyMode::Head { capture: true }), 1);
         assert_eq!(channel_capacity(BodyMode::Full(HEAD_MAX_BYTES)), 4);
     }
 
@@ -412,6 +424,7 @@ mod tests {
         let read = consume(
             std::iter::once(Ok(Bytes::from_static(b"hello"))),
             true,
+            false,
             HEAD_MAX_BYTES,
             1024,
         )
@@ -469,7 +482,7 @@ mod tests {
         ];
 
         for case in cases {
-            let read = read_chunks(case.chunks, true, case.cap);
+            let read = read_chunks(case.chunks, true, false, case.cap);
 
             assert_eq!(
                 read.bytes_read, case.bytes_read,
@@ -495,7 +508,7 @@ mod tests {
         struct Case {
             name: &'static str,
             chunks: &'static [&'static [u8]],
-            collect_body: bool,
+            stop_at_head: bool,
             max_bytes: u64,
             bytes_read: u64,
             body: Option<&'static [u8]>,
@@ -513,27 +526,27 @@ mod tests {
             Case {
                 name: "a head that fits the cap exactly parses completely",
                 chunks: &[HTML],
-                collect_body: false,
+                stop_at_head: true,
                 max_bytes: u64::try_from(HTML.len()).expect("fits"),
                 bytes_read: u64::try_from(HTML.len()).expect("fits"),
-                body: None,
+                body: Some(HTML),
                 truncated: false,
                 title: Some("Hello"),
             },
             Case {
                 name: "a further chunk proves the head was cut short",
                 chunks: &[b"<<<<<<<<<<<<<<<<", b"xxxxxxxx"],
-                collect_body: false,
+                stop_at_head: true,
                 max_bytes: 16,
                 bytes_read: 16,
-                body: None,
+                body: Some(b"<<<<<<<<<<<<<<<<"),
                 truncated: true,
                 title: None,
             },
             Case {
                 name: "full mode keeps reading past the head",
                 chunks: &[HEAD, TAIL],
-                collect_body: true,
+                stop_at_head: false,
                 max_bytes: HEAD_MAX_BYTES,
                 bytes_read: u64::try_from(FULL.len()).expect("fits"),
                 body: Some(FULL),
@@ -543,17 +556,17 @@ mod tests {
             Case {
                 name: "head mode stops at the end of the head",
                 chunks: &[HEAD, b"xxxxxxxx"],
-                collect_body: false,
+                stop_at_head: true,
                 max_bytes: HEAD_MAX_BYTES,
                 bytes_read: u64::try_from(HEAD.len()).expect("fits"),
-                body: None,
+                body: Some(HEAD),
                 truncated: false,
                 title: Some("Hello"),
             },
         ];
 
         for case in cases {
-            let read = read_chunks(case.chunks, case.collect_body, case.max_bytes);
+            let read = read_chunks(case.chunks, true, case.stop_at_head, case.max_bytes);
 
             assert_eq!(
                 read.metadata.title.as_deref(),

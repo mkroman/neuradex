@@ -7,6 +7,7 @@
 pub mod api;
 pub mod audit;
 pub mod config;
+pub mod content;
 pub mod http;
 pub mod metadata;
 pub mod metrics;
