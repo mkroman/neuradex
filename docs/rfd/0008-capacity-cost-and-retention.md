@@ -271,6 +271,9 @@ transaction cost is small relative to storage, but verify against the first invo
 
 ### Measurement queries
 
+The ClickHouse `content_bytes` and `content_blake3` columns are derived by Vector from the
+`content_references` array; they are not fields of `AuditEvent`.
+
 ```sql
 -- Captured bytes and body-size distribution per day.
 SELECT
