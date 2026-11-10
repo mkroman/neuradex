@@ -232,8 +232,14 @@ impl S3Store {
     pub async fn put_file(&self, key: &str, path: &Path) -> Result<(), StoreError> {
         let key = self.full_key(key)?;
         let size = std::fs::metadata(path)?.len();
+        // Never buffer a whole pack just because the configured part size is
+        // large: small uploads stay bounded by the default part size.
+        let single_put_limit = self
+            .config
+            .multipart_part_size
+            .min(DEFAULT_MULTIPART_PART_SIZE);
 
-        if size <= self.config.multipart_part_size {
+        if size <= single_put_limit {
             let bytes = std::fs::read(path)?;
             return self.put_object_bytes(&key, &bytes).await;
         }
