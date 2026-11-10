@@ -65,8 +65,8 @@ impl ContentStore {
     /// Copies the file at `path` to `key`.
     ///
     /// The local backend copies synchronously on the calling task. The S3
-    /// backend uses a multipart upload when the file is larger than the
-    /// configured part size.
+    /// backend uses one `PUT` for files up to 16 MiB and a multipart upload
+    /// with parts capped at 16 MiB for larger files.
     ///
     /// # Errors
     ///
