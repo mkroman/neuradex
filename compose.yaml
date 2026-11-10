@@ -13,7 +13,7 @@ name: neuradex
 
 services:
   quickwit:
-    image: quickwit/quickwit:0.8.2
+    image: quickwit/quickwit:v0.9.3@sha256:7c3f5061ea7c00921205c295833f152871d057ec1a9e4c9b1d36131dacc420bd
     command: ["run", "--config", "/quickwit/config/quickwit.yaml"]
     environment:
       QW_DISABLE_TELEMETRY: "true"
@@ -34,7 +34,7 @@ services:
   # Creates the index once. Quickwit index creation is not idempotent, so the script checks
   # the index list first. It is safe to run on every `up`.
   quickwit-init:
-    image: quickwit/quickwit:0.8.2
+    image: quickwit/quickwit:v0.9.3@sha256:7c3f5061ea7c00921205c295833f152871d057ec1a9e4c9b1d36131dacc420bd
     depends_on:
       quickwit:
         condition: service_healthy
