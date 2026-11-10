@@ -293,3 +293,54 @@ async fn the_low_water_mark_starts_a_background_refill() {
 
     flow.assert_batches(2);
 }
+
+#[tokio::test]
+async fn a_new_client_reuses_persisted_tokens_instead_of_issuing_again() {
+    let harness = PrivacyPassHarness::start();
+    let flow = Flow::search(&harness);
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("neuradex/privacy-pass/tokens.json");
+
+    let first = harness.client_with_state(&path);
+    let results = first
+        .search(QUERY)
+        .await
+        .expect("the first privacy pass search succeeds");
+
+    assert_eq!(results.len(), 5);
+    assert_eq!(
+        first
+            .privacy_pass()
+            .expect("privacy pass is enabled")
+            .store()
+            .len(),
+        2,
+        "the first batch of four leaves two unspent tokens"
+    );
+    drop(first);
+
+    let second = harness.client_with_state(&path);
+
+    assert_eq!(
+        second
+            .privacy_pass()
+            .expect("privacy pass is enabled")
+            .store()
+            .len(),
+        2,
+        "the second client loads the unspent tokens"
+    );
+
+    let results = second
+        .search(QUERY)
+        .await
+        .expect("the second privacy pass search succeeds");
+
+    assert_eq!(results.len(), 5);
+
+    flow.forbidden.assert_calls(0);
+    flow.challenge.assert_calls(1);
+    flow.issuance.assert_calls(1);
+    flow.document.assert_calls(2);
+    flow.stream.assert_calls(2);
+}

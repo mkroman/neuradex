@@ -16,6 +16,7 @@ cannot start without `KAGI_SESSION_TOKEN`.
 | `USER_AGENT` | no | `kagi::USER_AGENT` | valid header value | `User-Agent` sent with fetches and searches |
 | `KAGI_MAX_SESSIONS` | no | `2` | integer 1–64 | Maximum simultaneous searches; out-of-range is a startup error |
 | `KAGI_PRIVACY_PASS` | no | `true` | boolean | `true` uses Privacy Pass; `false` uses the session cookie |
+| `KAGI_PRIVACY_PASS_STATE` | no | XDG state path | file path, `off`, `none`, or `-` | File holding unspent Privacy Pass tokens across restarts. Empty falls back to the default; `off`/`none`/`-` keep tokens in memory. |
 | `RUST_LOG` | no | `info` | `tracing` filter | Local log filter, e.g. `neuradex=debug` |
 | `LOG_FORMAT` | no | `text` | `text`, `json` | Local log formatter; `json` is selected case-insensitively after trimming |
 | `OTEL_SERVICE_NAME` | no | `neuradex` | string | OTel `service.name` |
@@ -31,10 +32,44 @@ Notes:
 
 - `KAGI_MAX_SESSIONS` is not silently clamped: values outside 1–64 fail startup.
 - `KAGI_PRIVACY_PASS` accepts `1/true/yes/on` and `0/false/no/off`, case-insensitive, trimmed.
+- `KAGI_PRIVACY_PASS_STATE` is trimmed; an empty value is treated as unset and falls back to the
+  default path. `off`, `none`, and `-` disable persistence. Relative `XDG_STATE_HOME` values are
+  ignored, as the XDG base directory specification requires.
 - The local formatter and the audit JSONL sink are independent. `RUST_LOG`/`LOG_FORMAT` control
   tracing output; audit events are always JSON Lines.
 - The service always creates spans and log records locally; OTLP export is separate and off
   when no endpoint is configured.
+
+## Privacy Pass token state
+
+With Privacy Pass enabled, unspent tokens are persisted so that restarting the service does not
+issue a fresh batch every time. The default path is:
+
+```text
+${XDG_STATE_HOME:-$HOME/.local/state}/neuradex/privacy-pass/tokens.json
+```
+
+If neither `XDG_STATE_HOME` nor `HOME` is available (both are unset, empty, or relative), the
+store stays in memory and the service logs that at startup. An operator or test can override the
+file with `KAGI_PRIVACY_PASS_STATE`; the parent directory is created as needed.
+
+Behavior:
+
+- The file is JSON with a version and the token queue in consumption order:
+  `{"version":1,"tokens":["<base64url token>", "..."]}`. Token values are credentials and are
+  never logged.
+- On Unix the file is `0600` and any directory created for it is `0700`. An existing directory is
+  used as-is. Writes go to a temporary file in the same directory, are flushed with `fsync`, and
+  are renamed over the state file.
+- Tokens are loaded before any issuance. A missing file starts empty without a warning; a
+  corrupt, unreadable, or wrong-version file logs a warning without contents, starts empty, and
+  is replaced on the next successful write.
+- The file is rewritten after every successful issuance, token consumption, and clear, so a
+  restart cannot resurrect a spent token.
+- Reads and writes are synchronous and happen while the token store lock is held. The state file
+  is small and local, so the brief block is acceptable; no lock is held across an await.
+- `KAGI_PRIVACY_PASS_STATE` has no effect when `KAGI_PRIVACY_PASS=false`. The configured path (or
+  `memory`) is logged once at startup.
 
 ## Audit
 
@@ -168,14 +203,15 @@ remote endpoint. The S3 access key and secret are secrets; do not log or commit 
   startup error with a human-readable message.
 - Booleans accept `1/true/yes/on` and `0/false/no/off`, case-insensitive, trimmed.
 - `AUDIT_LOG_PATH` is trimmed; empty and `-` mean stdout.
-- The service logs the listen address, content mode/policy, and Kagi search mode at startup. It
-  never logs the Kagi token, audit HMAC key, or S3 secret.
+- The service logs the listen address, content mode/policy, Kagi search mode, and Privacy Pass
+  state path at startup. It never logs the Kagi token, audit HMAC key, S3 secret, or token value.
 
 ## Secrets
 
 | Secret | Where it belongs | Never |
 | --- | --- | --- |
 | `KAGI_SESSION_TOKEN` | Secret manager / Kubernetes Secret | In `compose.yaml`, docs, logs |
+| Privacy Pass token state file | Local XDG state directory with `0600` permissions | In the repo, logs, or a shared directory |
 | `AUDIT_HMAC_KEY` | Secret manager | In the audit log, image, or repo |
 | `CONTENT_S3_ACCESS_KEY_ID` / `CONTENT_S3_SECRET_ACCESS_KEY` | Secret manager | In the image, repo, or audit event |
 | ClickHouse password | Secret manager | In dashboards or query text |
@@ -189,6 +225,10 @@ Local compose credentials are public by design. They are not a template for prod
 KAGI_SESSION_TOKEN=staging-token
 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 LOG_FORMAT=json
+
+# Optional: override where unspent Privacy Pass tokens are kept.
+# Default: ${XDG_STATE_HOME:-$HOME/.local/state}/neuradex/privacy-pass/tokens.json
+# KAGI_PRIVACY_PASS_STATE=.local/neuradex/privacy-pass/tokens.json
 
 # Audit JSONL for the optional Vector profile.
 AUDIT_LOG_PATH=.local/neuradex/events.jsonl

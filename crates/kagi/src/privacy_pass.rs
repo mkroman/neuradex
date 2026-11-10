@@ -11,8 +11,10 @@
 //! - a token response is `len:u16 || evaluated element[32]... || proof[64]`,
 //! - a token is `type:u16 || nonce[32] || challenge digest[32] || key id[32] || auth[64]`.
 //!
-//! Tokens are kept in memory only and are consumed once.
+//! Tokens are consumed once. They are kept in memory by default; an optional state file makes
+//! unconsumed tokens survive restarts. See [`PrivacyPassOptions::state_path`].
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -32,6 +34,7 @@ use self::wire::{
 };
 use crate::{Error, RequestError};
 
+mod persist;
 mod token;
 mod wire;
 
@@ -94,6 +97,18 @@ pub struct PrivacyPassOptions {
     ///
     /// A value of zero disables low-water refills; an empty store still issues on demand.
     pub low_token_count: usize,
+    /// The optional file used to persist unspent tokens across restarts.
+    ///
+    /// `None` keeps tokens in memory only. When set, tokens are loaded from the file before
+    /// any issuance and written back atomically after every issuance, consumption, and clear.
+    /// The file and any directory created for it are restricted to the current user on Unix
+    /// (`0600` and `0700`). A missing, unreadable, or corrupt file does not fail construction:
+    /// the store starts empty, logs a warning, and replaces the file on the next successful
+    /// write.
+    ///
+    /// File access is synchronous and happens while the token store lock is held. The state
+    /// file is small and local, so the brief block is acceptable.
+    pub state_path: Option<PathBuf>,
 }
 
 impl Default for PrivacyPassOptions {
@@ -102,6 +117,7 @@ impl Default for PrivacyPassOptions {
             tokens_to_stash: DEFAULT_TOKENS_TO_STASH,
             max_tokens: DEFAULT_MAX_TOKENS,
             low_token_count: DEFAULT_LOW_TOKEN_COUNT,
+            state_path: None,
         }
     }
 }
@@ -482,6 +498,7 @@ mod tests {
             tokens_to_stash: usize::MAX,
             max_tokens: 0,
             low_token_count: 0,
+            state_path: None,
         };
         let (batch, capacity, low) = options.normalized();
 
@@ -493,6 +510,7 @@ mod tests {
             tokens_to_stash: 0,
             max_tokens: 0,
             low_token_count: 0,
+            state_path: None,
         };
 
         assert_eq!(options.normalized().0, 1);

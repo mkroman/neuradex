@@ -6,6 +6,7 @@
 //! fail the request when a token is invalid or reused. The issuer and wire codecs live in a
 //! private `issuer` submodule.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -78,6 +79,20 @@ impl PrivacyPassHarness {
         )
     }
 
+    /// Builds a Privacy Pass client that persists its unspent tokens at `path`.
+    ///
+    /// The store holds four tokens from one batch and never starts a background refill, so a
+    /// test can consume part of the batch, construct another client from the same path, and
+    /// observe that the remaining tokens are reused instead of issued again.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the test client cannot be built.
+    #[must_use]
+    pub fn client_with_state(&self, path: impl Into<PathBuf>) -> Client {
+        self.build_client(4, 8, 0, DEFAULT_MAX_SESSIONS, Some(path.into()))
+    }
+
     /// Builds a Privacy Pass client with explicit batch size, capacity, low-water mark, and
     /// maximum simultaneous searches.
     ///
@@ -92,6 +107,24 @@ impl PrivacyPassHarness {
         low_token_count: usize,
         max_sessions: usize,
     ) -> Client {
+        self.build_client(
+            tokens_to_stash,
+            max_tokens,
+            low_token_count,
+            max_sessions,
+            None,
+        )
+    }
+
+    /// Builds a client from explicit options and an optional state file.
+    fn build_client(
+        &self,
+        tokens_to_stash: usize,
+        max_tokens: usize,
+        low_token_count: usize,
+        max_sessions: usize,
+        state_path: Option<PathBuf>,
+    ) -> Client {
         Client::with_token_and_options(
             TOKEN,
             &ClientOptions {
@@ -102,6 +135,7 @@ impl PrivacyPassHarness {
                     tokens_to_stash,
                     max_tokens,
                     low_token_count,
+                    state_path,
                 }),
                 ..ClientOptions::default()
             },

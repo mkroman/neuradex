@@ -1,5 +1,6 @@
 //! The shared application state and the clients it owns.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,11 +71,15 @@ impl AppState {
             timeout,
             max_sessions,
             privacy_pass,
+            None,
             AuditConfig::default(),
         )
     }
 
     /// Constructs the application state with an explicit audit configuration.
+    ///
+    /// `privacy_pass_state` is the optional file used to persist unspent Privacy Pass tokens
+    /// across restarts; `None` keeps them in memory only.
     ///
     /// `max_sessions` is clamped to the service's accepted range (1 through 64).
     ///
@@ -87,6 +92,7 @@ impl AppState {
         timeout: Duration,
         max_sessions: usize,
         privacy_pass: bool,
+        privacy_pass_state: Option<&Path>,
         audit: AuditConfig,
     ) -> Result<Self, BuildError> {
         let max_sessions = max_sessions.clamp(1, crate::config::MAX_SEARCH_SESSIONS);
@@ -94,7 +100,10 @@ impl AppState {
             kagi_token,
             &kagi::ClientOptions {
                 max_sessions,
-                privacy_pass: privacy_pass.then(kagi::PrivacyPassOptions::default),
+                privacy_pass: privacy_pass.then(|| kagi::PrivacyPassOptions {
+                    state_path: privacy_pass_state.map(Path::to_path_buf),
+                    ..kagi::PrivacyPassOptions::default()
+                }),
                 // Keep the Kagi client on the same timeout as the page-fetch client.
                 timeout,
                 ..kagi::ClientOptions::default()
