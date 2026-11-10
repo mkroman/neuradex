@@ -13,15 +13,15 @@ should cover.
 | Workspace tests | `cargo test --workspace` | All crates, default features | minutes | implemented |
 | Lean service | `cargo test -p neuradex --no-default-features` | OpenAPI without the docs page | minutes | implemented |
 | Rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features` | Public docs, all features | minutes | implemented |
-| Audit unit | `cargo test -p neuradex-audit` | Event structs, enums, redaction, HMAC | seconds | planned |
-| Packfile unit | `cargo test -p neuradex-packfile` | Frame/footer/trailer, hashes, corruption | seconds | planned |
-| Content unit | `cargo test -p neuradex-content` | Spool, pack builder, index, local store | seconds | planned |
+| Audit unit | `cargo test -p neuradex-audit` | Event structs, enums, redaction, HMAC | seconds | implemented |
+| Packfile unit | `cargo test -p neuradex-packfile` | Frame/footer/trailer, hashes, corruption | seconds | implemented |
+| Content unit | `cargo test -p neuradex-content` | Pack writer, local/S3 store, policy, stored content | seconds | implemented |
 | Service integration | `cargo test -p neuradex` | HTTP routes, extraction, errors | minutes | implemented |
 | Compose smoke | `docker compose up -d` + curl/jq | Real Quickwit/ClickHouse/MinIO mappings | manual | implemented |
 | Failure injection | stop a sink; corrupt a frame | Degradation and verification | manual | planned |
 
-The first five commands are the CI gates. The planned commands become part of `--workspace`
-automatically once the crates have tests; no CI change is needed.
+The first five commands are the CI gates. The per-crate commands are faster iteration loops;
+their tests also run under `cargo test --workspace`.
 
 ## Before a PR
 
@@ -35,8 +35,8 @@ cargo test -p neuradex --no-default-features
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 ```
 
-For docs/compose-only changes (like this one), the Rust commands are still run by CI; run the
-compose validation locally:
+For docs/compose-only changes, the Rust commands are still run by CI; run the compose validation
+locally:
 
 ```sh
 docker compose config --quiet
@@ -53,8 +53,8 @@ PY
 ```
 
 If Docker is available, start the stack and run one event through Vector (see
-[local-development.md](local-development.md#send-a-synthetic-event)). That catches Quickwit
-mapping and ClickHouse DDL drift that unit tests cannot.
+[local-development.md](local-development.md#send-events-to-the-optional-stack)). That catches
+Quickwit mapping and ClickHouse DDL drift that unit tests cannot.
 
 ## What to test in each crate
 
@@ -146,24 +146,18 @@ pattern for request events. Do not add a new global subscriber in another test b
 | Synthetic HTML pages | inline in tests or `tempfile` | Fetch/peek parser tests |
 | Event JSON | inline in tests | Audit serialization and sink contract |
 | Pack bytes | generated in tests | Round-trip and corruption tests |
-| Compose event | [local-development.md](local-development.md#send-a-synthetic-event) | Manual end-to-end |
+| Compose event | [local-development.md](local-development.md#send-events-to-the-optional-stack) | Manual end-to-end |
 
 Do not commit real page bodies, real URLs, tokens, or user data. Use `example.com` and
 synthetic HTML.
 
 ## Compose smoke test
 
-A minimal manual sequence:
+Follow [local-development.md](local-development.md#run-the-service) to run the service against
+the stack, then [send events to the optional stack](local-development.md#send-events-to-the-optional-stack)
+and verify both sinks:
 
 ```sh
-docker compose up -d
-docker compose ps
-# One event through the real pipeline:
-mkdir -p .local/neuradex
-cp /dev/null .local/neuradex/events.jsonl
-# append a synthetic event (see local-development.md)
-docker compose --profile ingest up -d vector
-sleep 12
 curl -sS -XPOST 'http://127.0.0.1:7280/api/v1/neuradex-events/search' \
   -H 'content-type: application/json' -d '{"query":"*","max_hits":1}' | jq '.num_hits'
 curl -sS 'http://127.0.0.1:8123/?user=neuradex&password=neuradex-local-secret' \
@@ -190,7 +184,9 @@ Run these in a disposable stack:
 | Set clock ±5 minutes | Keys unique; pack may seal early/late; no loss |
 | Send `X-Forwarded-User` to the ingress | Header stripped; identity comes from the signed principal |
 
-These are not automated yet. Add them to a `tests/compose` harness once the pipeline exists.
+These are not automated yet. The pure failure paths (sink writes, append failures, corrupt
+frames) already have unit tests; the highest-value stack cases belong in a `tests/compose`
+harness.
 
 ## CI
 

@@ -69,10 +69,10 @@ The Kind job has a scope check:
 
 - If every changed file is `*.md` or under `docs/`, it skips the image build and cluster, and
   still reports success.
-- This PR also changes `compose.yaml` and `hack/`, so it is **not** docs-only. The Kind job
-  builds the image and installs the chart. Expect the full runtime.
-- The Rust jobs run regardless; they should be unaffected because this PR does not touch
-  `crates/` or `Cargo.toml`.
+- A PR that also changes `compose.yaml` or `hack/` is **not** docs-only. The Kind job builds the
+  image and installs the chart, so expect the full runtime.
+- The Rust jobs run regardless. A PR that does not touch `crates/` or `Cargo.toml` still runs
+  the full test matrix and rustdoc.
 
 ## Local equivalents
 
