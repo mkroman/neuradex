@@ -16,6 +16,7 @@ should cover.
 | Audit unit | `cargo test -p neuradex-audit` | Event structs, enums, redaction, HMAC | seconds | implemented |
 | Packfile unit | `cargo test -p neuradex-packfile` | Frame/footer/trailer, hashes, corruption | seconds | implemented |
 | Content unit | `cargo test -p neuradex-content` | Pack writer, local/S3 store, policy, stored content | seconds | implemented |
+| Lifecycle policy | `hack/test-content-lifecycle.sh` | 12 B2 rules, prefixes, retention, unique IDs | seconds | implemented |
 | Service integration | `cargo test -p neuradex` | HTTP routes, extraction, errors | minutes | implemented |
 | Compose smoke | `docker compose up -d` + curl/jq | Real Quickwit/ClickHouse/MinIO mappings | manual | implemented |
 | Failure injection | stop a sink; corrupt a frame | Degradation and verification | manual | planned |

@@ -15,6 +15,10 @@ updated: 2026-11-10
 
 # RFD 4: Storage and analytics
 
+> **Implementation note:** the local compose stack tracks current image tags through Renovate
+> (Quickwit 0.9.3, ClickHouse 26.10, Jaeger 2.23.0). The versions named below are the original
+> decision, not a pin; see [compose-services.md](../reference/compose-services.md) for the current tags.
+
 ## Summary
 
 Use **Backblaze B2** through its S3-compatible API for durable content and event archives,

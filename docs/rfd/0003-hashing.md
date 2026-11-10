@@ -155,7 +155,7 @@ On write:
 6. Add the footer entry (BLAKE3, frame offset, compressed/plaintext lengths, XXH3, flags) and
    the same-index SHA-256 in the optional audit table.
 
-On read (the current reader takes a complete pack slice; a range adapter is future work):
+On read:
 
 1. Read the trailer, footer, and the selected frame.
 2. Verify the footer checksum and pack BLAKE3/SHA-256 over the pre-trailer bytes.
@@ -164,6 +164,10 @@ On read (the current reader takes a complete pack slice; a range adapter is futu
 5. Decompress with the header's plaintext length as the bound.
 6. Verify BLAKE3-256 and SHA-256 of the decoded bytes against the frame header.
 7. Return bytes only if all checks pass.
+
+`neuradex-content` performs the read with range GETs for the trailer, footer, and frame. It
+verifies the footer checksum and frame hashes, and skips the pack-level hashes because it does not
+read the whole pack. `PackReader` verifies the pack-level hashes when the full pack is available.
 
 If BLAKE3 matches but SHA-256 does not, treat it as corruption or an implementation bug; do not
 return bytes. If the request index and footer disagree, verify the frame header and rebuild

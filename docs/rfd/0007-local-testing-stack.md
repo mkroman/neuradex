@@ -16,7 +16,9 @@ updated: 2026-11-10
 # RFD 7: Local testing stack
 
 > **Status:** implemented in `compose.yaml` and `hack/` (PR #70): Quickwit, MinIO,
-> ClickHouse, Jaeger, and the optional Vector `ingest` profile are runnable locally.
+> ClickHouse, Jaeger, and the optional Vector `ingest` profile are runnable locally. Image tags
+> are Renovate-managed; see [compose-services.md](../reference/compose-services.md) for the
+> current versions.
 
 ## Summary
 

@@ -23,7 +23,7 @@ or table that does not exist yet, the document says so explicitly.
 | Audit event schema and header policy | implemented and wired into the service | [RFD 0001](rfd/0001-audit-event-model.md), [RFD 0005](rfd/0005-header-policy.md) |
 | Content-addressed packfiles | implemented; `CONTENT_STORE` defaults to `off` | [RFD 0002](rfd/0002-content-addressed-storage.md), [reference/packfile-format.md](reference/packfile-format.md) |
 | Hashing rules (BLAKE3 / SHA-256 / XXH3) | implemented in the audit/packfile crates | [RFD 0003](rfd/0003-hashing.md) |
-| Quickwit + ClickHouse + B2 storage topology | specified | [RFD 0004](rfd/0004-storage-and-analytics.md) |
+| Quickwit + ClickHouse + B2 storage topology | local stack implemented; production topology specified | [RFD 0004](rfd/0004-storage-and-analytics.md) |
 | Capacity, cost, and 365-day retention | under discussion | [RFD 0008](rfd/0008-capacity-cost-and-retention.md) |
 | Named access and read audit | specified | [RFD 0009](rfd/0009-access-and-read-audit.md) |
 
