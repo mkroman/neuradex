@@ -46,6 +46,7 @@ tracing.workspace = true
 voprf.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 test-support = { path = "../test-support", features = ["client"] }
 
 [lints]

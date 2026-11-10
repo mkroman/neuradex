@@ -22,6 +22,15 @@ const KAGI_MAX_SESSIONS_ENV: &str = "KAGI_MAX_SESSIONS";
 /// The environment variable selecting anonymous Privacy Pass search authentication.
 const KAGI_PRIVACY_PASS_ENV: &str = "KAGI_PRIVACY_PASS";
 
+/// The environment variable overriding the persisted Privacy Pass token state file.
+const KAGI_PRIVACY_PASS_STATE_ENV: &str = "KAGI_PRIVACY_PASS_STATE";
+
+/// The XDG state directory environment variable.
+const XDG_STATE_HOME_ENV: &str = "XDG_STATE_HOME";
+
+/// The home directory environment variable.
+const HOME_ENV: &str = "HOME";
+
 /// The environment variable holding the Kagi session token.
 const KAGI_TOKEN_ENV: &str = "KAGI_SESSION_TOKEN";
 
@@ -204,6 +213,8 @@ pub struct Config {
     pub max_sessions: usize,
     /// Whether searches authenticate with anonymous Privacy Pass tokens.
     pub privacy_pass: bool,
+    /// The optional file holding unspent Privacy Pass tokens across restarts.
+    privacy_pass_state: Option<PathBuf>,
     /// The JSONL audit log path; `None` writes audit events to stdout.
     audit_log_path: Option<PathBuf>,
     /// The optional HMAC key used to hash identifiers and IP addresses in audit headers.
@@ -241,6 +252,15 @@ impl Config {
         self.audit_hmac_key.as_ref()
     }
 
+    /// Returns the file used to persist unspent Privacy Pass tokens.
+    ///
+    /// `None` keeps tokens in memory only, which also happens when neither `XDG_STATE_HOME`
+    /// nor `HOME` is available and no override is set.
+    #[must_use]
+    pub fn privacy_pass_state(&self) -> Option<&Path> {
+        self.privacy_pass_state.as_deref()
+    }
+
     /// Parses the configuration from `get`, a lookup of environment values by name.
     fn parse(get: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
         let listen_addr = match get(LISTEN_ADDR_ENV) {
@@ -272,6 +292,8 @@ impl Config {
             None => true,
         };
 
+        let privacy_pass_state = parse_privacy_pass_state(&get);
+
         let kagi_token = get(KAGI_TOKEN_ENV)
             .filter(|token| !token.is_empty())
             .map(SecretString::from)
@@ -294,11 +316,51 @@ impl Config {
             kagi_token,
             max_sessions,
             privacy_pass,
+            privacy_pass_state,
             audit_log_path,
             audit_hmac_key,
             content,
         })
     }
+}
+
+/// Resolves the file used to persist unspent Privacy Pass tokens.
+///
+/// `KAGI_PRIVACY_PASS_STATE` overrides the path; `off`, `none`, and `-` disable persistence.
+/// Otherwise the XDG state directory is used: `${XDG_STATE_HOME:-$HOME/.local/state}` followed
+/// by `neuradex/privacy-pass/tokens.json`. Relative XDG paths are ignored as the XDG base
+/// directory specification requires, and a missing `HOME` leaves the store in memory.
+fn parse_privacy_pass_state(get: &impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    if let Some(value) = get(KAGI_PRIVACY_PASS_STATE_ENV) {
+        let value = value.trim();
+
+        if !value.is_empty() {
+            return match value.to_ascii_lowercase().as_str() {
+                "off" | "none" | "-" => None,
+                _ => Some(PathBuf::from(value)),
+            };
+        }
+    }
+
+    let state_home = absolute_env_path(get, XDG_STATE_HOME_ENV).or_else(|| {
+        absolute_env_path(get, HOME_ENV).map(|home| home.join(".local").join("state"))
+    })?;
+
+    Some(
+        state_home
+            .join("neuradex")
+            .join("privacy-pass")
+            .join("tokens.json"),
+    )
+}
+
+/// Returns an environment path when it is set and absolute.
+fn absolute_env_path(get: &impl Fn(&str) -> Option<String>, name: &'static str) -> Option<PathBuf> {
+    get(name)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
 }
 
 /// Parses the content plane configuration and validates the resulting policy.
@@ -556,6 +618,7 @@ mod tests {
         assert_eq!(config.max_sessions, kagi::DEFAULT_MAX_SESSIONS);
         assert!(config.privacy_pass);
         assert_eq!(config.kagi_token().expose_secret(), "token");
+        assert_eq!(config.privacy_pass_state(), None);
         assert_eq!(config.audit_log_path(), None);
         assert!(config.audit_hmac_key().is_none());
         assert!(matches!(config.content.backend(), ContentBackend::Disabled));
@@ -662,6 +725,80 @@ mod tests {
 
         assert!(settings.force_path_style());
         assert_eq!(settings.prefix(), None);
+    }
+
+    #[test]
+    fn uses_the_xdg_state_home_for_privacy_pass_tokens() {
+        let config = parse_env(&[
+            (KAGI_TOKEN_ENV, "token"),
+            (XDG_STATE_HOME_ENV, " /var/lib/state "),
+        ])
+        .expect("valid config");
+
+        assert_eq!(
+            config.privacy_pass_state(),
+            Some(Path::new(
+                "/var/lib/state/neuradex/privacy-pass/tokens.json"
+            ))
+        );
+    }
+
+    #[test]
+    fn falls_back_to_home_for_privacy_pass_tokens() {
+        let config = parse_env(&[
+            (KAGI_TOKEN_ENV, "token"),
+            (HOME_ENV, "/home/tester"),
+            // A relative XDG path must be ignored in favour of HOME.
+            (XDG_STATE_HOME_ENV, "relative/state"),
+        ])
+        .expect("valid config");
+
+        assert_eq!(
+            config.privacy_pass_state(),
+            Some(Path::new(
+                "/home/tester/.local/state/neuradex/privacy-pass/tokens.json"
+            ))
+        );
+    }
+
+    #[test]
+    fn overrides_the_privacy_pass_state_path() {
+        let config = parse_env(&[
+            (KAGI_TOKEN_ENV, "token"),
+            (HOME_ENV, "/home/tester"),
+            (KAGI_PRIVACY_PASS_STATE_ENV, " /tmp/neuradex/tokens.json "),
+        ])
+        .expect("valid config");
+
+        assert_eq!(
+            config.privacy_pass_state(),
+            Some(Path::new("/tmp/neuradex/tokens.json"))
+        );
+    }
+
+    #[test]
+    fn can_disable_privacy_pass_state_persistence() {
+        for value in ["off", "none", "-"] {
+            let config = parse_env(&[
+                (KAGI_TOKEN_ENV, "token"),
+                (HOME_ENV, "/home/tester"),
+                (KAGI_PRIVACY_PASS_STATE_ENV, value),
+            ])
+            .expect("valid config");
+
+            assert_eq!(config.privacy_pass_state(), None, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn keeps_privacy_pass_tokens_in_memory_without_a_state_home() {
+        let config = parse_env(&[
+            (KAGI_TOKEN_ENV, "token"),
+            (XDG_STATE_HOME_ENV, "relative/state"),
+        ])
+        .expect("valid config");
+
+        assert_eq!(config.privacy_pass_state(), None);
     }
 
     #[test]

@@ -34,7 +34,7 @@ const LOG_FORMAT_ENV: &str = "LOG_FORMAT";
 #[command(
     name = "neuradex",
     version,
-    after_help = "Environment:\n  KAGI_SESSION_TOKEN   the Kagi session token; required to serve, never for export-docs\n  LISTEN_ADDR          the address to bind to (default: 127.0.0.1:8080)\n  USER_AGENT           the user agent sent with fetches (default: a current Firefox one)\n  KAGI_MAX_SESSIONS    simultaneous searches (default: 2, maximum: 64)\n  KAGI_PRIVACY_PASS    use anonymous Privacy Pass search tokens (default: true)\n  RUST_LOG             tracing filter (default: info)\n  LOG_FORMAT           text or json for the log line format (default: text)\n  AUDIT_LOG_PATH       JSONL audit event log path (- or unset: stdout)\n  AUDIT_HMAC_KEY       key for hashing identifiers and IPs in audit headers\n  CONTENT_STORE        off, local, or s3 (default: off)\n  CONTENT_LOCAL_PATH   the local content store root; required for local\n  CONTENT_S3_ENDPOINT / CONTENT_S3_REGION / CONTENT_S3_BUCKET / CONTENT_S3_PREFIX  S3 settings\n  CONTENT_S3_ACCESS_KEY_ID / CONTENT_S3_SECRET_ACCESS_KEY  S3 credentials\n  CONTENT_S3_FORCE_PATH_STYLE  path-style S3 addressing (default: true)\n  CONTENT_PACK_TARGET_BYTES  target plaintext bytes per pack (default: 134217728)\n  CONTENT_MAX_PACK_AGE_SECS  maximum seconds before an open pack is sealed (default: 600)\n  CONTENT_MAX_BODY_BYTES  maximum captured request body bytes (default: 26214400)\n  CONTENT_RETENTION_DAYS  content retention period (default: 365)\n  CONTENT_COMPRESSION_LEVEL  zstd level for packs (default: 3)\n  OTEL_SERVICE_NAME    service.name resource attribute (default: neuradex)\n  OTEL_RESOURCE_ATTRIBUTES  extra resource attributes, e.g. deployment.environment.name=production\n  OTEL_EXPORTER_OTLP_ENDPOINT  OTLP/HTTP endpoint for traces and logs; unset disables export\n  OTEL_TRACES_EXPORTER / OTEL_LOGS_EXPORTER  set none to disable a signal\n  OTEL_SDK_DISABLED    set true to disable OpenTelemetry entirely\n"
+    after_help = "Environment:\n  KAGI_SESSION_TOKEN   the Kagi session token; required to serve, never for export-docs\n  LISTEN_ADDR          the address to bind to (default: 127.0.0.1:8080)\n  USER_AGENT           the user agent sent with fetches (default: a current Firefox one)\n  KAGI_MAX_SESSIONS    simultaneous searches (default: 2, maximum: 64)\n  KAGI_PRIVACY_PASS    use anonymous Privacy Pass search tokens (default: true)\n  KAGI_PRIVACY_PASS_STATE  file for unspent Privacy Pass tokens (default: XDG state; off disables)\n  RUST_LOG             tracing filter (default: info)\n  LOG_FORMAT           text or json for the log line format (default: text)\n  AUDIT_LOG_PATH       JSONL audit event log path (- or unset: stdout)\n  AUDIT_HMAC_KEY       key for hashing identifiers and IPs in audit headers\n  CONTENT_STORE        off, local, or s3 (default: off)\n  CONTENT_LOCAL_PATH   the local content store root; required for local\n  CONTENT_S3_ENDPOINT / CONTENT_S3_REGION / CONTENT_S3_BUCKET / CONTENT_S3_PREFIX  S3 settings\n  CONTENT_S3_ACCESS_KEY_ID / CONTENT_S3_SECRET_ACCESS_KEY  S3 credentials\n  CONTENT_S3_FORCE_PATH_STYLE  path-style S3 addressing (default: true)\n  CONTENT_PACK_TARGET_BYTES  target plaintext bytes per pack (default: 134217728)\n  CONTENT_MAX_PACK_AGE_SECS  maximum seconds before an open pack is sealed (default: 600)\n  CONTENT_MAX_BODY_BYTES  maximum captured request body bytes (default: 26214400)\n  CONTENT_RETENTION_DAYS  content retention period (default: 365)\n  CONTENT_COMPRESSION_LEVEL  zstd level for packs (default: 3)\n  OTEL_SERVICE_NAME    service.name resource attribute (default: neuradex)\n  OTEL_RESOURCE_ATTRIBUTES  extra resource attributes, e.g. deployment.environment.name=production\n  OTEL_EXPORTER_OTLP_ENDPOINT  OTLP/HTTP endpoint for traces and logs; unset disables export\n  OTEL_TRACES_EXPORTER / OTEL_LOGS_EXPORTER  set none to disable a signal\n  OTEL_SDK_DISABLED    set true to disable OpenTelemetry entirely\n"
 )]
 struct Cli {
     /// The subcommand to run; without one, the HTTP service is served.
@@ -163,6 +163,7 @@ fn run_service() -> Result<(), Box<dyn std::error::Error>> {
         "neuradex.search.max_sessions" = config.max_sessions,
         "Kagi search authentication configured"
     );
+    log_privacy_pass_state(&config);
 
     let runtime = tokio::runtime::Runtime::new()?;
 
@@ -175,6 +176,7 @@ fn run_service() -> Result<(), Box<dyn std::error::Error>> {
         REQUEST_TIMEOUT,
         config.max_sessions,
         config.privacy_pass,
+        config.privacy_pass_state(),
         audit_config(&config)?,
     )?;
     let state = match content {
@@ -185,6 +187,25 @@ fn run_service() -> Result<(), Box<dyn std::error::Error>> {
     let served = runtime.block_on(http::serve(state, config.listen_addr));
 
     Ok(served?)
+}
+
+/// Logs the Privacy Pass token persistence path without any token values.
+fn log_privacy_pass_state(config: &Config) {
+    if !config.privacy_pass {
+        return;
+    }
+
+    if let Some(path) = config.privacy_pass_state() {
+        tracing::info!(
+            "neuradex.privacy_pass.state" = %path.display(),
+            "unspent Privacy Pass tokens persist across restarts"
+        );
+    } else {
+        tracing::info!(
+            "neuradex.privacy_pass.state" = "memory",
+            "unspent Privacy Pass tokens are kept in memory only; no XDG state directory is available"
+        );
+    }
 }
 
 /// Logs the content store mode and policy without credentials.

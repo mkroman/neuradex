@@ -77,12 +77,21 @@ export CONTENT_STORE=local
 export CONTENT_LOCAL_PATH=.local/neuradex/content
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 export LOG_FORMAT=json
+# Optional: keep unspent Privacy Pass tokens under the checkout instead of the XDG state dir.
+# The default is ${XDG_STATE_HOME:-$HOME/.local/state}/neuradex/privacy-pass/tokens.json.
+# export KAGI_PRIVACY_PASS_STATE=.local/neuradex/privacy-pass/tokens.json
 cargo run
 ```
 
 Content is **off by default**; the two `CONTENT_*` variables above enable the local store.
 Without `AUDIT_LOG_PATH`, audit events go to stdout. The audit file is opened in append mode at
 startup, and content is flushed every 5 seconds; restart the service to change configuration.
+
+Privacy Pass tokens are persisted by default, so frequent local restarts reuse the unspent
+tokens instead of requesting a fresh batch from `/pp/gettokens` each time. Set
+`KAGI_PRIVACY_PASS_STATE` to override the path, or to `off` to keep tokens in memory only. The
+file contains bearer credentials; it is created with `0600` permissions in a `0700` directory on
+Unix and must not be committed. `.local/` is already ignored by git.
 
 Then exercise the API:
 

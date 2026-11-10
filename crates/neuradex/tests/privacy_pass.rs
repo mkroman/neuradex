@@ -44,3 +44,45 @@ async fn service_search_uses_privacy_pass_tokens() {
     document.assert();
     stream.assert();
 }
+
+#[tokio::test]
+async fn service_reuses_persisted_tokens_after_a_restart() {
+    let server = Arc::new(MockServer::start());
+    let harness = PrivacyPassHarness::with_server(Arc::clone(&server));
+    let forbidden = harness.mock_session_path_forbidden();
+    let challenge = harness.mock_challenge();
+    let issuance = harness.mock_issuance();
+    let (document, stream) = harness.mock_search_flow(QUERY, FIXTURE);
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let state = directory.path().join("neuradex/privacy-pass/tokens.json");
+
+    let app = TestApp::with_kagi_client(
+        Arc::clone(&server),
+        harness.client_with_state(state.clone()),
+    );
+    let response = app
+        .post_json("/v1/search", &json!({"query": "hello world"}))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(app);
+
+    // A restart builds a new Kagi client and AppState from the same state file. The first
+    // search reused two of the four issued tokens; the second search must reuse the other two
+    // instead of calling the issuer again.
+    let app = TestApp::with_kagi_client(Arc::clone(&server), harness.client_with_state(state));
+    let response = app
+        .post_json("/v1/search", &json!({"query": "hello world"}))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = TestApp::json(response).await;
+
+    assert_eq!(body["results"].as_array().map(Vec::len), Some(5));
+
+    forbidden.assert_calls(0);
+    challenge.assert_calls(1);
+    issuance.assert_calls(1);
+    document.assert_calls(2);
+    stream.assert_calls(2);
+}

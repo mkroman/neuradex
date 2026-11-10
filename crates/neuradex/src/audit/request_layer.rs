@@ -258,6 +258,7 @@ mod tests {
             Duration::from_secs(30),
             2,
             false,
+            None,
             AuditConfig::new(sink, policy, crate::config::DEFAULT_CONTENT_MAX_BODY_BYTES),
         )
         .expect("valid state")
