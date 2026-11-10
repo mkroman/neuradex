@@ -43,7 +43,8 @@ jobs:
           CLICKHOUSE_PASSWORD: test
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
-        run: "$HOME/.local/bin/vector" validate --no-environment "$RUNNER_TEMP/vector.yaml"
+        run: |
+          "$HOME/.local/bin/vector" validate --no-environment "$RUNNER_TEMP/vector.yaml"
       - name: Render chart variants
         run: |
           helm template defaults chart/neuradex \
