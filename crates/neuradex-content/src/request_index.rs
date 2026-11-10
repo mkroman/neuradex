@@ -11,8 +11,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::ContentError;
 use crate::stored_content::StoredContent;
-use crate::{ContentError, ContentStorage};
 
 /// One request-index row.
 ///
@@ -28,8 +28,8 @@ pub struct RequestIndexEntry {
     pub timestamp: String,
     /// Stable operation name, for example `fetch` or `peek`.
     pub operation: String,
-    /// Whether the body lives in a pack or as an individual object.
-    pub storage: ContentStorage,
+    /// Whether the body lives in a `pack` or as an individual `object`.
+    pub storage: String,
     /// Store key of the containing pack or object.
     pub key: String,
     /// Lowercase hexadecimal BLAKE3 digest of the body.
@@ -58,7 +58,7 @@ impl RequestIndexEntry {
             event_id: event_id.into(),
             timestamp: timestamp.into(),
             operation: operation.into(),
-            storage: content.storage(),
+            storage: content.storage().as_str().to_owned(),
             key: content.key().to_owned(),
             blake3: content.blake3_hex(),
             sha256: content.sha256_hex().to_owned(),
@@ -209,7 +209,7 @@ mod tests {
 
         let entry: RequestIndexEntry =
             serde_json::from_slice(bytes.strip_suffix(b"\n").unwrap()).unwrap();
-        assert_eq!(entry.storage, ContentStorage::Pack);
+        assert_eq!(entry.storage, "pack");
         assert_eq!(entry.operation, "peek");
         assert_eq!(entry.content_type.as_deref(), Some("text/plain"));
     }
@@ -226,8 +226,7 @@ mod tests {
         let entry =
             RequestIndexEntry::from_stored("req", "evt", "2026-11-10T00:00:00Z", "fetch", &content);
 
-        assert_eq!(entry.storage, ContentStorage::Object);
-        assert_eq!(entry.storage.as_str(), "object");
+        assert_eq!(entry.storage, "object");
         assert_eq!(entry.size, 5);
         assert_eq!(entry.content_type, None);
     }
