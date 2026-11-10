@@ -101,22 +101,24 @@ impl ContentHash {
     /// Returns the BLAKE3 hash as lowercase hexadecimal.
     #[must_use]
     pub fn blake3_hex(&self) -> String {
-        hex_encode(&self.blake3)
+        const_hex::encode(self.blake3)
     }
 
     /// Returns the SHA-256 hash as lowercase hexadecimal.
     #[must_use]
     pub fn sha256_hex(&self) -> String {
-        hex_encode(&self.sha256)
+        const_hex::encode(self.sha256)
     }
 }
 
 impl fmt::Display for ContentHash {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("blake3:")?;
-        write_hex(formatter, &self.blake3)?;
-        formatter.write_str(" sha256:")?;
-        write_hex(formatter, &self.sha256)
+        write!(
+            formatter,
+            "blake3:{} sha256:{}",
+            const_hex::encode(self.blake3),
+            const_hex::encode(self.sha256)
+        )
     }
 }
 
@@ -197,52 +199,22 @@ pub fn frame_checksum(compressed: &[u8]) -> u64 {
     xxhash_rust::xxh3::xxh3_64(compressed)
 }
 
-const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
-
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for &byte in bytes {
-        output.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
-        output.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
-    }
-    output
-}
-
-fn write_hex(formatter: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
-    for &byte in bytes {
-        let high = char::from(HEX_DIGITS[usize::from(byte >> 4)]);
-        let low = char::from(HEX_DIGITS[usize::from(byte & 0x0f)]);
-        write!(formatter, "{high}{low}")?;
-    }
-    Ok(())
-}
-
-fn parse_hex_32(hex: &str, name: &'static str) -> Result<[u8; 32], HashParseError> {
-    if hex.len() != 64 {
+fn parse_hex_32(value: &str, name: &'static str) -> Result<[u8; 32], HashParseError> {
+    // Check the length first: `const_hex` strips a `0x` prefix, and a prefixed token must
+    // still be rejected like the hand-written parser did.
+    if value.len() != 64 {
         return Err(HashParseError::InvalidLength {
             name,
-            found: hex.len(),
+            found: value.len(),
         });
     }
 
     let mut output = [0_u8; 32];
-    let (pairs, _) = hex.as_bytes().as_chunks::<2>();
-    for (slot, pair) in output.iter_mut().zip(pairs) {
-        let [high, low] = *pair;
-        let high = hex_digit(high).ok_or(HashParseError::InvalidHex { name })?;
-        let low = hex_digit(low).ok_or(HashParseError::InvalidHex { name })?;
-        *slot = (high << 4) | low;
-    }
-    Ok(output)
-}
+    // With the length pinned, decoding can only fail on a non-hexadecimal character.
+    const_hex::decode_to_slice(value, &mut output)
+        .map_err(|_| HashParseError::InvalidHex { name })?;
 
-const fn hex_digit(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
+    Ok(output)
 }
 
 #[cfg(test)]
