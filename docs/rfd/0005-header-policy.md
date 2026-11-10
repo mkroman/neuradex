@@ -3,7 +3,7 @@ rfd: 5
 title: Header policy
 authors:
   - neuradex maintainers
-state: published
+state: committed
 discussion: https://github.com/mkroman/neuradex/pull/70
 labels:
   - audit
@@ -15,8 +15,8 @@ updated: 2026-11-10
 
 # RFD 5: Header policy
 
-> **Status:** the policy is implemented in `crates/neuradex-audit/src/header_policy.rs` (PR #67).
-> The service does not call it yet.
+> **Status:** the policy is implemented in `crates/neuradex-audit/src/header_policy.rs` (PR #67)
+> and wired into the service's request middleware (PR #71).
 
 ## Summary
 

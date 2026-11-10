@@ -126,13 +126,13 @@ spirit of Oxide RFD 1 and RFD 5. See [rfd/README.md](rfd/README.md) for the proc
 
 | RFD | Title | State |
 | --- | --- | --- |
-| [0001](rfd/0001-audit-event-model.md) | Audit event model | published |
+| [0001](rfd/0001-audit-event-model.md) | Audit event model | committed |
 | [0002](rfd/0002-content-addressed-storage.md) | Content-addressed storage | published |
-| [0003](rfd/0003-hashing.md) | Hashing | published |
+| [0003](rfd/0003-hashing.md) | Hashing | committed |
 | [0004](rfd/0004-storage-and-analytics.md) | Storage and analytics | published |
-| [0005](rfd/0005-header-policy.md) | Header policy | published |
-| [0006](rfd/0006-crate-boundaries.md) | Crate boundaries | published |
-| [0007](rfd/0007-local-testing-stack.md) | Local testing stack | published |
+| [0005](rfd/0005-header-policy.md) | Header policy | committed |
+| [0006](rfd/0006-crate-boundaries.md) | Crate boundaries | committed |
+| [0007](rfd/0007-local-testing-stack.md) | Local testing stack | committed |
 | [0008](rfd/0008-capacity-cost-and-retention.md) | Capacity, cost, and retention | discussion |
 | [0009](rfd/0009-access-and-read-audit.md) | Access and read audit | published |
 

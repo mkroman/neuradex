@@ -115,13 +115,13 @@ Do not edit a merged RFD to reverse a decision. Supersede it with a new RFD and 
 
 | RFD | Title | State | Owner area |
 | --- | --- | --- | --- |
-| [0001](0001-audit-event-model.md) | Audit event model | published | audit schema |
+| [0001](0001-audit-event-model.md) | Audit event model | committed | audit schema |
 | [0002](0002-content-addressed-storage.md) | Content-addressed storage | published | content plane |
-| [0003](0003-hashing.md) | Hashing | published | integrity / identity |
+| [0003](0003-hashing.md) | Hashing | committed | integrity / identity |
 | [0004](0004-storage-and-analytics.md) | Storage and analytics | published | storage topology |
-| [0005](0005-header-policy.md) | Header policy | published | privacy / audit |
-| [0006](0006-crate-boundaries.md) | Crate boundaries | published | workspace |
-| [0007](0007-local-testing-stack.md) | Local testing stack | published | developer experience |
+| [0005](0005-header-policy.md) | Header policy | committed | privacy / audit |
+| [0006](0006-crate-boundaries.md) | Crate boundaries | committed | workspace |
+| [0007](0007-local-testing-stack.md) | Local testing stack | committed | developer experience |
 | [0008](0008-capacity-cost-and-retention.md) | Capacity, cost, and retention | discussion | operations / finance |
 | [0009](0009-access-and-read-audit.md) | Access and read audit | published | security |
 

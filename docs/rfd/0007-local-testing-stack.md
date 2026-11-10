@@ -3,7 +3,7 @@ rfd: 7
 title: Local testing stack
 authors:
   - neuradex maintainers
-state: published
+state: committed
 discussion: https://github.com/mkroman/neuradex/pull/70
 labels:
   - local-development
@@ -14,6 +14,9 @@ updated: 2026-11-10
 ---
 
 # RFD 7: Local testing stack
+
+> **Status:** implemented in `compose.yaml` and `hack/` (PR #70): Quickwit, MinIO,
+> ClickHouse, Jaeger, and the optional Vector `ingest` profile are runnable locally.
 
 ## Summary
 
