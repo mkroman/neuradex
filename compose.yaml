@@ -1,0 +1,161 @@
+# Local-only audit/analytics/content stack for neuradex.
+#
+# The neuradex service runs on the host (`cargo run`); this file provides the stores and
+# observability backends it talks to. Every published port is bound to 127.0.0.1.
+#
+#   docker compose up -d
+#   docker compose --profile ingest up -d vector
+#   docker compose down -v
+#
+# Credentials are deliberately local-only. Do not reuse them in staging or production.
+
+name: neuradex
+
+services:
+  quickwit:
+    image: quickwit/quickwit:0.8.2
+    command: ["run", "--config", "/quickwit/config/quickwit.yaml"]
+    environment:
+      QW_DISABLE_TELEMETRY: "true"
+    ports:
+      - "127.0.0.1:7280:7280"
+      - "127.0.0.1:7281:7281"
+    volumes:
+      - ./hack/quickwit/quickwit.yaml:/quickwit/config/quickwit.yaml:ro
+      - quickwit_data:/quickwit/qwdata
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7280/health/livez >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  # Creates the index once. Quickwit index creation is not idempotent, so the script checks
+  # the index list first. It is safe to run on every `up`.
+  quickwit-init:
+    image: quickwit/quickwit:0.8.2
+    depends_on:
+      quickwit:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    environment:
+      QW_CLUSTER_ENDPOINT: http://quickwit:7280
+    command:
+      - |
+        set -eu
+        until quickwit index list >/dev/null 2>&1; do
+          echo "waiting for quickwit"
+          sleep 2
+        done
+        if quickwit index list | grep -qw neuradex-events; then
+          echo "index neuradex-events already exists"
+          exit 0
+        fi
+        quickwit index create --index-config /quickwit/config/neuradex-events.yaml
+    volumes:
+      - ./hack/quickwit/neuradex-events.yaml:/quickwit/config/neuradex-events.yaml:ro
+    restart: "no"
+
+  minio:
+    image: quay.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: neuradex
+      MINIO_ROOT_PASSWORD: neuradex-local-secret
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  # One-shot bucket creation. `--ignore-existing` makes it idempotent. The dedicated mc image
+  # matches the zeta compose stack; if Quay requires a login for it, authenticate or mirror the
+  # image (see docs/reference/compose-services.md).
+  minio-init:
+    image: quay.io/minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    environment:
+      MINIO_ROOT_USER: neuradex
+      MINIO_ROOT_PASSWORD: neuradex-local-secret
+    command:
+      - |
+        set -eu
+        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" >/dev/null 2>&1; do
+          echo "waiting for minio"
+          sleep 1
+        done
+        mc mb --ignore-existing local/neuradex-content
+        mc mb --ignore-existing local/neuradex-quickwit
+    restart: "no"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    environment:
+      CLICKHOUSE_DB: neuradex
+      CLICKHOUSE_USER: neuradex
+      CLICKHOUSE_PASSWORD: neuradex-local-secret
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "127.0.0.1:8123:8123"
+      # Native protocol. 19000 avoids MinIO's 9000 on the host.
+      - "127.0.0.1:19000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./hack/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "clickhouse-client --user \"$${CLICKHOUSE_USER}\" --password \"$${CLICKHOUSE_PASSWORD}\" --query 'SELECT 1' >/dev/null || exit 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/jaeger:2.22.0@sha256:836b967b5abcf1f7758066aa6b348619267a2f1459f72d472840570f9bd88a17
+    command:
+      - --set
+      - receivers.otlp.protocols.http.endpoint=0.0.0.0:4318
+      - --set
+      - receivers.otlp.protocols.grpc.endpoint=0.0.0.0:4317
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:16686:16686"
+    restart: unless-stopped
+
+  # Optional local ingester: tails the event spool and fans out to Quickwit and ClickHouse.
+  # Start with `docker compose --profile ingest up -d vector`.
+  vector:
+    image: timberio/vector:0.49.0-debian
+    profiles:
+      - ingest
+    depends_on:
+      quickwit-init:
+        condition: service_completed_successfully
+      clickhouse:
+        condition: service_healthy
+    volumes:
+      - ./hack/vector/neuradex-events.toml:/etc/vector/vector.toml:ro
+      - ./.local/neuradex:/var/lib/neuradex:ro
+    command: ["--config", "/etc/vector/vector.toml"]
+    restart: unless-stopped
+
+volumes:
+  quickwit_data:
+  minio_data:
+  clickhouse_data:

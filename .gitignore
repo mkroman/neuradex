@@ -1,3 +1,4 @@
 /target
 /support/opencode/node_modules/
 /reports/
+.local/

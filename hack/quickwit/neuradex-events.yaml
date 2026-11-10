@@ -1,0 +1,247 @@
+# Quickwit index for neuradex audit events.
+#
+# Version 0.8 is the index-config format accepted by Quickwit 0.8.2 (the node config stays on
+# the 0.7 format). The mapping is intentionally lenient: a new event field is ignored rather
+# than rejecting the document. Add a mapping and recreate/reindex when the field must be
+# searchable.
+#
+# request_headers and response_headers are JSON strings in the event. They are stored for
+# retrieval but not indexed: header values are not a search surface.
+
+version: 0.8
+
+index_id: neuradex-events
+
+doc_mapping:
+  mode: lenient
+  store_source: true
+  timestamp_field: timestamp
+
+  field_mappings:
+    - name: timestamp
+      type: datetime
+      input_formats: [rfc3339]
+      output_format: rfc3339
+      fast: true
+      fast_precision: milliseconds
+      stored: true
+
+    - name: schema_version
+      type: u64
+      fast: true
+      stored: true
+
+    - name: event
+      type: text
+      tokenizer: raw
+      fast: true
+      stored: true
+
+    - name: event_id
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: request_id
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: trace_id
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: span_id
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: route
+      type: text
+      tokenizer: raw
+      fast: true
+      stored: true
+
+    - name: method
+      type: text
+      tokenizer: raw
+      fast: true
+      stored: true
+
+    - name: status
+      type: u64
+      fast: true
+      stored: true
+
+    - name: duration_ms
+      type: u64
+      fast: true
+      stored: true
+
+    - name: outcome
+      type: text
+      tokenizer: raw
+      fast: true
+      stored: true
+
+    - name: error_type
+      type: text
+      tokenizer: raw
+      fast: true
+      stored: true
+
+    - name: service_version
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: auth_subject
+      type: text
+      tokenizer: raw
+      fast: true
+      stored: true
+
+    - name: auth_method
+      type: text
+      tokenizer: raw
+      fast: true
+      stored: true
+
+    - name: user_id
+      type: text
+      tokenizer: raw
+      fast: true
+      stored: true
+
+    - name: query_text
+      type: text
+      tokenizer: default
+      stored: true
+
+    - name: query_hash
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: result_count
+      type: u64
+      fast: true
+      stored: true
+
+    - name: target_url
+      type: text
+      tokenizer: default
+      stored: true
+
+    - name: upstream_host
+      type: text
+      tokenizer: raw
+      fast: true
+      stored: true
+
+    - name: redirects_followed
+      type: u64
+      stored: true
+
+    - name: content_captured
+      type: bool
+      fast: true
+      stored: true
+
+    - name: content_kind
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: content_hash_blake3
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: content_hash_sha256
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: content_bytes
+      type: u64
+      fast: true
+      stored: true
+
+    - name: content_type
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: content_truncated
+      type: bool
+      stored: true
+
+    - name: content_pack_id
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: content_frame_offset
+      type: u64
+      stored: true
+
+    - name: content_frame_length
+      type: u64
+      stored: true
+
+    - name: content_capture_error
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: request_headers
+      type: json
+      indexed: false
+      stored: true
+
+    - name: response_headers
+      type: json
+      indexed: false
+      stored: true
+
+    - name: request_headers_truncated
+      type: bool
+      stored: true
+
+    - name: response_headers_truncated
+      type: bool
+      stored: true
+
+    - name: read_action
+      type: text
+      tokenizer: raw
+      fast: true
+      stored: true
+
+    - name: read_target
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: read_reason
+      type: text
+      tokenizer: raw
+      stored: true
+
+    - name: read_bytes
+      type: u64
+      stored: true
+
+indexing_settings:
+  commit_timeout_secs: 10
+
+search_settings:
+  default_search_fields: [query_text, target_url, upstream_host]
+
+# Hot search only. The 365-day source of truth is the B2 event archive; ClickHouse serves
+# longer-range aggregates.
+retention:
+  period: 30 days
+  schedule: daily

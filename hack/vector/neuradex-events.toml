@@ -1,0 +1,63 @@
+# Optional local event ingester for the compose `ingest` profile.
+#
+# The neuradex service appends one JSON object per line to the spool. This config tails that
+# file, parses each line, and fans out to Quickwit's ingest API and ClickHouse. The mount is
+# read-only; Vector never writes the spool.
+#
+# Validate with:
+#   docker compose --profile ingest run --rm --no-deps vector \
+#     validate --no-environment /etc/vector/vector.toml
+
+data_dir = "/var/lib/vector"
+
+[sources.neuradex_events]
+type = "file"
+include = ["/var/lib/neuradex/events.jsonl"]
+read_from = "beginning"
+ignore_older_secs = 604800
+max_line_bytes = 1048576
+
+[transforms.parse_events]
+type = "remap"
+inputs = ["neuradex_events"]
+source = '''
+  . = parse_json!(string!(.message))
+'''
+
+[transforms.encode_clickhouse]
+type = "remap"
+inputs = ["parse_events"]
+# Quickwit stores headers as JSON objects (its `json` field type requires an object).
+# ClickHouse stores them as String columns, so encode them to compact JSON text here.
+source = '''
+  .request_headers = encode_json(.request_headers)
+  .response_headers = encode_json(.response_headers)
+'''
+
+[sinks.quickwit]
+type = "http"
+inputs = ["parse_events"]
+uri = "http://quickwit:7280/api/v1/neuradex-events/ingest?commit=auto"
+method = "post"
+encoding.codec = "json"
+framing.method = "newline_delimited"
+request.headers.Content-Type = "application/x-ndjson"
+batch.max_events = 1000
+batch.timeout_secs = 5
+# Quickwit's ingest endpoint is a POST; the generic healthcheck would GET it.
+healthcheck.enabled = false
+
+[sinks.clickhouse]
+type = "clickhouse"
+inputs = ["encode_clickhouse"]
+endpoint = "http://clickhouse:8123"
+database = "neuradex"
+table = "events"
+format = "json_each_row"
+skip_unknown_fields = true
+date_time_best_effort = true
+auth.strategy = "basic"
+auth.user = "neuradex"
+auth.password = "neuradex-local-secret"
+batch.max_events = 1000
+batch.timeout_secs = 5
