@@ -11,18 +11,6 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Update Docker build tool tags and checksums in hack/docker-tools.txt (Docker build tools only)",
-      "managerFilePatterns": [
-        "/^hack\\/docker-tools\\.txt$/"
-      ],
-      "matchStrings": [
-        "\\[(?<tool>[a-z0-9-]+)\\]\\nrepo=(?<depName>[^\\n]+)\\nversion=(?<currentValue>[^\\n]+)\\nsha256=(?<currentDigest>[a-f0-9]{64})"
-      ],
-      "datasourceTemplate": "github-release-attachments",
-      "versioningTemplate": "semver"
-    },
-    {
-      "customType": "regex",
       "description": "Update the curl image used by the kind deployment smoke test",
       "managerFilePatterns": [
         "/^\\.github\\/workflows\\/deployment-test\\.yaml$/"
@@ -52,11 +40,11 @@
       "minimumReleaseAge": "7 days"
     },
     {
-      "description": "Group Docker build tool updates in hack/docker-tools.txt",
-      "matchDatasources": [
-        "github-release-attachments"
+      "description": "Group Docker build tool updates in mise.docker.toml",
+      "matchFileNames": [
+        "mise.docker.toml"
       ],
-      "groupName": "pinned CI tools",
+      "groupName": "docker build tools",
       "minimumReleaseAge": "7 days"
     }
   ]

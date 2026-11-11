@@ -97,10 +97,10 @@ available when debugging a failure.
 Tool versions and mise backends live in `mise.toml`; per-platform URLs and checksums live in
 `mise.lock`. Install them with `mise install --locked`. CI puts the pinned tools on `PATH` with
 `jdx/mise-action`; each job's `install_args` names only the tools that job runs, and the steps
-invoke those binaries directly. Docker build tools are
-the exception: they stay in `hack/docker-tools.txt` and are installed by `hack/install-tools.sh`
-during the image build. Renovate manages `mise.toml`/`mise.lock` and `hack/docker-tools.txt`,
-with a 7-day minimum release age.
+invoke those binaries directly. Docker build tools are the exception: they live in
+`mise.docker.toml`/`mise.docker.lock`. The image copies the digest-pinned official mise binary
+and runs `MISE_ENV=docker mise install --locked`, so the tools' checksums are verified before
+they run. Renovate manages both mise config/lock pairs with a 7-day minimum release age.
 
 `mise.toml` keeps the short names in `[tools]` and maps them to the GitHub backends in
 `[tool_alias]`, so workflow `install_args` and local commands stay short (`shellcheck`,
@@ -151,8 +151,9 @@ module layout.
   Quickwit/ClickHouse/Vector validations from [testing.md](../development/testing.md).
 - `hack/*.sh` is shellchecked. If you add a shell script outside `hack/`, it is not checked;
   put it in `hack/` or extend the workflow.
-- The `Dockerfile` copies only `Cargo.toml`, `Cargo.lock`, and `crates/`; a new build-time file
-  must be added there. Docs and compose do not affect the image.
+- The `Dockerfile` copies `Cargo.toml`, `Cargo.lock`, `crates/`, `mise.docker.toml`, and
+  `mise.docker.lock`; a new build-time file must be added there. Docs and compose do not affect
+  the image.
 - A change to `chart/` triggers Helm lint/template. A change to `hack/smoke-test.sh` should be
   reflected in the Kind smoke run.
 
