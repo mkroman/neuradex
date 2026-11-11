@@ -96,10 +96,17 @@ available when debugging a failure.
 
 Tool versions and mise backends live in `mise.toml`; per-platform URLs and checksums live in
 `mise.lock`. Install them with `mise install --locked`. CI puts the pinned tools on `PATH` with
-`jdx/mise-action` and uses `mise exec` where a job needs a single tool. Docker build tools are
+`jdx/mise-action`; each job's `install_args` names only the tools that job runs, and the steps
+invoke those binaries directly. Docker build tools are
 the exception: they stay in `hack/docker-tools.txt` and are installed by `hack/install-tools.sh`
 during the image build. Renovate manages `mise.toml`/`mise.lock` and `hack/docker-tools.txt`,
 with a 7-day minimum release age.
+
+`mise.toml` keeps the short names in `[tools]` and maps them to the GitHub backends in
+`[tool_alias]`, so workflow `install_args` and local commands stay short (`shellcheck`,
+`cargo-deny`, `kind`, `helm`). Renovate's mise manager resolves those short names through its
+own registry data rather than reading `[tool_alias]`; `mise lock` applies the alias when it
+refreshes the lockfile.
 
 `mise.toml` sets `use_versions_host = false`, so `mise lock` takes GitHub-backed checksums from
 the GitHub release metadata or checksum assets instead of mise's metadata mirror; every

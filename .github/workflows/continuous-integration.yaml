@@ -70,9 +70,9 @@ jobs:
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: "2026.10.19"
-          install_args: "github:koalaman/shellcheck"
+          install_args: "shellcheck"
       - name: Lint scripts
-        run: mise exec -- shellcheck hack/*.sh
+        run: shellcheck hack/*.sh
 
   # Stable check for branch protection: job names change with the matrix and the
   # reusable-workflow split, this one does not.

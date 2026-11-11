@@ -30,7 +30,7 @@ jobs:
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: "2026.10.19"
-          install_args: "github:helm/helm"
+          install_args: "helm"
       - name: Lint chart
         run: helm lint chart/neuradex --set kagiSessionToken=ci-dummy
       - name: Render chart variants
@@ -107,7 +107,7 @@ jobs:
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
           version: "2026.10.19"
-          install_args: "github:kubernetes-sigs/kind github:helm/helm"
+          install_args: "kind helm"
           # This job publishes an image; do not restore a mutable tool cache.
           cache: false
       # Docs/meta-only PRs skip the expensive image + cluster path. The job

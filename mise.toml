@@ -9,17 +9,27 @@ minimum_release_age = "7d"
 # Versions are pinned exactly, so the version-list cache buys nothing here.
 use_versions_host = false
 
+# Keep the short names in [tools] and in the workflow install_args. Without
+# these aliases, mise's registry selects the aqua backend for these names.
+# Renovate resolves the short names through its own registry data; `mise lock`
+# applies these aliases when it refreshes the lockfile.
+[tool_alias]
+cargo-deny = "github:EmbarkStudios/cargo-deny"
+shellcheck = "github:koalaman/shellcheck"
+kind = "github:kubernetes-sigs/kind"
+helm = "github:helm/helm"
+
 [tools]
-"github:EmbarkStudios/cargo-deny" = "0.20.2"
-"github:koalaman/shellcheck" = "0.11.0"
-"github:kubernetes-sigs/kind" = "0.33.0"
+cargo-deny = "0.20.2"
+shellcheck = "0.11.0"
+kind = "0.33.0"
 
 # Helm publishes only signature assets on GitHub, not installable archives.
-# GitHub remains the version source for Renovate, but the archive comes from
-# the official get.helm.sh mirror and is verified against mise.lock.
-[tools."github:helm/helm"]
+# The alias keeps GitHub as the version source; the archive comes from the
+# official get.helm.sh mirror and is verified against mise.lock.
+[tools.helm]
 version = "4.3.1"
-[tools."github:helm/helm".platforms]
+[tools.helm.platforms]
 linux-x64 = { url = "https://get.helm.sh/helm-v{{ version }}-linux-amd64.tar.gz" }
 macos-arm64 = { url = "https://get.helm.sh/helm-v{{ version }}-darwin-arm64.tar.gz" }
 
