@@ -108,11 +108,17 @@ they run. Renovate manages both mise config/lock pairs with a 7-day minimum rele
 own registry data rather than reading `[tool_alias]`; `mise lock` applies the alias when it
 refreshes the lockfile.
 
-`mise.toml` sets `use_versions_host = false`, so `mise lock` takes GitHub-backed checksums from
-the GitHub release metadata or checksum assets instead of mise's metadata mirror; every
-download is then verified against `mise.lock`. Helm is the one non-GitHub artifact: GitHub is its
-version source, but the archive comes from the official `get.helm.sh` mirror, whose published
-`.sha256sum` is recorded in `mise.lock`.
+`mise.toml` sets `use_versions_host = false`, so a manual `mise lock` takes GitHub-backed
+checksums from the GitHub release metadata or checksum assets instead of mise's metadata mirror;
+every download is then verified against `mise.lock`. Helm is the one non-GitHub artifact: GitHub
+is its version source, but the archive comes from the official `get.helm.sh` mirror, whose
+published `.sha256sum` is recorded in `mise.lock`.
+
+Renovate's safe-mode `mise lock` refresh can mark an updated entry with
+`checksum_source = "mise-versions"`; the checksum value still matches GitHub and installs verify
+it. Enforcing GitHub-only provenance requires allowing `MISE_USE_VERSIONS_HOST=false` in a
+self-hosted Renovate deployment (`allowedEnv`), or allowing `mise` unsafe execution so the
+project setting applies.
 
 ## Gates and policy
 
