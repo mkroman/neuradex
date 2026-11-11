@@ -29,7 +29,7 @@ jobs:
       - name: Set up mise
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: "2026.10.19"
+          version: "2026.11.6"
           install_args: "helm"
       - name: Lint chart
         run: helm lint chart/neuradex --set kagiSessionToken=ci-dummy
@@ -106,7 +106,7 @@ jobs:
       - name: Set up mise
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: "2026.10.19"
+          version: "2026.11.6"
           install_args: "kind helm"
           # This job publishes an image; do not restore a mutable tool cache.
           cache: false
