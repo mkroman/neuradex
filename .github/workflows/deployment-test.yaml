@@ -26,6 +26,11 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Set up mise
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: "2026.10.19"
+          install_args: "helm"
       - name: Lint chart
         run: helm lint chart/neuradex --set kagiSessionToken=ci-dummy
       - name: Render chart variants
@@ -98,6 +103,13 @@ jobs:
           # The scope check below diffs against the PR base or previous commit.
           fetch-depth: 0
           persist-credentials: false
+      - name: Set up mise
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: "2026.10.19"
+          install_args: "kind helm"
+          # This job publishes an image; do not restore a mutable tool cache.
+          cache: false
       # Docs/meta-only PRs skip the expensive image + cluster path. The job
       # still reports success, so the required Kind Deployment check passes.
       - name: Determine build scope
@@ -175,14 +187,6 @@ jobs:
         id: kind
         if: github.event_name == 'push' || steps.scope.outputs.build != 'false'
         run: |
-          expected="$(awk -F= '$0=="[kind]"{found=1;next} found && /^version=/{print $2; exit}' hack/tools.txt)"
-          # The runner image already ships a recent kind; only download when the
-          # version does not match the pinned one.
-          if [[ "$(kind version 2>/dev/null | awk '{print $2}')" != "${expected}" ]]; then
-            ./hack/install-tools.sh "$HOME/.local/bin" kind
-            export PATH="$HOME/.local/bin:$PATH"
-            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          fi
           # renovate: datasource=docker depName=kindest/node
           kind create cluster --name neuradex \
             --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5 \

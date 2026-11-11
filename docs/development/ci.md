@@ -58,7 +58,7 @@ test matrix job, rustdoc, or shellcheck fails.
 | `continuous-integration.yaml` | `CI Success` | PR + main | Aggregates the above | **yes** |
 | `deployment-test.yaml` | `Chart Lint` | PR + main | `helm lint`/`helm template` variants | yes (own check) |
 | `deployment-test.yaml` | `Kind Deployment` | PR + main | Build image, kind cluster, chart install, smoke script | yes (own check) |
-| `security.yaml` | `Cargo Deny` | PR + main + weekly | `cargo-deny check advisories` | yes (own check) |
+| `security.yaml` | `Cargo Deny` | PR + main + weekly | `cargo deny check advisories` | yes (own check) |
 | `doc.yaml` | `Documentation` | reusable | Builds rustdoc; uploads only on main | via `ci-success` |
 | `zizmor.yaml` | `Zizmor Audit` | PR + main | Workflow security audit (SARIF) | not blocking by default |
 | `container-image.yaml` | `Publish Image` | push to main | GHCR image, SBOM, provenance | not a PR gate |
@@ -76,22 +76,49 @@ The Kind job has a scope check:
 
 ## Local equivalents
 
+Install mise first (see [local-development.md](local-development.md#prerequisites)), then run
+`mise install --locked` once and use the tasks below. `mise run check` runs all seven gated
+tasks. Each task wraps the raw command in [testing.md](testing.md#before-a-pr), which is still
+available when debugging a failure.
+
 | CI job | Local command |
 | --- | --- |
-| Formatting | `cargo fmt --check` |
-| Clippy | `cargo clippy --all-targets --workspace -- -D warnings` |
-| Test (default) | `cargo test --workspace` |
-| Test (lean) | `cargo test -p neuradex --no-default-features` |
-| Rustdoc | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features` |
-| Shellcheck | `shellcheck hack/*.sh` |
-| Cargo Deny | `cargo-deny --log-level warn --manifest-path Cargo.toml --all-features check advisories` |
-| Chart lint | `helm lint chart/neuradex --set kagiSessionToken=ci-dummy` |
+| Formatting | `mise run fmt` |
+| Clippy | `mise run clippy` |
+| Test (default) | `mise run test` |
+| Test (lean) | `mise run test-lean` |
+| Rustdoc | `mise run doc` |
+| Shellcheck | `mise run shellcheck` |
+| Cargo Deny | `mise run deny` |
+| Chart lint | `mise exec -- helm lint chart/neuradex --set kagiSessionToken=ci-dummy` |
 | Compose config | `docker compose config --quiet` |
 | Workflow audit | `zizmor .github/workflows` (if installed) |
 
-Tool versions and checksums live in `hack/tools.txt`; Docker build tools in
-`hack/docker-tools.txt`. Install with `hack/install-tools.sh`. Keep `repo`/`version`/`sha256`
-contiguous in `tools.txt`; Renovate's regex depends on it.
+Tool versions and mise backends live in `mise.toml`; per-platform URLs and checksums live in
+`mise.lock`. Install them with `mise install --locked`. CI puts the pinned tools on `PATH` with
+`jdx/mise-action`; each job's `install_args` names only the tools that job runs, and the steps
+invoke those binaries directly. Docker build tools are the exception: they live in
+`mise.docker.toml`/`mise.docker.lock`. The image copies the digest-pinned official mise binary
+and runs `MISE_ENV=docker mise install --locked`, so the tools' checksums are verified before
+they run. Renovate manages both mise config/lock pairs with a 7-day minimum release age.
+
+`mise.toml` keeps the short names in `[tools]` and maps them to the GitHub backends in
+`[tool_alias]`, so workflow `install_args` and local commands stay short (`shellcheck`,
+`cargo-deny`, `kind`, `helm`). Renovate's mise manager resolves those short names through its
+own registry data rather than reading `[tool_alias]`; `mise lock` applies the alias when it
+refreshes the lockfile.
+
+`mise.toml` sets `use_versions_host = false`, so a manual `mise lock` takes GitHub-backed
+checksums from the GitHub release metadata or checksum assets instead of mise's metadata mirror;
+every download is then verified against `mise.lock`. Helm is the one non-GitHub artifact: GitHub
+is its version source, but the archive comes from the official `get.helm.sh` mirror, whose
+published `.sha256sum` is recorded in `mise.lock`.
+
+Renovate's safe-mode `mise lock` refresh can mark an updated entry with
+`checksum_source = "mise-versions"`; the checksum value still matches GitHub and installs verify
+it. Enforcing GitHub-only provenance requires allowing `MISE_USE_VERSIONS_HOST=false` in a
+self-hosted Renovate deployment (`allowedEnv`), or allowing `mise` unsafe execution so the
+project setting applies.
 
 ## Gates and policy
 
@@ -102,7 +129,7 @@ contiguous in `tools.txt`; Renovate's regex depends on it.
 | Formatting | `cargo fmt --check` must pass |
 | Tests | Both feature matrix jobs must pass |
 | Shell scripts | `shellcheck hack/*.sh` must pass |
-| Advisories | `cargo-deny check advisories` must pass; licenses/bans/sources are not gating |
+| Advisories | `cargo deny check advisories` must pass; licenses/bans/sources are not gating |
 | Workflows | Third-party actions must be SHA-pinned; zizmor audits |
 | Branch protection | `ci-success` is the required check |
 
@@ -130,8 +157,9 @@ module layout.
   Quickwit/ClickHouse/Vector validations from [testing.md](../development/testing.md).
 - `hack/*.sh` is shellchecked. If you add a shell script outside `hack/`, it is not checked;
   put it in `hack/` or extend the workflow.
-- The `Dockerfile` copies only `Cargo.toml`, `Cargo.lock`, and `crates/`; a new build-time file
-  must be added there. Docs and compose do not affect the image.
+- The `Dockerfile` copies `Cargo.toml`, `Cargo.lock`, `crates/`, `mise.docker.toml`, and
+  `mise.docker.lock`; a new build-time file must be added there. Docs and compose do not affect
+  the image.
 - A change to `chart/` triggers Helm lint/template. A change to `hack/smoke-test.sh` should be
   reflected in the Kind smoke run.
 

@@ -8,6 +8,7 @@ synthetic pages and events, never real user data.
 
 | Tool | Why | Check |
 | --- | --- | --- |
+| [mise](https://mise.jdx.dev/) | Pinned CI/operator tools and `mise run check` | `mise --version` |
 | Rust (stable) | Build/run the service | `cargo --version` |
 | Docker + Compose v2 | Run Quickwit, MinIO, ClickHouse, Jaeger | `docker compose version` |
 | `cmake`, `clang`, `libclang-dev` | `wreq` compiles BoringSSL | see [AGENTS.md](../../AGENTS.md) |

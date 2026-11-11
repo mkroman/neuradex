@@ -32,15 +32,9 @@ axum 0.8 HTTP service exposing LLM-agent tools as JSON: `GET /v1/{fetch,peek}`, 
 
 ## Verify
 
-Build needs `cmake`, `clang` and `libclang-dev` (wreq compiles BoringSSL). Full builds are slow, so iterate with targeted tests (`cargo test -p neuradex <name>`, `-p kagi`, `-p neuradex-docs`). Run fmt and clippy only once, at the end, in this order:
+Build needs `cmake`, `clang` and `libclang-dev` (wreq compiles BoringSSL). Full builds are slow, so iterate with targeted tests (`cargo test -p neuradex <name>`, `-p kagi`, `-p neuradex-docs`). Install the pinned tools with `mise install --locked`; run the gates once at the end with `mise run check` (fmt, clippy, workspace tests, lean tests, rustdoc, cargo deny advisories, shellcheck, in that order). The lean leg keeps `-p neuradex`: combining `--no-default-features` with `--workspace` strips the other members' defaults. Rustdoc uses `--all-features`, so it pulls in kagi's native-tls/OpenSSL; cargo deny only gates advisories.
 
-1. `cargo fmt`
-2. `cargo clippy --all-targets --workspace -- -D warnings` (warnings are must-fix)
-3. `cargo test --workspace`
-4. Feature matrix (CI runs both; use `cargo test`, not `check`, so router tests run). Keep `-p neuradex`: combining `--no-default-features` with `--workspace` also strips the other members' defaults.
-   - `cargo test -p neuradex --no-default-features` (OpenAPI without the docs page)
-
-Also in CI: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features` (all-features pulls in kagi's native-tls/OpenSSL), `shellcheck hack/*.sh`, `cargo-deny ... check advisories` (only advisories gate). Tests are offline: cheap unit tests are inline `#[cfg(test)]` modules; tests that need `test-support` live in `tests/` and drive local `httpmock` servers. Kagi fixtures live in `crates/test-support/fixtures/kagi`; integration tests read them through `test_support::kagi::fixture`/`read_fixture`, and parser unit tests read the same files directly to avoid the dev-dependency cycle.
+Tests are offline: cheap unit tests are inline `#[cfg(test)]` modules; tests that need `test-support` live in `tests/` and drive local `httpmock` servers. Kagi fixtures live in `crates/test-support/fixtures/kagi`; integration tests read them through `test_support::kagi::fixture`/`read_fixture`, and parser unit tests read the same files directly to avoid the dev-dependency cycle.
 
 ## Running locally
 
@@ -70,9 +64,9 @@ Also in CI: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-fe
 
 - Helm chart `chart/neuradex`: `helm lint`/`template` fail unless `--set kagiSessionToken=ci-dummy` or `--set existingSecret=<name>` is passed. Audit/content are configured through `audit.*`/`content.*`; see `docs/operations/deployment.md`. Retention is external: `cargo run -p neuradex-admin -- content-lifecycle` generates/checks/applies the B2 lifecycle policy.
 - `deployment-test.yaml` builds the image, installs the chart into kind, and pipes `hack/smoke-test.sh` into a curl pod. Update the script when you change `/healthz`, `/v1/fetch`, `/openapi.json` or `/docs`.
-- The image binds `LISTEN_ADDR=0.0.0.0:8080`. Runtime is distroless (CA bundle required by kagi's rustls-platform-verifier). The Docker build copies only `Cargo.toml`, `Cargo.lock` and `crates/` (and `.dockerignore` excludes `support/`, `chart/` etc.), so anything else the build needs must be added to the `Dockerfile`.
+- The image binds `LISTEN_ADDR=0.0.0.0:8080`. Runtime is distroless (CA bundle required by kagi's rustls-platform-verifier). The Docker build copies `Cargo.toml`, `Cargo.lock`, `crates/`, `mise.docker.toml`, and `mise.docker.lock` (and `.dockerignore` excludes `support/`, `chart/` etc.), so anything else the build needs must be added to the `Dockerfile`.
 - The chart's NetworkPolicy is on by default and only allows egress to DNS (53) and ports 80/443: fetches of URLs on other ports fail in-cluster but work locally. Other egress (e.g. an OTLP collector on 4318) needs an `extraNetworkPolicyEgress` rule.
-- CI tool versions and checksums: `hack/tools.txt`; Docker build tools: `hack/docker-tools.txt`. Both are Renovate-managed; install with `hack/install-tools.sh`. In `tools.txt`, keep `repo`/`version`/`sha256` contiguous, because Renovate's regex depends on it.
+- CI and operator tools: versions and mise backends in `mise.toml`, checksums in `mise.lock`; install with `mise install --locked`. The mise tasks (`fmt`, `clippy`, `test`, `test-lean`, `doc`, `deny`, `shellcheck`; `check` runs all seven) are the local command surface (`mise run <task>`), and CI puts the pinned tools on `PATH` with `jdx/mise-action`. Short names in `[tools]` map to GitHub backends via `[tool_alias]`, so workflow `install_args` stay short; Renovate updates the short-name versions, and `mise lock` applies the alias when it refreshes the lockfile. `use_versions_host = false` keeps manual `mise lock` checksums sourced from GitHub release metadata/checksum assets (Renovate's safe-mode refresh may mark updated entries `mise-versions`, but installs still verify the checksum); Helm's archive comes from `get.helm.sh` and its published `.sha256sum`. Docker build tools live in `mise.docker.toml`/`mise.docker.lock`; the image copies the digest-pinned official mise binary and runs `MISE_ENV=docker mise install --locked`, so their checksums are verified before they run. Renovate manages both mise config/lock pairs with a 7-day minimum release age.
 - `ci-success` is the branch-protection check. `zizmor` audits workflows (third-party actions must be SHA-pinned).
 
 ## Git workflow

@@ -2,6 +2,10 @@
 
 ARG RUST_VERSION=1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c
 
+# Official mise image. The release workflow verifies the mise binary against
+# signed checksums before publishing; pin the image by digest.
+FROM ghcr.io/jdx/mise:2026.10.19@sha256:6bd2515bf27389f537921fc8c3e5a6579f15cf889a63a8432dc542670174e50a AS mise
+
 # Base layer with build tools. BoringSSL (wreq) needs cmake, and bindgen needs libclang.
 FROM rust:${RUST_VERSION} AS chef
 WORKDIR /usr/src/app
@@ -13,17 +17,24 @@ ENV CARGO_TERM_COLOR=always \
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         binutils \
+        ca-certificates \
         cmake \
         libclang-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# Install cargo-chef and cargo-auditable from their checksummed GitHub releases
-# (prebuilt binaries — much faster in CI than compiling them). Versions and
-# checksums live in hack/docker-tools.txt; the other CI tools live in
-# hack/tools.txt.
-COPY hack/install-tools.sh hack/docker-tools.txt /usr/local/lib/ci/
-RUN TOOLS_FILE=/usr/local/lib/ci/docker-tools.txt \
-    bash /usr/local/lib/ci/install-tools.sh /usr/local/bin cargo-chef cargo-auditable
+# Install cargo-chef and cargo-auditable from their checksummed GitHub
+# releases (prebuilt binaries — much faster in CI than compiling them).
+# mise verifies both against mise.docker.lock before exposing their shims.
+COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise
+ENV MISE_DATA_DIR=/mise \
+    MISE_CONFIG_DIR=/mise \
+    MISE_CACHE_DIR=/mise/cache \
+    MISE_ENV=docker \
+    PATH="/mise/shims:${PATH}"
+COPY mise.docker.toml mise.docker.lock ./
+RUN --mount=type=cache,target=/mise/cache \
+    mise trust && \
+    mise install --locked
 
 # Analyze project dependencies
 FROM chef AS planner

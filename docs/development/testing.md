@@ -21,20 +21,41 @@ should cover.
 | Compose smoke | `docker compose up -d` + curl/jq | Real Quickwit/ClickHouse/MinIO mappings | manual | implemented |
 | Failure injection | stop a sink; corrupt a frame | Degradation and verification | manual | planned |
 
-The first five commands are the CI gates. The per-crate commands are faster iteration loops;
+The first five rows are the Rust CI gates. They are also mise tasks (`mise run fmt`,
+`mise run clippy`, `mise run test`, `mise run test-lean`, `mise run doc`); `mise run check`
+runs those plus `deny` and `shellcheck`. The per-crate commands are faster iteration loops;
 their tests also run under `cargo test --workspace`.
 
 ## Before a PR
 
-From the repository root, in this order:
+Install mise first (see [local-development.md](local-development.md#prerequisites)). From the
+repository root, in this order:
 
 ```sh
-cargo fmt
-cargo clippy --all-targets --workspace -- -D warnings
-cargo test --workspace
-cargo test -p neuradex --no-default-features
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+mise install --locked
+mise run fmt
+mise run clippy
+mise run test
+mise run test-lean
+mise run doc
+mise run deny
+mise run shellcheck
 ```
+
+`mise run check` runs the same seven tasks. Each task wraps the raw command CI uses (the Rust
+tasks add `--locked`); when a task fails, run the equivalent directly for clearer output:
+
+```sh
+cargo fmt --all -- --check       # `cargo fmt` rewrites the files
+cargo clippy --all-targets --workspace --locked -- -D warnings
+cargo test --workspace --locked
+cargo test -p neuradex --no-default-features --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --locked
+cargo deny --log-level warn --manifest-path Cargo.toml --all-features check advisories
+shellcheck hack/*.sh
+```
+
+The `doc` task sets `RUSTDOCFLAGS="-D warnings"`, matching the rustdoc CI gate.
 
 For docs/compose-only changes, the Rust commands are still run by CI; run the compose validation
 locally:
