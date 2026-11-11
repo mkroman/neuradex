@@ -6,7 +6,7 @@
     ":disableRateLimiting"
   ],
   "constraints": {
-    "mise": "2026.10.19"
+    "mise": "v2026.11.6"
   },
   "customManagers": [
     {
