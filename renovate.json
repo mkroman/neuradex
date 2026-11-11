@@ -40,6 +40,15 @@
       "minimumReleaseAge": "7 days"
     },
     {
+      "description": "Group the mise CLI version across workflows, the Dockerfile, and tool constraints",
+      "matchPackageNames": [
+        "jdx/mise",
+        "ghcr.io/jdx/mise",
+        "mise"
+      ],
+      "groupName": "mise CLI"
+    },
+    {
       "description": "Group Docker build tool updates in mise.docker.toml",
       "matchFileNames": [
         "mise.docker.toml"
