@@ -32,7 +32,7 @@ axum 0.8 HTTP service exposing LLM-agent tools as JSON: `GET /v1/{fetch,peek}`, 
 
 ## Verify
 
-Build needs `cmake`, `clang` and `libclang-dev` (wreq compiles BoringSSL). Full builds are slow, so iterate with targeted tests (`cargo test -p neuradex <name>`, `-p kagi`, `-p neuradex-docs`). Install the pinned tools with `mise install --locked`; run the gates once at the end with `mise run check` (fmt, clippy, workspace tests, lean tests, rustdoc, cargo-deny advisories, shellcheck, in that order). The lean leg keeps `-p neuradex`: combining `--no-default-features` with `--workspace` strips the other members' defaults. Rustdoc uses `--all-features`, so it pulls in kagi's native-tls/OpenSSL; cargo-deny only gates advisories.
+Build needs `cmake`, `clang` and `libclang-dev` (wreq compiles BoringSSL). Full builds are slow, so iterate with targeted tests (`cargo test -p neuradex <name>`, `-p kagi`, `-p neuradex-docs`). Install the pinned tools with `mise install --locked`; run the gates once at the end with `mise run check` (fmt, clippy, workspace tests, lean tests, rustdoc, cargo deny advisories, shellcheck, in that order). The lean leg keeps `-p neuradex`: combining `--no-default-features` with `--workspace` strips the other members' defaults. Rustdoc uses `--all-features`, so it pulls in kagi's native-tls/OpenSSL; cargo deny only gates advisories.
 
 Tests are offline: cheap unit tests are inline `#[cfg(test)]` modules; tests that need `test-support` live in `tests/` and drive local `httpmock` servers. Kagi fixtures live in `crates/test-support/fixtures/kagi`; integration tests read them through `test_support::kagi::fixture`/`read_fixture`, and parser unit tests read the same files directly to avoid the dev-dependency cycle.
 

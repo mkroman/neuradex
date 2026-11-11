@@ -50,7 +50,7 @@ run = "cargo doc --workspace --no-deps --all-features --locked"
 env = { RUSTDOCFLAGS = "-D warnings" }
 
 [tasks.deny]
-run = "cargo-deny --log-level warn --manifest-path Cargo.toml --all-features check advisories"
+run = "cargo deny --log-level warn --manifest-path Cargo.toml --all-features check advisories"
 
 [tasks.shellcheck]
 run = "shellcheck hack/*.sh"

@@ -50,11 +50,11 @@ jobs:
           version: "2026.10.19"
           install_args: "cargo-deny"
       - name: Install Rust toolchain
-        # cargo-deny shells out to `cargo metadata`, so cargo must be on PATH.
+        # cargo deny shells out to `cargo metadata`, so cargo must be on PATH.
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: stable
       - name: Check advisories
         # Mirrors the replaced cargo-deny-action invocation, including its
         # input defaults (--log-level warn, --manifest-path, --all-features).
-        run: cargo-deny --log-level warn --manifest-path Cargo.toml --all-features check advisories
+        run: cargo deny --log-level warn --manifest-path Cargo.toml --all-features check advisories

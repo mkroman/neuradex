@@ -58,7 +58,7 @@ test matrix job, rustdoc, or shellcheck fails.
 | `continuous-integration.yaml` | `CI Success` | PR + main | Aggregates the above | **yes** |
 | `deployment-test.yaml` | `Chart Lint` | PR + main | `helm lint`/`helm template` variants | yes (own check) |
 | `deployment-test.yaml` | `Kind Deployment` | PR + main | Build image, kind cluster, chart install, smoke script | yes (own check) |
-| `security.yaml` | `Cargo Deny` | PR + main + weekly | `cargo-deny check advisories` | yes (own check) |
+| `security.yaml` | `Cargo Deny` | PR + main + weekly | `cargo deny check advisories` | yes (own check) |
 | `doc.yaml` | `Documentation` | reusable | Builds rustdoc; uploads only on main | via `ci-success` |
 | `zizmor.yaml` | `Zizmor Audit` | PR + main | Workflow security audit (SARIF) | not blocking by default |
 | `container-image.yaml` | `Publish Image` | push to main | GHCR image, SBOM, provenance | not a PR gate |
@@ -123,7 +123,7 @@ version source, but the archive comes from the official `get.helm.sh` mirror, wh
 | Formatting | `cargo fmt --check` must pass |
 | Tests | Both feature matrix jobs must pass |
 | Shell scripts | `shellcheck hack/*.sh` must pass |
-| Advisories | `cargo-deny check advisories` must pass; licenses/bans/sources are not gating |
+| Advisories | `cargo deny check advisories` must pass; licenses/bans/sources are not gating |
 | Workflows | Third-party actions must be SHA-pinned; zizmor audits |
 | Branch protection | `ci-success` is the required check |
 

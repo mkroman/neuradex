@@ -51,7 +51,7 @@ cargo clippy --all-targets --workspace --locked -- -D warnings
 cargo test --workspace --locked
 cargo test -p neuradex --no-default-features --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --locked
-cargo-deny --log-level warn --manifest-path Cargo.toml --all-features check advisories
+cargo deny --log-level warn --manifest-path Cargo.toml --all-features check advisories
 shellcheck hack/*.sh
 ```
 
