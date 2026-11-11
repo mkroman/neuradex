@@ -46,6 +46,17 @@
       ],
       "groupName": "docker build tools",
       "minimumReleaseAge": "7 days"
+    },
+    {
+      "description": "Link AWS SDK Rust crates to the corresponding aws-sdk-rust release or changelog",
+      "matchDatasources": [
+        "crate"
+      ],
+      "matchPackageNames": [
+        "/^aws-(sdk-|config$|credential-types$|runtime$|runtime-api$|sigv4$|types$|smithy-)/"
+      ],
+      "changelogUrl": "{{#if (and (containsString depName \"aws-sdk-\") releaseTimestamp)}}https://github.com/awslabs/aws-sdk-rust/releases/tag/release-{{lookup (split releaseTimestamp \"T\") 0}}{{else}}https://github.com/awslabs/aws-sdk-rust/blob/main/CHANGELOG.md{{/if}}",
+      "fetchChangeLogs": "off"
     }
   ]
 }
