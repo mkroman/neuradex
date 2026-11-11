@@ -4,7 +4,7 @@ ARG RUST_VERSION=1.99-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5
 
 # Official mise image. The release workflow verifies the mise binary against
 # signed checksums before publishing; pin the image by digest.
-FROM ghcr.io/jdx/mise:2026.10.19@sha256:6bd2515bf27389f537921fc8c3e5a6579f15cf889a63a8432dc542670174e50a AS mise
+FROM ghcr.io/jdx/mise:2026.11.6@sha256:d4de1845114f6d73e90e15f7642885f74f3ca93074491038a2b9c43e4b897f21 AS mise
 
 # Base layer with build tools. BoringSSL (wreq) needs cmake, and bindgen needs libclang.
 FROM rust:${RUST_VERSION} AS chef
