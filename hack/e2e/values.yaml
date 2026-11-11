@@ -1,0 +1,27 @@
+# Values for the in-cluster e2e suite (hack/e2e.sh).
+#
+# The image repository and tag are set by the script because they depend on
+# where the freshly built image was loaded. Everything below is deterministic
+# so the fixtures and the MinIO content store behave the same in every run.
+#
+# Audit events go to stdout (the chart default), and the content pack policy
+# stays at its defaults: the service flushes open packs every five seconds.
+kagiSessionToken: ci-dummy
+privacyPass: false
+logFormat: json
+
+content:
+  store: s3
+  s3:
+    endpoint: http://minio
+    region: us-east-1
+    bucket: neuradex
+    forcePathStyle: true
+    accessKeyId: neuradex
+    secretAccessKey: neuradex-local-secret
+
+extraEnv:
+  # Route Kagi traffic to the fixture server. Port 80 is allowed by the
+  # chart's default NetworkPolicy egress rules.
+  - name: KAGI_BASE_URL
+    value: http://fixtures
