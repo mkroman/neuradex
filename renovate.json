@@ -30,6 +30,9 @@
       ]
     }
   ],
+  "lockFileMaintenance": {
+    "enabled": false
+  },
   "packageRules": [
     {
       "description": "Group pinned CI tool updates managed by mise",
@@ -47,7 +50,10 @@
         "ghcr.io/jdx/mise",
         "mise"
       ],
-      "groupName": "mise CLI and action"
+      "groupName": "mise CLI and action",
+      "schedule": [
+        "on the 1st and 15th day of the month"
+      ]
     },
     {
       "description": "Group Docker build tool updates in mise.docker.toml",
