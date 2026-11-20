@@ -28,7 +28,7 @@ kind = "0.33.0"
 # The alias keeps GitHub as the version source; the archive comes from the
 # official get.helm.sh mirror and is verified against mise.lock.
 [tools.helm]
-version = "4.3.1"
+version = "4.3.2"
 [tools.helm.platforms]
 linux-x64 = { url = "https://get.helm.sh/helm-v{{ version }}-linux-amd64.tar.gz" }
 macos-arm64 = { url = "https://get.helm.sh/helm-v{{ version }}-darwin-arm64.tar.gz" }
