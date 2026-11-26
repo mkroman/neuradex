@@ -20,7 +20,7 @@ kind = "github:kubernetes-sigs/kind"
 helm = "github:helm/helm"
 
 [tools]
-cargo-deny = "0.20.2"
+cargo-deny = "0.22.0"
 shellcheck = "0.11.0"
 kind = "0.33.0"
 
