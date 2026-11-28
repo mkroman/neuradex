@@ -100,7 +100,7 @@ services:
     restart: "no"
 
   clickhouse:
-    image: clickhouse/clickhouse-server:26.10@sha256:4f491abc44d9f4a1747c033c35ddd5bc385521305d85ca8251ba0824ff597035
+    image: clickhouse/clickhouse-server:26.10@sha256:7f500954d8b3e2b920753c7e22404470a0545847bc3637fc25141d66bf61b9e1
     environment:
       CLICKHOUSE_DB: neuradex
       CLICKHOUSE_USER: neuradex
